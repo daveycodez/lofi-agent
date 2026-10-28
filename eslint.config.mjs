@@ -12,8 +12,8 @@ export default [
       "**/.tanstack",
       "**/.wrangler",
       "**/routeTree.gen.ts",
-      "**/worker-configuration.d.ts",
-    ],
+      "**/worker-configuration.d.ts"
+    ]
   },
   {
     files: ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"],
@@ -23,9 +23,9 @@ export default [
         {
           enforceBuildableLibDependency: true,
           allow: [],
-          depConstraints: [{ sourceTag: "*", onlyDependOnLibsWithTags: ["*"] }],
-        },
-      ],
-    },
-  },
+          depConstraints: [{ sourceTag: "*", onlyDependOnLibsWithTags: ["*"] }]
+        }
+      ]
+    }
+  }
 ]

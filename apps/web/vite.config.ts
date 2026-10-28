@@ -15,10 +15,10 @@ const config = defineConfig({
     tailwindcss(),
     tanstackStart({
       // Prerender every page reachable from "/" to static HTML at build time.
-      prerender: { enabled: true, crawlLinks: true },
+      prerender: { enabled: true, crawlLinks: true }
     }),
-    viteReact(),
-  ],
+    viteReact()
+  ]
 })
 
 export default config
