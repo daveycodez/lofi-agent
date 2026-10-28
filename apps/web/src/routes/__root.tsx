@@ -1,6 +1,7 @@
 import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router"
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools"
 import { TanStackDevtools } from "@tanstack/react-devtools"
+import { ThemeProvider } from "next-themes"
 
 import appCss from "../styles.css?url"
 
@@ -30,12 +31,22 @@ export const Route = createRootRoute({
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="light" data-theme="light">
+    // next-themes sets class + data-theme on <html> before paint, so React's
+    // hydration sees different attributes than the server sent.
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>
       <body className="bg-background text-foreground">
-        {children}
+        {/* HeroUI reads both the class and data-theme attributes */}
+        <ThemeProvider
+          attribute={["class", "data-theme"]}
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          {children}
+        </ThemeProvider>
         <TanStackDevtools
           config={{
             position: "bottom-right"

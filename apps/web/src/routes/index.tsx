@@ -1,6 +1,7 @@
 import { Button, Card } from "@heroui/react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useState } from "react"
+import { ThemeSwitcher } from "#/components/theme-switcher"
 
 export const Route = createFileRoute("/")({ component: Home })
 
@@ -16,6 +17,9 @@ function Home() {
             HeroUI is installed. This card and button are HeroUI components.
           </Card.Description>
         </Card.Header>
+        <Card.Content>
+          <ThemeSwitcher />
+        </Card.Content>
         <Card.Footer className="flex gap-2">
           <Button onPress={() => setCount((c) => c + 1)}>
             Pressed {count} {count === 1 ? "time" : "times"}
