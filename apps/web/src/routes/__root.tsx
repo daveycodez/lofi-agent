@@ -47,17 +47,20 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         >
           {children}
         </ThemeProvider>
-        <TanStackDevtools
-          config={{
-            position: "bottom-right"
-          }}
-          plugins={[
-            {
-              name: "Tanstack Router",
-              render: <TanStackRouterDevtoolsPanel />
-            }
-          ]}
-        />
+        {/* Dev only: the devtools' saved hotkey can swallow keystrokes in text inputs. */}
+        {import.meta.env.DEV && (
+          <TanStackDevtools
+            config={{
+              position: "bottom-right"
+            }}
+            plugins={[
+              {
+                name: "Tanstack Router",
+                render: <TanStackRouterDevtoolsPanel />
+              }
+            ]}
+          />
+        )}
         <Scripts />
       </body>
     </html>
