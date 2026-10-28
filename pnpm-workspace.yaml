@@ -1,7 +1,10 @@
 packages:
-  - 'apps/*'
-  - 'packages/*'
+  - "apps/*"
 
 allowBuilds:
-  '@swc/core': true
+  "@swc/core": true
+  esbuild: true
+  lightningcss: true
   nx: true
+  sharp: true
+  workerd: true

@@ -3,4 +3,8 @@
 /coverage
 /.nx/cache
 /.nx/workspace-data
-.nx/self-healing
+.nx/self-healingpnpm-lock.yaml
+**/routeTree.gen.ts
+**/.tanstack
+**/.wrangler
+**/.output
