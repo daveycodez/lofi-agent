@@ -19,6 +19,7 @@ import VolumeXmark from "@gravity-ui/icons/VolumeXmark"
 import {
   Alert,
   Button,
+  Disclosure,
   Dropdown,
   InputGroup,
   Kbd,
@@ -36,8 +37,12 @@ import type { ComponentProps, ReactNode } from "react"
 
 import { ModelSelect } from "#/components/chat/model-select"
 import { useDictation } from "#/lib/dictation"
-import { lfm3Status } from "#/lib/llm/lfm3-connection"
-import { routedConnection, useCurrentModel } from "#/lib/llm/models"
+import { splitThinking } from "#/lib/thinking"
+import {
+  routedConnection,
+  useCurrentModel,
+  useModelStatus
+} from "#/lib/llm/models"
 import { chatPersistence, touchThread } from "#/lib/threads"
 
 const SUGGESTIONS = [
@@ -325,8 +330,7 @@ function Composer({
   const textAreaRef = useAutoGrow(value, 192)
   // Can't send while the selected model is still downloading.
   const model = useCurrentModel()
-  const lfm3 = lfm3Status.use()
-  const isModelLoading = model === "lfm3" && lfm3.state === "loading"
+  const isModelLoading = useModelStatus(model).state === "loading"
   const canSend = !!value.trim() && !isRunning && !isModelLoading
 
   // Dictation adds to whatever was already typed when it started.
@@ -543,8 +547,39 @@ function EditComposer({
   )
 }
 
+/** The model's thinking, collapsed under a "Thinking" toggle. */
+function ThinkingBlock({
+  thinking,
+  isThinking
+}: {
+  thinking: string
+  isThinking: boolean
+}) {
+  return (
+    <Disclosure>
+      <Disclosure.Heading>
+        <Button
+          slot="trigger"
+          size="sm"
+          variant="ghost"
+          className="-ms-3 text-muted"
+        >
+          {isThinking && <Spinner size="sm" color="current" />}
+          {isThinking ? "Thinking…" : "Thoughts"}
+          <Disclosure.Indicator />
+        </Button>
+      </Disclosure.Heading>
+      <Disclosure.Content>
+        <Disclosure.Body className="border-s-2 border-separator ps-3 text-sm whitespace-pre-wrap text-muted">
+          {thinking}
+        </Disclosure.Body>
+      </Disclosure.Content>
+    </Disclosure>
+  )
+}
+
 function AssistantMessage({
-  text,
+  text: raw,
   isLast,
   isRunning,
   seconds,
@@ -560,8 +595,15 @@ function AssistantMessage({
   onReload: () => void
   onDelete?: () => void
 }) {
+  const { thinking, answer: text, isThinking } = splitThinking(raw)
   return (
     <div className="group flex flex-col gap-2">
+      {thinking && (
+        <ThinkingBlock
+          thinking={thinking}
+          isThinking={isThinking && isRunning}
+        />
+      )}
       {text ? (
         <div className="markdown prose max-w-none wrap-break-word">
           {/* `role` is TextPart's message-sender prop, not an ARIA role. */}
@@ -569,7 +611,8 @@ function AssistantMessage({
           <TextPart content={text} role="assistant" />
         </div>
       ) : (
-        isRunning && (
+        isRunning &&
+        !thinking && (
           <div className="flex items-center gap-2 text-sm text-muted">
             <Spinner size="sm" color="current" />
             Thinking…

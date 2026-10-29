@@ -8,14 +8,15 @@ import {
 } from "@heroui/react"
 import { useRef, useState } from "react"
 
-import { lfm3Status, loadLfm3 } from "#/lib/llm/lfm3-connection"
 import {
   afmStatus,
   checkAfm,
+  loadModel,
   modelInfo,
   modelStore,
   useCurrentModel,
-  useModels
+  useModels,
+  useModelStatus
 } from "#/lib/llm/models"
 import type { ModelId } from "#/lib/llm/models"
 
@@ -32,7 +33,7 @@ export function ModelSelect() {
   const model = useCurrentModel()
   const models = useModels()
   const afm = afmStatus.use()
-  const lfm3 = lfm3Status.use()
+  const local = useModelStatus(model)
   const [isOpen, setIsOpen] = useState(false)
   const current = modelInfo(model)
   // Counts picks, so a slow Apple check can't undo a newer choice.
@@ -58,8 +59,8 @@ export function ModelSelect() {
     setPending(null)
     afmStatus.set("idle")
     modelStore.set(key)
-    // Start the one-time download as soon as LFM3 is picked.
-    void loadLfm3().catch(() => undefined)
+    // Start loading (downloading the first time) as soon as it's picked.
+    loadModel(key)
   }
 
   // `progress` is 0-1 for a determinate download, null to just show activity.
@@ -72,14 +73,14 @@ export function ModelSelect() {
       ? { text: "Loading model", progress: null }
       : afm === "unavailable"
         ? { text: "Apple model not available", isError: true }
-        : model === "lfm3" && lfm3.state === "loading"
-          ? !lfm3.cached && lfm3.progress < 1
+        : local.state === "loading"
+          ? !local.cached && local.progress < 1
             ? {
-                text: `Downloading ${Math.round(lfm3.progress * 100)}%`,
-                progress: lfm3.progress
+                text: `Downloading ${Math.round(local.progress * 100)}%`,
+                progress: local.progress
               }
             : { text: "Loading model", progress: null }
-          : model === "lfm3" && lfm3.state === "error"
+          : local.state === "error"
             ? { text: "Couldn't load", isError: true }
             : null
 

@@ -6,10 +6,23 @@ import {
   APFEL_URL,
   apfelConnection
 } from "#/lib/llm/apfel-connection"
-import { lfm3Connection } from "#/lib/llm/lfm3-connection"
+import {
+  loadLocalModel,
+  localModelConnection,
+  localModelStatus
+} from "#/lib/llm/local-model"
+import type { LocalModelStatus } from "#/lib/llm/local-model"
 import { createStore } from "#/lib/store"
 
-export type ModelId = "apple-fm" | "lfm3"
+export type ModelId = "apple-fm" | "lfm3" | "lfm2.5"
+
+/** Models that run in the browser, by Hugging Face id. */
+const LFM3_ID = "onnx-community/LFM3-1.7B-ONNX"
+const LFM2_5_ID = "LiquidAI/LFM2.5-1.2B-Instruct-ONNX"
+const LOCAL_MODELS: Partial<Record<ModelId, string>> = {
+  lfm3: LFM3_ID,
+  "lfm2.5": LFM2_5_ID
+}
 
 export const MODELS: Array<{
   id: ModelId
@@ -28,9 +41,29 @@ export const MODELS: Array<{
     id: "lfm3",
     name: "LFM3 1.7B",
     icon: "/icons/liquid.svg",
-    connection: lfm3Connection
+    connection: localModelConnection(LFM3_ID, "LFM3")
+  },
+  {
+    id: "lfm2.5",
+    name: "LFM2.5 1.2B",
+    icon: "/icons/liquid.svg",
+    connection: localModelConnection(LFM2_5_ID, "LFM2.5")
   }
 ]
+
+/** Starts loading a local model (no-op for the Apple model). */
+export function loadModel(id: ModelId) {
+  const modelId = LOCAL_MODELS[id]
+  if (modelId) void loadLocalModel(modelId).catch(() => undefined)
+}
+
+const IDLE = createStore<LocalModelStatus>({ state: "idle" })
+
+/** Loading status of a model; the Apple model is always idle here. */
+export const useModelStatus = (id: ModelId) => {
+  const modelId = LOCAL_MODELS[id]
+  return (modelId ? localModelStatus(modelId) : IDLE).use()
+}
 
 export const modelInfo = (id: ModelId) =>
   MODELS.find((m) => m.id === id) ?? MODELS[0]
