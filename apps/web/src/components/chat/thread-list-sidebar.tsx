@@ -374,16 +374,19 @@ function ThreadListItem({
   }
 
   return (
-    // Active row: surface + shadow; other rows: default fill on hover (HeroUI guidelines).
-    <div
-      data-active={isActive || undefined}
-      className="group relative flex h-9 items-center rounded-lg hover:bg-default has-aria-expanded:bg-default data-active:bg-surface data-active:shadow-surface"
-    >
+    // Each chat is a link drawn as a HeroUI button: tertiary when open, ghost
+    // otherwise. The actions button sits over its end.
+    <div className="group relative">
       <Link
         to="/"
         search={{ thread: thread.id }}
         onClick={onNavigate}
-        className="flex h-full min-w-0 flex-1 items-center rounded-lg ps-2 pe-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-focus"
+        className={buttonVariants({
+          variant: isActive ? "tertiary" : "ghost",
+          fullWidth: true,
+          className:
+            "justify-start pe-10 font-normal group-has-aria-expanded:bg-default"
+        })}
       >
         <span className="min-w-0 flex-1 truncate">
           {thread.title || "New chat"}
@@ -395,7 +398,7 @@ function ThreadListItem({
           size="sm"
           variant="ghost"
           aria-label="Chat actions"
-          className="absolute end-1 top-1/2 -translate-y-1/2"
+          className="absolute end-1 top-1/2 z-10 -translate-y-1/2"
         >
           <Ellipsis />
         </Button>
