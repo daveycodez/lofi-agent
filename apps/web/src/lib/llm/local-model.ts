@@ -167,17 +167,24 @@ function toChatTurns(
   format: ToolFormat
 ) {
   const chat: Array<ChatTurn> = []
-  for (const m of convertMessagesToModelMessages(messages)) {
+  const all = convertMessagesToModelMessages(messages)
+  // Tool calls and results from earlier turns are left out; their answers
+  // stay. Small models copy the shape of past calls badly and get lost in
+  // old results; the current turn's calls and results are kept, since the
+  // model answers from them.
+  const currentTurn = all.map((m) => m.role).lastIndexOf("user")
+  for (const [i, m] of all.entries()) {
     const content = contentText(m.content)
+    const earlier = i < currentTurn
     if (m.role === "tool") {
-      chat.push({ role: "tool", content: toolResultText(m) })
+      if (!earlier) chat.push({ role: "tool", content: toolResultText(m) })
       continue
     }
     const calls = (m.toolCalls ?? []).map((call) => ({
       name: call.function.name,
       args: parseArguments(call.function.arguments)
     }))
-    if (m.role === "user" || calls.length === 0) {
+    if (m.role === "user" || calls.length === 0 || earlier) {
       if (content) chat.push({ role: m.role, content })
       continue
     }
