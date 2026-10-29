@@ -16,19 +16,27 @@ const TRANSFORMERS_URL =
   "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2"
 
 /* Minimal shapes of the Transformers.js APIs used here. */
-type Tensor = { dims: Array<number> }
+type Tensor = {
+  dims: Array<number>
+  slice: (...ranges: Array<null | [number, number]>) => Tensor
+}
 type Tokenizer = {
   apply_chat_template: (
     messages: Array<ChatTurn>,
     options: Record<string, unknown>
   ) => string
-  (text: string, options: Record<string, unknown>): { input_ids: Tensor }
+  (
+    text: string,
+    options: Record<string, unknown>
+  ): { input_ids: Tensor; attention_mask: Tensor }
 }
+/** The model's cache (attention keys/values and conv states), on the GPU. */
+type Cache = { dispose: () => Promise<unknown> }
 type Model = {
   generate: (options: Record<string, unknown>) => Promise<unknown>
   dispose: () => Promise<unknown>
 }
-type StoppingCriteria = { interrupt: () => void }
+type StoppingCriteria = { interrupt: () => void; interrupted: boolean }
 type TransformersModule = {
   AutoTokenizer: {
     from_pretrained: (
@@ -254,7 +262,15 @@ async function loadRuntime(modelId: string): Promise<Runtime> {
       device: "webgpu",
       // Weights come from disk (above), not Transformers.js's download.
       use_external_data_format: 0,
-      session_options: { externalData: [{ path: WEIGHTS, data: weights.data }] }
+      session_options: {
+        externalData: [{ path: WEIGHTS, data: weights.data }],
+        // Free GPU buffers after each run instead of keeping every size used:
+        // reading a long prompt otherwise leaves hundreds of MB cached, more
+        // than an iPhone's memory limit allows.
+        executionProviders: [
+          { name: "webgpu", storageBufferCacheMode: "lazyRelease" }
+        ]
+      }
     })
     return { tf, tokenizer, model }
   } finally {
@@ -287,6 +303,43 @@ function load(modelId: string) {
 }
 
 const running = new Map<string, StoppingCriteria>()
+
+/** Prompt tokens read per step when reading a long prompt. */
+const PREFILL_CHUNK = 256
+
+/**
+ * Reads all but the last token of a long prompt into the model's cache,
+ * PREFILL_CHUNK tokens at a time. Reading it in one pass needs GPU memory
+ * that grows with the square of its length (the attention scores), which
+ * runs past an iPhone's limit at a few hundred tokens. generate() then picks
+ * up from the cache without reading the prompt again. Returns null for short
+ * prompts, which generate() reads in one go as usual.
+ */
+async function prefill(
+  model: Model,
+  inputs: { input_ids: Tensor; attention_mask: Tensor },
+  stopping: StoppingCriteria
+): Promise<Cache | null> {
+  const length = inputs.input_ids.dims[1]
+  if (length <= PREFILL_CHUNK) return null
+  let cache: Cache | null = null
+  // The last prompt token is left for generate(), which needs at least one.
+  for (let start = 0; start < length - 1; start += PREFILL_CHUNK) {
+    if (stopping.interrupted) break
+    const end = Math.min(start + PREFILL_CHUNK, length - 1)
+    const out = (await model.generate({
+      input_ids: inputs.input_ids.slice(null, [0, end]),
+      attention_mask: inputs.attention_mask.slice(null, [0, end]),
+      past_key_values: cache,
+      max_new_tokens: 1,
+      do_sample: false,
+      return_dict_in_generate: true
+    })) as { past_key_values: Cache }
+    // The same cache object, updated in place with this chunk.
+    cache = out.past_key_values
+  }
+  return cache
+}
 
 /** End-of-turn tokens, dropped when special tokens are kept. */
 const END_TOKENS = /<\|im_end\|>|<\|endoftext\|>|<\|im_start\|>/g
@@ -325,9 +378,14 @@ async function generate(
       if (text) ctx.postMessage({ type: "token", id, text })
     }
   })
+  let cache: Cache | null = null
   try {
+    cache = await prefill(model, inputs, stopping)
+    if (stopping.interrupted) return
     await model.generate({
       ...inputs,
+      // Continues from the prompt already in the cache, if any.
+      ...(cache && { past_key_values: cache }),
       // Thinking takes many more tokens before the answer starts.
       max_new_tokens: thinking ? 4096 : 1024,
       do_sample: true,
@@ -337,6 +395,8 @@ async function generate(
     })
   } finally {
     running.delete(id)
+    // generate() leaves a cache it was given alive; free its GPU memory.
+    await cache?.dispose().catch(() => undefined)
   }
 }
 
