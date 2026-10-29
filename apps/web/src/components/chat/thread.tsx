@@ -358,6 +358,7 @@ function Composer({
               <Tooltip delay={300}>
                 <Button
                   isIconOnly
+                  size="sm"
                   aria-label="Stop generating"
                   onPress={onStop}
                 >
@@ -369,6 +370,7 @@ function Composer({
               <Tooltip delay={300}>
                 <Button
                   isIconOnly
+                  size="sm"
                   aria-label="Send message"
                   isDisabled={!canSend}
                   onPress={submit}
