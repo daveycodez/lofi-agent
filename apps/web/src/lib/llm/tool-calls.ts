@@ -158,17 +158,22 @@ export function parseJsonToolCalls(
   mentions.sort((a, b) => a.at - b.at)
   const calls: Array<ParsedToolCall> = []
   mentions.forEach(({ name, at }, i) => {
-    // The arguments belong to the last mention of a name before them.
+    // The arguments belong to the last mention of a name before them. The
+    // model sometimes writes a broken "arguments" and then a good one: the
+    // first that reads is used.
     const part = text.slice(at, mentions[i + 1]?.at ?? text.length)
-    const key = /"arguments"?\s*:\s*/.exec(part)
-    if (!key) return
-    const from = key.index + key[0].length
-    const raw =
-      part[from] === "{"
-        ? balancedObject(part, from)
-        : /^"(?:[^"\\]|\\.)*"/.exec(part.slice(from))?.[0]
-    const args = raw ? parseJsonArgs(raw) : null
-    if (args) calls.push({ name, args })
+    for (const key of part.matchAll(/"arguments"?\s*:\s*/g)) {
+      const from = key.index + key[0].length
+      const raw =
+        part[from] === "{"
+          ? balancedObject(part, from)
+          : /^"(?:[^"\\]|\\.)*"/.exec(part.slice(from))?.[0]
+      const args = raw ? parseJsonArgs(raw) : null
+      if (args) {
+        calls.push({ name, args })
+        return
+      }
+    }
   })
   return calls
 }
