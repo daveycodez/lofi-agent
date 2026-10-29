@@ -33,10 +33,10 @@ import {
 } from "@heroui/react"
 import type { UIMessage } from "@tanstack/ai"
 import { useChat } from "@tanstack/ai-react"
-import { TextPart } from "@tanstack/ai-react/ui"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import type { ComponentProps, ReactNode } from "react"
 
+import { Markdown } from "#/components/chat/markdown"
 import { ModelSelect } from "#/components/chat/model-select"
 import { useDictation } from "#/lib/dictation"
 import { splitThinking } from "#/lib/thinking"
@@ -606,8 +606,8 @@ function ThinkingBlock({
         </Button>
       </Disclosure.Heading>
       <Disclosure.Content>
-        <Disclosure.Body className="border-s-2 border-separator ps-3 text-sm whitespace-pre-wrap text-muted">
-          {thinking}
+        <Disclosure.Body className="markdown prose prose-sm max-w-none border-s-2 border-separator ps-3 text-muted wrap-break-word">
+          <Markdown>{thinking}</Markdown>
         </Disclosure.Body>
       </Disclosure.Content>
     </Disclosure>
@@ -642,9 +642,7 @@ function AssistantMessage({
       )}
       {text ? (
         <div className="markdown prose max-w-none wrap-break-word">
-          {/* `role` is TextPart's message-sender prop, not an ARIA role. */}
-          {/* eslint-disable-next-line jsx-a11y/aria-role */}
-          <TextPart content={text} role="assistant" />
+          <Markdown>{text}</Markdown>
         </div>
       ) : (
         isRunning &&

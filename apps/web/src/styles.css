@@ -60,11 +60,11 @@
   margin-bottom: 0;
 }
 
-/* TextPart wraps the output in a div, so trim the outer margins on its children. */
-.markdown > div > :first-child {
+/* No space above the first block or below the last. */
+.markdown > :first-child {
   margin-top: 0;
 }
-.markdown > div > :last-child {
+.markdown > :last-child {
   margin-bottom: 0;
 }
 
@@ -93,4 +93,86 @@
 .markdown blockquote p:first-of-type::before,
 .markdown blockquote p:last-of-type::after {
   content: none;
+}
+
+/*
+ * Math (KaTeX). Its default 1.21em looks oversized next to body text; inline
+ * math sits at text size, display math a touch larger with even spacing.
+ * Display math scrolls sideways instead of overflowing on narrow screens.
+ */
+.markdown .katex {
+  font-size: 1.05em;
+}
+.markdown .katex-display {
+  margin: 0.75em 0;
+  padding: 0.25em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.markdown .katex-display > .katex {
+  font-size: 1.15em;
+}
+/* A display block alone in a paragraph shouldn't add the paragraph's gap too. */
+.markdown p:has(> .katex-display:only-child) {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+/* Inline math and the punctuation right after it stay on one line. */
+.markdown .math-nowrap {
+  white-space: nowrap;
+}
+/* Boxed answers: a soft accent box with room around the value. */
+.markdown .katex .fbox {
+  border-color: var(--accent);
+  border-radius: 0.25em;
+}
+.markdown .katex .boxpad {
+  padding: 0 0.2em;
+}
+
+/*
+ * Code highlighting (highlight.js classes from rehype-highlight), drawn with
+ * HeroUI theme colors so it follows light and dark mode.
+ */
+.markdown .hljs-comment,
+.markdown .hljs-quote {
+  color: var(--muted);
+  font-style: italic;
+}
+.markdown .hljs-keyword,
+.markdown .hljs-selector-tag,
+.markdown .hljs-built_in,
+.markdown .hljs-meta,
+.markdown .hljs-tag {
+  color: var(--accent);
+}
+.markdown .hljs-string,
+.markdown .hljs-regexp,
+.markdown .hljs-addition,
+.markdown .hljs-attribute {
+  color: var(--success);
+}
+.markdown .hljs-number,
+.markdown .hljs-literal,
+.markdown .hljs-symbol,
+.markdown .hljs-variable.language_ {
+  color: var(--warning);
+}
+.markdown .hljs-title,
+.markdown .hljs-title.function_,
+.markdown .hljs-section,
+.markdown .hljs-name,
+.markdown .hljs-selector-class,
+.markdown .hljs-selector-id {
+  color: var(--accent);
+  font-weight: 600;
+}
+.markdown .hljs-attr,
+.markdown .hljs-property,
+.markdown .hljs-type,
+.markdown .hljs-params {
+  color: var(--foreground);
+}
+.markdown .hljs-deletion {
+  color: var(--danger);
 }
