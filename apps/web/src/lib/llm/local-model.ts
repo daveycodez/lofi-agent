@@ -131,7 +131,9 @@ function textOf(message: UIMessage | ModelMessage) {
 /** A TanStack AI connection that runs `modelId` locally. */
 export function localModelConnection(
   modelId: string,
-  name: string
+  name: string,
+  /** Whether to think before answering, read when each message is sent. */
+  thinking: () => boolean = () => false
 ): ConnectConnectionAdapter {
   return {
     async *connect(messages, _data, abortSignal, runContext) {
@@ -179,7 +181,11 @@ export function localModelConnection(
       })
       const onAbort = () => post({ type: "stop", id: runId })
       abortSignal?.addEventListener("abort", onAbort)
-      post({ type: "generate", id: runId, chat })
+      const think = thinking()
+      // The chat template opens the <think> block in the prompt itself, so
+      // add it to the reply too: the thread then shows it as thinking.
+      if (think) queue.push("<think>")
+      post({ type: "generate", id: runId, chat, thinking: think })
 
       yield {
         type: EventType.TEXT_MESSAGE_START,

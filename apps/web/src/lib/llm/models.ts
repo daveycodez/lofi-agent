@@ -16,6 +16,12 @@ import { createStore } from "#/lib/store"
 
 export type ModelId = "apple-fm" | "lfm3" | "lfm2.5"
 
+/** Whether models that can think should reason before answering. */
+export const thinkingStore = createStore<boolean>(false, "lofi-agent:thinking")
+
+/** Models with a thinking mode (LFM2.5 Instruct has none). */
+export const canThink = (id: ModelId) => id === "lfm3"
+
 /** Models that run in the browser, by Hugging Face id. */
 const LFM3_ID = "onnx-community/LFM3-1.7B-ONNX"
 const LFM2_5_ID = "LiquidAI/LFM2.5-1.2B-Instruct-ONNX"
@@ -41,7 +47,7 @@ export const MODELS: Array<{
     id: "lfm3",
     name: "LFM3 1.7B",
     icon: "/icons/liquid.svg",
-    connection: localModelConnection(LFM3_ID, "LFM3")
+    connection: localModelConnection(LFM3_ID, "LFM3", () => thinkingStore.get())
   },
   {
     id: "lfm2.5",

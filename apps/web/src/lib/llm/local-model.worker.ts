@@ -145,14 +145,14 @@ function load(modelId: string) {
 
 const running = new Map<string, StoppingCriteria>()
 
-async function generate(id: string, chat: Array<ChatTurn>) {
+async function generate(id: string, chat: Array<ChatTurn>, thinking: boolean) {
   if (!current) throw new Error("No model loaded.")
   const { tf, tokenizer, model } = await current.runtime
-  // Thinking off where a model supports it: slow on small devices.
+  // Models with a thinking mode reason in a <think> block before answering.
   const prompt = tokenizer.apply_chat_template(chat, {
     add_generation_prompt: true,
     tokenize: false,
-    enable_thinking: false
+    enable_thinking: thinking
   })
   const inputs = tokenizer(prompt, { add_special_tokens: false })
   const stopping = new tf.InterruptableStoppingCriteria()
@@ -168,7 +168,8 @@ async function generate(id: string, chat: Array<ChatTurn>) {
     // Liquid's recommended sampling for LFM models.
     await model.generate({
       ...inputs,
-      max_new_tokens: 1024,
+      // Thinking takes many more tokens before the answer starts.
+      max_new_tokens: thinking ? 4096 : 1024,
       do_sample: true,
       temperature: 0.1,
       top_k: 50,
@@ -188,7 +189,7 @@ ctx.onmessage = ({ data }) => {
   if (data.type === "load") {
     load(data.modelId).catch(() => undefined)
   } else if (data.type === "generate") {
-    generate(data.id, data.chat)
+    generate(data.id, data.chat, data.thinking)
       .then(() => ctx.postMessage({ type: "done", id: data.id }))
       .catch((error: unknown) =>
         ctx.postMessage({

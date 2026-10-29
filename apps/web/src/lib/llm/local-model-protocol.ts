@@ -7,7 +7,7 @@ export type ChatTurn = {
 
 export type WorkerRequest =
   | { type: "load"; modelId: string }
-  | { type: "generate"; id: string; chat: Array<ChatTurn> }
+  | { type: "generate"; id: string; chat: Array<ChatTurn>; thinking: boolean }
   | { type: "stop"; id: string }
 
 export type WorkerResponse =

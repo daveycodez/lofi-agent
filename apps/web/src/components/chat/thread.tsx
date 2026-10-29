@@ -7,6 +7,7 @@ import ArrowDown from "@gravity-ui/icons/ArrowDown"
 import ArrowDownToLine from "@gravity-ui/icons/ArrowDownToLine"
 import ArrowRotateRight from "@gravity-ui/icons/ArrowRotateRight"
 import ArrowUp from "@gravity-ui/icons/ArrowUp"
+import Bulb from "@gravity-ui/icons/Bulb"
 import Check from "@gravity-ui/icons/Check"
 import Copy from "@gravity-ui/icons/Copy"
 import Ellipsis from "@gravity-ui/icons/Ellipsis"
@@ -27,6 +28,7 @@ import {
   Skeleton,
   Spinner,
   TextField,
+  ToggleButton,
   Tooltip
 } from "@heroui/react"
 import type { UIMessage } from "@tanstack/ai"
@@ -39,7 +41,9 @@ import { ModelSelect } from "#/components/chat/model-select"
 import { useDictation } from "#/lib/dictation"
 import { splitThinking } from "#/lib/thinking"
 import {
+  canThink,
   routedConnection,
+  thinkingStore,
   useCurrentModel,
   useModelStatus
 } from "#/lib/llm/models"
@@ -377,6 +381,7 @@ function Composer({
         />
         <InputGroup.Suffix className="flex w-full items-center gap-1.5 px-3 py-0">
           <ModelSelect />
+          {canThink(model) && <ThinkToggle />}
           <div className="ms-auto flex items-center gap-1">
             {dictation.isSupported && (
               <Tooltip delay={300}>
@@ -544,6 +549,31 @@ function EditComposer({
         </InputGroup.Suffix>
       </InputGroup>
     </TextField>
+  )
+}
+
+/** Turns on reasoning before answering, for models that can think. */
+function ThinkToggle() {
+  const isThinking = thinkingStore.use()
+  return (
+    <Tooltip delay={300}>
+      <ToggleButton
+        size="sm"
+        variant="ghost"
+        isSelected={isThinking}
+        onChange={thinkingStore.set}
+        aria-label="Think before answering"
+        className={isThinking ? undefined : "text-muted"}
+      >
+        <Bulb />
+        Think
+      </ToggleButton>
+      <Tooltip.Content>
+        {isThinking
+          ? "Thinking on: slower, more careful"
+          : "Think before answering"}
+      </Tooltip.Content>
+    </Tooltip>
   )
 }
 
