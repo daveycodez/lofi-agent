@@ -41,15 +41,37 @@ const ctx = globalThis as unknown as {
   onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null
 }
 
-/** Whether Transformers.js already has the model weights in its browser cache. */
-async function isCached() {
-  try {
-    const cache = await caches.open("transformers-cache")
-    const weights = `https://huggingface.co/${MODEL_ID}/resolve/main/onnx/model_q4f16.onnx_data`
-    return (await cache.match(weights)) !== undefined
-  } catch {
-    return false
+/** The weights file, under the URL Transformers.js uses as its cache key. */
+const WEIGHTS_URL = `https://huggingface.co/${MODEL_ID}/resolve/main/onnx/model_q4f16.onnx_data`
+
+/**
+ * Streams the 1.09 GB weights file from the network straight into
+ * Transformers.js's cache, so it's never held in memory during the download.
+ * Left to itself, Transformers.js buffers the whole file and then copies it
+ * again to cache it, which is enough to crash a tab on iPhone.
+ * Returns false when the file was already cached.
+ */
+async function downloadWeights(onProgress: (progress: number) => void) {
+  const cache = await caches.open("transformers-cache")
+  if (await cache.match(WEIGHTS_URL)) return false
+  // Hugging Face rejects downloads referred from *.workers.dev.
+  const res = await fetch(WEIGHTS_URL, { referrerPolicy: "no-referrer" })
+  if (!res.ok || !res.body) {
+    throw new Error(`Couldn't download the model (HTTP ${res.status}).`)
   }
+  const total = Number(res.headers.get("content-length")) || 0
+  let loaded = 0
+  const counted = res.body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        loaded += chunk.byteLength
+        if (total) onProgress(loaded / total)
+        controller.enqueue(chunk)
+      }
+    })
+  )
+  await cache.put(WEIGHTS_URL, new Response(counted, { headers: res.headers }))
+  return true
 }
 
 let runtime: Promise<{
@@ -63,35 +85,27 @@ function load() {
     if (!("gpu" in navigator)) {
       throw new Error("LFM3 needs WebGPU, which this browser doesn't support.")
     }
-    const cached = await isCached()
-    ctx.postMessage({ type: "progress", progress: 0, cached })
+    // Download first (whole percents only, the stream reports per chunk),
+    // then load from the cache.
+    let lastPercent = -1
+    await downloadWeights((progress) => {
+      const percent = Math.floor(progress * 100)
+      if (percent === lastPercent) return
+      lastPercent = percent
+      ctx.postMessage({
+        type: "progress",
+        progress: percent / 100,
+        cached: false
+      })
+    })
+    ctx.postMessage({ type: "progress", progress: 0, cached: true })
     const tf = (await import(
       /* @vite-ignore */ TRANSFORMERS_URL
     )) as TransformersModule
     const tokenizer = await tf.AutoTokenizer.from_pretrained(MODEL_ID)
-    const files: Record<string, [number, number]> = {}
-    let lastPercent = -1
     const model = await tf.AutoModelForCausalLM.from_pretrained(MODEL_ID, {
       dtype: "q4f16",
-      device: "webgpu",
-      progress_callback: (p: {
-        status: string
-        file: string
-        loaded?: number
-        total?: number
-      }) => {
-        if (p.status !== "progress" || !p.total) return
-        files[p.file] = [p.loaded ?? 0, p.total]
-        const [loaded, total] = Object.values(files).reduce(
-          (sum, [l, t]) => [sum[0] + l, sum[1] + t],
-          [0, 0]
-        )
-        // Report whole percents only; Transformers.js fires per chunk.
-        const percent = Math.floor((loaded / total) * 100)
-        if (percent === lastPercent) return
-        lastPercent = percent
-        ctx.postMessage({ type: "progress", progress: percent / 100, cached })
-      }
+      device: "webgpu"
     })
     ctx.postMessage({ type: "ready" })
     return { tf, tokenizer, model }

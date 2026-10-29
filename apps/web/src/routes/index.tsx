@@ -72,7 +72,10 @@ function Assistant() {
       {/* Small screens: the same sidebar in a drawer. */}
       <Drawer.Backdrop isOpen={drawerOpen} onOpenChange={setDrawerOpen}>
         <Drawer.Content placement="left" className="w-60 max-w-[85vw] p-0">
-          <Drawer.Dialog aria-label="Threads" className="h-full p-0">
+          <Drawer.Dialog
+            aria-label="Threads"
+            className="h-full bg-background p-0"
+          >
             <ThreadListSidebar
               {...sidebarProps}
               onCollapse={() => setDrawerOpen(false)}
