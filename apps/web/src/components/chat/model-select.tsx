@@ -6,7 +6,7 @@ import {
   ProgressCircle,
   Spinner
 } from "@heroui/react"
-import { useState } from "react"
+import { useRef, useState } from "react"
 
 import { lfm3Status, loadLfm3 } from "#/lib/llm/lfm3-connection"
 import {
@@ -35,14 +35,27 @@ export function ModelSelect() {
   const lfm3 = lfm3Status.use()
   const [isOpen, setIsOpen] = useState(false)
   const current = modelInfo(model)
+  // Counts picks, so a slow Apple check can't undo a newer choice.
+  const lastPick = useRef(0)
+  // The Apple model while its check runs, so the checkmark moves right away.
+  const [pending, setPending] = useState<ModelId | null>(null)
 
   const select = async (key: ModelId) => {
     setIsOpen(false)
+    const pick = ++lastPick.current
     if (key === "apple-fm") {
       // Only switch once apfel confirms Apple's model is there.
-      if (await checkAfm()) modelStore.set(key)
+      afmStatus.set("checking")
+      setPending(key)
+      const isAvailable = await checkAfm()
+      // A newer pick happened meanwhile; it owns the status now.
+      if (pick !== lastPick.current) return
+      setPending(null)
+      afmStatus.set(isAvailable ? "idle" : "unavailable")
+      if (isAvailable) modelStore.set(key)
       return
     }
+    setPending(null)
     afmStatus.set("idle")
     modelStore.set(key)
     // Start the one-time download as soon as LFM3 is picked.
@@ -89,7 +102,7 @@ export function ModelSelect() {
               aria-label="Model"
               selectionMode="single"
               disallowEmptySelection
-              selectedKeys={new Set([model])}
+              selectedKeys={new Set([pending ?? model])}
               onSelectionChange={(keys) => {
                 const [key] = keys === "all" ? [] : [...keys]
                 if (key) void select(key as ModelId)

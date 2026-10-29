@@ -357,7 +357,6 @@ function Composer({
           placeholder="Send a message..."
           rows={1}
           value={value}
-          autoFocus
           enterKeyHint="send"
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {

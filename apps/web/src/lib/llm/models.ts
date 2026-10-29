@@ -72,7 +72,6 @@ export const afmStatus = createStore<"idle" | "checking" | "unavailable">(
  * user picks the Apple model.
  */
 export async function checkAfm() {
-  afmStatus.set("checking")
   try {
     const res = await fetch(APFEL_URL.replace("/chat/completions", "/models"), {
       signal: AbortSignal.timeout(10_000)
@@ -80,11 +79,8 @@ export async function checkAfm() {
     const body = res.ok
       ? ((await res.json()) as { data?: Array<{ id: string }> })
       : null
-    const found = body?.data?.some((m) => m.id === APFEL_MODEL) ?? false
-    afmStatus.set(found ? "idle" : "unavailable")
-    return found
+    return body?.data?.some((m) => m.id === APFEL_MODEL) ?? false
   } catch {
-    afmStatus.set("unavailable")
     return false
   }
 }
