@@ -26,13 +26,14 @@ export const canThink = (id: ModelId) =>
 /** Models that run in the browser, by Hugging Face id. */
 const LFM3_ID = "onnx-community/LFM3-1.7B-ONNX"
 /**
- * A smaller build of LFM3 made to fit iPhone Safari's memory limit: GPTQ
- * 4-bit, an 80k vocabulary, and no embedding copy at load (856 MB of weights
- * instead of 1.09 GB). Sequences are limited to 16,384 tokens. Pinned to a
- * commit, so browsers download this version's files.
+ * A build of LFM3 made for iPhone Safari: GPTQ 4-bit with block size 32 (so
+ * onnxruntime-web's fast prompt kernel and fused kernels apply), a 48k
+ * vocabulary, and no embedding copy at load (900 MB of weights instead of
+ * 1.09 GB). Sequences are limited to 16,384 tokens. Pinned to a commit, so
+ * browsers download this version's files.
  */
 const LFM3_WEB_ID =
-  "daveycodez/LFM3-1.7B-Web@c7cce6b0d31c4dd5089c39ed59c399a60fdf4dea"
+  "daveycodez/LFM3-1.7B-Web@2395323014f17d483d5c728a4fb9e813a23e6492"
 const LFM2_5_ID = "LiquidAI/LFM2.5-1.2B-Instruct-ONNX"
 /** LFM2.5 has no thinking switch: thinking is a separate model. */
 const LFM2_5_THINKING_ID = "LiquidAI/LFM2.5-1.2B-Thinking-ONNX"
