@@ -47,7 +47,18 @@ type TransformersModule = {
     options: Record<string, unknown>
   ) => unknown
   InterruptableStoppingCriteria: new () => StoppingCriteria
+  env: { fetch: typeof fetch }
 }
+
+/*
+ * Hugging Face answers requests referred from *.workers.dev with a 404 and no
+ * CORS headers, which the browser reports as "Failed to fetch". The page's
+ * no-referrer meta tag doesn't reach workers, so every request from here
+ * leaves the referrer out itself.
+ */
+const fetchWithoutReferrer: typeof fetch = (input, init) =>
+  fetch(input, { ...init, referrerPolicy: "no-referrer" })
+
 type Runtime = { tf: TransformersModule; tokenizer: Tokenizer; model: Model }
 
 const ctx = globalThis as unknown as {
@@ -206,8 +217,7 @@ async function downloadWeights(
   const files = weightsFiles(modelId)
   const dir = await navigator.storage.getDirectory()
   if (await hasFile(dir, files.done)) return
-  // Hugging Face rejects downloads referred from *.workers.dev.
-  const res = await fetch(files.url, { referrerPolicy: "no-referrer" })
+  const res = await fetchWithoutReferrer(files.url)
   if (!res.ok || !res.body) {
     throw new Error(`Couldn't download the model (HTTP ${res.status}).`)
   }
@@ -313,6 +323,7 @@ async function loadRuntime(modelId: string): Promise<Runtime> {
   const tf = (await import(
     /* @vite-ignore */ TRANSFORMERS_URL
   )) as TransformersModule
+  tf.env.fetch = fetchWithoutReferrer
   const { repo, revision } = parseModelId(modelId)
   const tokenizer = await tf.AutoTokenizer.from_pretrained(repo, { revision })
   const weights = await openWeights(modelId)
