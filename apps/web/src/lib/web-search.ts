@@ -130,7 +130,9 @@ async function webSearch(input: unknown) {
       )
     }
   }
-  throw new Error(`Web search is unavailable right now (${failures.join("; ")}).`)
+  throw new Error(
+    `Web search is unavailable right now (${failures.join("; ")}).`
+  )
 }
 
 /*

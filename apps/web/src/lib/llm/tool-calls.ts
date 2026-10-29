@@ -3,6 +3,8 @@
  *
  * - LFM2.5: `<|tool_call_start|>[get_weather(city="Tokyo")]<|tool_call_end|>`
  * - LFM3: `<tool_call>\n<function=get_weather>\n<parameter=city>\nTokyo\n</parameter>\n</function>\n</tool_call>`
+ * - Apple's model, when apfel doesn't recognize its call and passes it on as
+ *   text: `{"tool_calls": [{"function": "get_weather", "arguments": {…}}]}`
  */
 
 export type ParsedToolCall = { name: string; args: Record<string, unknown> }
@@ -11,6 +13,9 @@ export type ParsedToolCall = { name: string; args: Record<string, unknown> }
 export type ToolFormat = "lfm2" | "lfm3"
 
 const MARKERS = ["<|tool_call_start|>", "<tool_call>"]
+
+/** Where Apple's model starts a tool call it writes as text. */
+export const JSON_TOOL_CALLS_MARKER = '{"tool_calls"'
 
 /** A Python-style or JSON value: "x", 'x', 1.5, True, None, [1, 2]… */
 function parseValue(raw: string): unknown {
@@ -97,11 +102,82 @@ export function parseToolCalls(text: string): Array<ParsedToolCall> {
   return calls
 }
 
-/** Length of the longest end of `text` that could start one of the markers. */
-function partialMarker(text: string) {
+/** The `{…}` that starts at `text[start]`, braces in strings ignored. */
+function balancedObject(text: string, start: number) {
+  let depth = 0
+  let inString = false
+  for (let i = start; i < text.length; i++) {
+    const c = text[i]
+    if (inString) {
+      if (c === "\\") i++
+      else if (c === '"') inString = false
+    } else if (c === '"') inString = true
+    else if (c === "{") depth++
+    else if (c === "}" && --depth === 0) return text.slice(start, i + 1)
+  }
+  return null
+}
+
+/** JSON arguments, read leniently: stray strings without a key are dropped. */
+function parseJsonArgs(raw: string): Record<string, unknown> | null {
+  for (const candidate of [raw, raw.replace(/,\s*"[^"]*"\s*(?=[,}])/g, "")]) {
+    try {
+      const value = JSON.parse(candidate) as unknown
+      const args = typeof value === "string" ? JSON.parse(value) : value
+      if (args && typeof args === "object") {
+        return args as Record<string, unknown>
+      }
+    } catch {
+      // Try the next reading.
+    }
+  }
+  return null
+}
+
+/**
+ * Tool calls Apple's model wrote as JSON text. Its JSON varies and is often
+ * broken (`"function": "name"`, `"name: "name"`, stray strings in the
+ * arguments), so instead of parsing the whole thing, this finds each quoted
+ * name of a tool that exists and reads the `"arguments"` object after it.
+ */
+export function parseJsonToolCalls(
+  text: string,
+  toolNames: Iterable<string>
+): Array<ParsedToolCall> {
+  const mentions: Array<{ name: string; at: number }> = []
+  for (const name of toolNames) {
+    const quoted = `"${name}"`
+    for (
+      let at = text.indexOf(quoted);
+      at >= 0;
+      at = text.indexOf(quoted, at + 1)
+    ) {
+      mentions.push({ name, at })
+    }
+  }
+  mentions.sort((a, b) => a.at - b.at)
+  const calls: Array<ParsedToolCall> = []
+  mentions.forEach(({ name, at }, i) => {
+    // The arguments belong to the last mention of a name before them.
+    const part = text.slice(at, mentions[i + 1]?.at ?? text.length)
+    const key = /"arguments"?\s*:\s*/.exec(part)
+    if (!key) return
+    const from = key.index + key[0].length
+    const raw =
+      part[from] === "{"
+        ? balancedObject(part, from)
+        : /^"(?:[^"\\]|\\.)*"/.exec(part.slice(from))?.[0]
+    const args = raw ? parseJsonArgs(raw) : null
+    if (args) calls.push({ name, args })
+  })
+  return calls
+}
+
+/** Length of the longest end of `text` that could start one of `markers`. */
+function partialMarker(text: string, markers: Array<string>) {
   for (let n = Math.min(text.length, 18); n > 0; n--) {
     const end = text.slice(-n)
-    if (MARKERS.some((m) => m.startsWith(end))) return n
+    if (markers.some((m) => m.startsWith(end))) return n
   }
   return 0
 }
@@ -111,7 +187,7 @@ function partialMarker(text: string) {
  * through as it arrives) and the tool-call markup after it (held back and
  * parsed once the reply ends).
  */
-export function createToolCallSplitter() {
+export function createToolCallSplitter(markers: Array<string> = MARKERS) {
   let held = ""
   let markup: string | null = null
 
@@ -123,7 +199,7 @@ export function createToolCallSplitter() {
     }
     held += text
     const at = Math.min(
-      ...MARKERS.map((m) => held.indexOf(m)).filter((i) => i >= 0)
+      ...markers.map((m) => held.indexOf(m)).filter((i) => i >= 0)
     )
     if (Number.isFinite(at)) {
       const before = held.slice(0, at)
@@ -131,7 +207,7 @@ export function createToolCallSplitter() {
       held = ""
       return before
     }
-    const keep = partialMarker(held)
+    const keep = partialMarker(held, markers)
     const out = held.slice(0, held.length - keep)
     held = held.slice(out.length)
     return out

@@ -2,6 +2,11 @@ import { EventType, convertMessagesToModelMessages } from "@tanstack/ai"
 import type { ModelMessage, StreamChunk, UIMessage } from "@tanstack/ai"
 import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
 
+import {
+  JSON_TOOL_CALLS_MARKER,
+  createToolCallSplitter,
+  parseJsonToolCalls
+} from "#/lib/llm/tool-calls"
 import { currentSystemPrompt } from "#/lib/settings"
 
 /**
@@ -51,9 +56,23 @@ function toOpenAIMessages(
   const out: Array<OpenAIMessage> = [
     { role: "system", content: currentSystemPrompt() }
   ]
-  for (const m of convertMessagesToModelMessages(messages)) {
+  const all = convertMessagesToModelMessages(messages)
+  // Tool calls and results from earlier turns are left out; their answers
+  // stay. With them in the history, Apple's model writes its next tool call
+  // as broken JSON text most of the time (4 of 12 calls worked, against 12
+  // of 12 without). The current turn's calls and results are kept: the
+  // model answers from them.
+  const currentTurn = all.map((m) => m.role).lastIndexOf("user")
+  for (const [i, m] of all.entries()) {
+    const earlierToolStep =
+      i < currentTurn &&
+      (m.role === "tool" || (m.role === "assistant" && m.toolCalls?.length))
     const content = contentText(m.content)
-    if (m.role === "tool") {
+    if (earlierToolStep) {
+      if (m.role === "assistant" && content) {
+        out.push({ role: "assistant", content })
+      }
+    } else if (m.role === "tool") {
       out.push({
         role: "tool",
         tool_call_id: m.toolCallId ?? "",
@@ -184,17 +203,23 @@ export const apfelConnection: ConnectConnectionAdapter = {
       let text = ""
       // Tool calls stream in pieces, by index.
       const streamed: Array<StreamedCall> = []
+      // When apfel doesn't recognize a tool call, it passes it on as text;
+      // that part is held back and read once the reply ends.
+      const splitter = createToolCallSplitter([JSON_TOOL_CALLS_MARKER])
       for await (const data of sseData(response.body)) {
         if (data === "[DONE]") break
         const choice = (JSON.parse(data) as OpenAIChunk).choices?.[0]
         const delta = choice?.delta?.content
         if (delta) {
           text += delta
-          yield {
-            type: EventType.TEXT_MESSAGE_CONTENT,
-            messageId,
-            delta
-          } as StreamChunk
+          const shown = splitter.push(delta)
+          if (shown) {
+            yield {
+              type: EventType.TEXT_MESSAGE_CONTENT,
+              messageId,
+              delta: shown
+            } as StreamChunk
+          }
         }
         for (const piece of choice?.delta?.tool_calls ?? []) {
           const call = (streamed[piece.index] ??= {
@@ -206,6 +231,27 @@ export const apfelConnection: ConnectConnectionAdapter = {
           call.arguments += piece.function?.arguments ?? ""
         }
         if (choice?.finish_reason) finishReason = choice.finish_reason
+      }
+      const { text: rest, markup } = splitter.flush()
+      const fromText =
+        markup && streamed.length === 0
+          ? parseJsonToolCalls(markup, toolNames)
+          : []
+      fromText.forEach((call, i) =>
+        streamed.push({
+          id: `call_${runId}_${attempt}_text${i}`,
+          name: call.name,
+          arguments: JSON.stringify(call.args)
+        })
+      )
+      // Text that wasn't a readable tool call is shown after all.
+      const unread = `${rest}${fromText.length > 0 ? "" : (markup ?? "")}`
+      if (unread) {
+        yield {
+          type: EventType.TEXT_MESSAGE_CONTENT,
+          messageId,
+          delta: unread
+        } as StreamChunk
       }
       calls = streamed.filter((c) => toolNames.has(c.name))
       const unknown = streamed.filter((c) => !toolNames.has(c.name))

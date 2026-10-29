@@ -2,10 +2,7 @@
 import { createStore } from "#/lib/store"
 
 /** Whether models get the built-in web search tool. On by default. */
-export const webSearchEnabledStore = createStore(
-  true,
-  "lofi-agent:web-search"
-)
+export const webSearchEnabledStore = createStore(true, "lofi-agent:web-search")
 
 /**
  * A system prompt the user wrote, sent to every model at the start of each
@@ -27,7 +24,10 @@ export function currentSystemPrompt() {
     minute: "2-digit",
     timeZoneName: "short"
   })
-  return [`The current date and time is ${now}.`, systemPromptStore.get().trim()]
+  return [
+    `The current date and time is ${now}.`,
+    systemPromptStore.get().trim()
+  ]
     .filter(Boolean)
     .join("\n\n")
 }
