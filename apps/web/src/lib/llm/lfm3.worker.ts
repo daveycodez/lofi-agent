@@ -122,6 +122,19 @@ async function downloadWeights(onProgress: (progress: number) => void) {
  * memory: iPhone Safari kills the page past 2 GB, and a full copy plus the GPU
  * upload went over. Call close() once the model is created.
  */
+/**
+ * Experiment for iPhone Safari: WebGPU objects hold Safari memory until the
+ * JavaScript garbage collector frees them, and they're too small on the JS
+ * heap to trigger it. Allocating short-lived garbage makes it run.
+ */
+let gcNudges = false
+function nudgeGc() {
+  if (!gcNudges) return
+  let junk: Array<Array<number>> | null = []
+  for (let i = 0; i < 100_000; i++) junk.push([i, i, i, i])
+  junk = null
+}
+
 async function openWeights(pause: LoadPause) {
   const dir = await navigator.storage.getDirectory()
   const handle = await openSync(await dir.getFileHandle(OPFS_FILE))
@@ -135,6 +148,7 @@ async function openWeights(pause: LoadPause) {
       value: (begin = 0, end = size) => {
         // Experiment: ONNX Runtime asks for slices synchronously, one tensor
         // at a time after uploading the last, so pause here by spinning.
+        nudgeGc()
         sincePause += end - begin
         if (pause.ms > 0 && sincePause >= pause.everyMb * 1024 * 1024) {
           sincePause = 0
@@ -235,8 +249,9 @@ let runtime: Promise<{
 
 function load(
   upload: UploadMode = "default",
-  pause: LoadPause = { ms: 0, everyMb: 64 }
+  pause: LoadPause = { ms: 0, everyMb: 64, gc: false }
 ) {
+  gcNudges = pause.gc
   runtime ??= (async () => {
     if (!("gpu" in navigator)) {
       throw new Error("LFM3 needs WebGPU, which this browser doesn't support.")
@@ -287,6 +302,7 @@ function load(
 const running = new Map<string, StoppingCriteria>()
 
 async function generate(id: string, chat: Array<ChatTurn>) {
+  let tokens = 0
   const { tf, tokenizer, model } = await load()
   // Thinking off: it is slow on small devices and can run out of tokens.
   const prompt = tokenizer.apply_chat_template(chat, {
@@ -301,6 +317,7 @@ async function generate(id: string, chat: Array<ChatTurn>) {
     skip_prompt: true,
     skip_special_tokens: true,
     callback_function: (text: string) => {
+      if (++tokens % 4 === 0) nudgeGc()
       if (text) ctx.postMessage({ type: "token", id, text })
     }
   })

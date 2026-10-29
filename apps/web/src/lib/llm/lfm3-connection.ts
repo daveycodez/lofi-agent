@@ -82,7 +82,8 @@ function post(message: WorkerRequest) {
 
 /**
  * Experiments: ?upload=write|write-wait picks how weights are sent to the GPU,
- * ?wait=1000&every=32 pauses 1 s after every 32 MB loaded. Read once when the
+ * ?wait=1000&every=32 pauses 1 s after every 32 MB loaded, ?gc=1 nudges the
+ * garbage collector. Read once when the
  * page opens, because sending a message rewrites the URL to ?thread=.
  */
 const experimentParams =
@@ -99,7 +100,8 @@ function uploadMode(): UploadMode {
 function loadPause(): LoadPause {
   return {
     ms: Number(experiment("wait")) || 0,
-    everyMb: Number(experiment("every")) || 64
+    everyMb: Number(experiment("every")) || 64,
+    gc: experiment("gc") === "1"
   }
 }
 
