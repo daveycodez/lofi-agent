@@ -1,13 +1,20 @@
-import { EventType } from "@tanstack/ai"
+import { EventType, convertMessagesToModelMessages } from "@tanstack/ai"
 import type { ModelMessage, StreamChunk, UIMessage } from "@tanstack/ai"
 import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
 
 import type {
   ChatTurn,
   Sampling,
+  ToolSpec,
   WorkerRequest,
   WorkerResponse
 } from "#/lib/llm/local-model-protocol"
+import {
+  createToolCallSplitter,
+  formatLfm2ToolCalls,
+  parseToolCalls
+} from "#/lib/llm/tool-calls"
+import type { ToolFormat } from "#/lib/llm/tool-calls"
 import { createStore } from "#/lib/store"
 import { createThinkingSplitter } from "#/lib/thinking"
 import type { ReplyPiece } from "#/lib/thinking"
@@ -119,13 +126,67 @@ export function loadLocalModel(modelId: string) {
   return promise
 }
 
-function textOf(message: UIMessage | ModelMessage) {
-  if ("parts" in message) {
-    return message.parts
-      .map((p) => (p.type === "text" ? p.content : ""))
-      .join("")
+/** The text of a message's content (text parts only). */
+function contentText(content: ModelMessage["content"]) {
+  if (typeof content === "string") return content
+  return (content ?? [])
+    .map((part) => (part.type === "text" ? part.content : ""))
+    .join("")
+}
+
+/** Parses a tool call's JSON arguments, or {} if they aren't JSON. */
+function parseArguments(json: string): Record<string, unknown> {
+  try {
+    const args = JSON.parse(json) as unknown
+    return args && typeof args === "object"
+      ? (args as Record<string, unknown>)
+      : {}
+  } catch {
+    return {}
   }
-  return typeof message.content === "string" ? message.content : ""
+}
+
+/**
+ * The conversation as chat-template turns. No system prompt, as the model
+ * cards show. Past tool calls are written the way the model writes them.
+ */
+function toChatTurns(
+  messages: Array<UIMessage> | Array<ModelMessage>,
+  format: ToolFormat
+) {
+  const chat: Array<ChatTurn> = []
+  for (const m of convertMessagesToModelMessages(messages)) {
+    const content = contentText(m.content)
+    if (m.role === "tool") {
+      chat.push({ role: "tool", content })
+      continue
+    }
+    const calls = (m.toolCalls ?? []).map((call) => ({
+      name: call.function.name,
+      args: parseArguments(call.function.arguments)
+    }))
+    if (m.role === "user" || calls.length === 0) {
+      if (content) chat.push({ role: m.role, content })
+    } else if (format === "lfm2") {
+      chat.push({
+        role: "assistant",
+        content: content + formatLfm2ToolCalls(calls)
+      })
+    } else {
+      // Liquid's guide: keep the reasoning of the current tool-use turn.
+      const thinking = m.thinking?.map((t) => t.content).join("")
+      chat.push({
+        role: "assistant",
+        content,
+        ...(thinking && { thinking }),
+        tool_calls: calls.map((c) => ({
+          type: "function",
+          function: { name: c.name, arguments: c.args }
+        }))
+      })
+    }
+  }
+  return chat
 }
 
 /** A TanStack AI connection that runs `modelId` locally. */
@@ -134,10 +195,18 @@ export function localModelConnection(options: {
   name: string
   /** The model card's recommended sampling. */
   sampling: Sampling
+  /** How the model writes tool calls. */
+  toolFormat: ToolFormat
   /** Whether to think before answering, read when each message is sent. */
   thinking?: () => boolean
 }): ConnectConnectionAdapter {
-  const { modelId, name, sampling, thinking = () => false } = options
+  const {
+    modelId,
+    name,
+    sampling,
+    toolFormat,
+    thinking = () => false
+  } = options
   return {
     async *connect(messages, _data, abortSignal, runContext) {
       const { threadId, runId } = runContext
@@ -155,13 +224,22 @@ export function localModelConnection(options: {
         return
       }
 
-      // No system prompt: just the conversation, as the model card shows.
-      const chat: Array<ChatTurn> = []
-      for (const m of messages) {
-        if (m.role !== "user" && m.role !== "assistant") continue
-        const content = textOf(m)
-        if (content) chat.push({ role: m.role, content })
-      }
+      const chat = toChatTurns(messages, toolFormat)
+      // The tools useChat has (from MCP servers), as the template takes them.
+      const toolNames = new Set<string>()
+      const tools: Array<ToolSpec> = (runContext.clientTools ?? []).map(
+        (tool) => {
+          toolNames.add(tool.name)
+          return {
+            type: "function",
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.parameters
+            }
+          }
+        }
+      )
 
       // Bridge the worker's messages to this async generator.
       const queue: Array<string> = []
@@ -186,7 +264,14 @@ export function localModelConnection(options: {
       const onAbort = () => post({ type: "stop", id: runId })
       abortSignal?.addEventListener("abort", onAbort)
       const think = thinking()
-      post({ type: "generate", id: runId, chat, thinking: think, sampling })
+      post({
+        type: "generate",
+        id: runId,
+        chat,
+        tools,
+        thinking: think,
+        sampling
+      })
 
       yield {
         type: EventType.TEXT_MESSAGE_START,
@@ -195,9 +280,35 @@ export function localModelConnection(options: {
       } as StreamChunk
 
       // Thinking (a leading <think> block) streams as reasoning events, so
-      // the message gets a thinking part; the rest streams as its text.
+      // the message gets a thinking part; the answer streams as its text,
+      // up to any tool call, which is held back and parsed at the end.
       const reasoningId = `reasoning_${runId}`
       let reasoning: "none" | "open" | "closed" = "none"
+      const toolSplitter = createToolCallSplitter()
+      const textEvent = (delta: string): Array<StreamChunk> =>
+        delta
+          ? [
+              {
+                type: EventType.TEXT_MESSAGE_CONTENT,
+                messageId,
+                delta
+              } as StreamChunk
+            ]
+          : []
+      const endReasoning = (): Array<StreamChunk> => {
+        if (reasoning !== "open") return []
+        reasoning = "closed"
+        return [
+          {
+            type: EventType.REASONING_MESSAGE_END,
+            messageId: reasoningId
+          } as StreamChunk,
+          {
+            type: EventType.REASONING_END,
+            messageId: reasoningId
+          } as StreamChunk
+        ]
+      }
       const toEvents = (pieces: Array<ReplyPiece>) =>
         pieces.flatMap((piece): Array<StreamChunk> => {
           if (piece.kind === "thinking") {
@@ -227,27 +338,9 @@ export function localModelConnection(options: {
           }
           return [
             ...endReasoning(),
-            {
-              type: EventType.TEXT_MESSAGE_CONTENT,
-              messageId,
-              delta: piece.text
-            } as StreamChunk
+            ...textEvent(toolSplitter.push(piece.text))
           ]
         })
-      const endReasoning = (): Array<StreamChunk> => {
-        if (reasoning !== "open") return []
-        reasoning = "closed"
-        return [
-          {
-            type: EventType.REASONING_MESSAGE_END,
-            messageId: reasoningId
-          } as StreamChunk,
-          {
-            type: EventType.REASONING_END,
-            messageId: reasoningId
-          } as StreamChunk
-        ]
-      }
 
       const splitter = createThinkingSplitter()
       while (!finished || queue.length > 0) {
@@ -262,6 +355,31 @@ export function localModelConnection(options: {
       abortSignal?.removeEventListener("abort", onAbort)
       yield* toEvents(splitter.flush())
       yield* endReasoning()
+
+      // Tool calls the model made, for tools that exist. Markup that isn't a
+      // usable call is shown as text instead.
+      const rest = toolSplitter.flush()
+      yield* textEvent(rest.text)
+      const calls = rest.markup
+        ? parseToolCalls(rest.markup).filter((c) => toolNames.has(c.name))
+        : []
+      if (rest.markup && calls.length === 0) yield* textEvent(rest.markup)
+      const callIds = calls.map((_, i) => `call_${runId}_${i}`)
+      for (const [i, call] of calls.entries()) {
+        const toolCallId = callIds[i]
+        yield {
+          type: EventType.TOOL_CALL_START,
+          toolCallId,
+          toolCallName: call.name,
+          parentMessageId: messageId
+        } as StreamChunk
+        yield {
+          type: EventType.TOOL_CALL_ARGS,
+          toolCallId,
+          delta: JSON.stringify(call.args)
+        } as StreamChunk
+        yield { type: EventType.TOOL_CALL_END, toolCallId } as StreamChunk
+      }
       yield { type: EventType.TEXT_MESSAGE_END, messageId } as StreamChunk
 
       if (failure) {
@@ -272,13 +390,25 @@ export function localModelConnection(options: {
         } as StreamChunk
         return
       }
-      yield {
-        type: EventType.RUN_FINISHED,
-        threadId,
-        runId,
-        finishReason: "stop",
-        model: modelId
-      } as StreamChunk
+      // A run that calls browser tools ends with them pending: useChat runs
+      // them and sends the results back for the next run.
+      yield (
+        callIds.length > 0
+          ? {
+              type: EventType.RUN_FINISHED,
+              threadId,
+              runId,
+              outcome: { type: "success", pendingToolCallIds: callIds },
+              model: modelId
+            }
+          : {
+              type: EventType.RUN_FINISHED,
+              threadId,
+              runId,
+              finishReason: "stop",
+              model: modelId
+            }
+      ) as StreamChunk
     }
   }
 }

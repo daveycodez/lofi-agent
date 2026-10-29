@@ -1,4 +1,4 @@
-import { EventType } from "@tanstack/ai"
+import { EventType, convertMessagesToModelMessages } from "@tanstack/ai"
 import type { ModelMessage, StreamChunk, UIMessage } from "@tanstack/ai"
 import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
 
@@ -10,28 +10,52 @@ import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
 export const APFEL_URL = "http://127.0.0.1:11434/v1/chat/completions"
 export const APFEL_MODEL = "apple-foundationmodel"
 
-type OpenAIMessage = { role: "system" | "user" | "assistant"; content: string }
+type OpenAIToolCall = {
+  id: string
+  type: "function"
+  function: { name: string; arguments: string }
+}
+
+type OpenAIMessage =
+  | { role: "system" | "user"; content: string }
+  | {
+      role: "assistant"
+      content: string | null
+      tool_calls?: Array<OpenAIToolCall>
+    }
+  | { role: "tool"; tool_call_id: string; content: string }
 
 const SYSTEM_PROMPT =
   "You are a helpful assistant running fully on the user's device. Be concise. Use Markdown when it helps."
 
-function textOf(message: UIMessage | ModelMessage): string {
-  if ("parts" in message) {
-    return message.parts
-      .map((part) => (part.type === "text" ? part.content : ""))
-      .join("")
-  }
-  return typeof message.content === "string" ? message.content : ""
+function contentText(content: ModelMessage["content"]) {
+  if (typeof content === "string") return content
+  return (content ?? [])
+    .map((part) => (part.type === "text" ? part.content : ""))
+    .join("")
 }
 
 function toOpenAIMessages(
   messages: Array<UIMessage> | Array<ModelMessage>
 ): Array<OpenAIMessage> {
   const out: Array<OpenAIMessage> = [{ role: "system", content: SYSTEM_PROMPT }]
-  for (const message of messages) {
-    if (message.role !== "user" && message.role !== "assistant") continue
-    const content = textOf(message)
-    if (content) out.push({ role: message.role, content })
+  for (const m of convertMessagesToModelMessages(messages)) {
+    const content = contentText(m.content)
+    if (m.role === "tool") {
+      out.push({ role: "tool", tool_call_id: m.toolCallId ?? "", content })
+    } else if (m.role === "assistant" && m.toolCalls?.length) {
+      out.push({
+        role: "assistant",
+        content: content || null,
+        tool_calls: m.toolCalls.map((call) => ({
+          id: call.id,
+          type: "function",
+          function: call.function
+        }))
+      })
+    } else if (content) {
+      out.push({ role: m.role === "user" ? "user" : "assistant", content })
+    }
   }
   return out
 }
@@ -58,7 +82,14 @@ type FinishReason = "stop" | "length" | "content_filter" | "tool_calls" | null
 
 type OpenAIChunk = {
   choices?: Array<{
-    delta?: { content?: string | null }
+    delta?: {
+      content?: string | null
+      tool_calls?: Array<{
+        index: number
+        id?: string
+        function?: { name?: string; arguments?: string }
+      }>
+    }
     finish_reason?: FinishReason
   }>
 }
@@ -77,7 +108,18 @@ export const apfelConnection: ConnectConnectionAdapter = {
         body: JSON.stringify({
           model: APFEL_MODEL,
           stream: true,
-          messages: toOpenAIMessages(messages)
+          messages: toOpenAIMessages(messages),
+          // The tools useChat has (from MCP servers).
+          ...(runContext.clientTools?.length && {
+            tools: runContext.clientTools.map((tool) => ({
+              type: "function",
+              function: {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters
+              }
+            }))
+          })
         }),
         signal: abortSignal
       })
@@ -107,6 +149,8 @@ export const apfelConnection: ConnectConnectionAdapter = {
     } as StreamChunk
 
     let finishReason: FinishReason = null
+    // Tool calls stream in pieces, by index.
+    const calls: Array<{ id: string; name: string; arguments: string }> = []
     for await (const data of sseData(response.body)) {
       if (data === "[DONE]") break
       const choice = (JSON.parse(data) as OpenAIChunk).choices?.[0]
@@ -118,16 +162,57 @@ export const apfelConnection: ConnectConnectionAdapter = {
           delta
         } as StreamChunk
       }
+      for (const piece of choice?.delta?.tool_calls ?? []) {
+        const call = (calls[piece.index] ??= {
+          id: piece.id ?? `call_${runId}_${piece.index}`,
+          name: "",
+          arguments: ""
+        })
+        call.name += piece.function?.name ?? ""
+        call.arguments += piece.function?.arguments ?? ""
+      }
       if (choice?.finish_reason) finishReason = choice.finish_reason
     }
 
+    for (const call of calls) {
+      yield {
+        type: EventType.TOOL_CALL_START,
+        toolCallId: call.id,
+        toolCallName: call.name,
+        parentMessageId: messageId
+      } as StreamChunk
+      yield {
+        type: EventType.TOOL_CALL_ARGS,
+        toolCallId: call.id,
+        delta: call.arguments || "{}"
+      } as StreamChunk
+      yield {
+        type: EventType.TOOL_CALL_END,
+        toolCallId: call.id
+      } as StreamChunk
+    }
     yield { type: EventType.TEXT_MESSAGE_END, messageId } as StreamChunk
-    yield {
-      type: EventType.RUN_FINISHED,
-      threadId,
-      runId,
-      finishReason: finishReason ?? "stop",
-      model: APFEL_MODEL
-    } as StreamChunk
+    // A run that calls browser tools ends with them pending: useChat runs
+    // them and sends the results back for the next run.
+    yield (
+      calls.length > 0
+        ? {
+            type: EventType.RUN_FINISHED,
+            threadId,
+            runId,
+            outcome: {
+              type: "success",
+              pendingToolCallIds: calls.map((c) => c.id)
+            },
+            model: APFEL_MODEL
+          }
+        : {
+            type: EventType.RUN_FINISHED,
+            threadId,
+            runId,
+            finishReason: finishReason ?? "stop",
+            model: APFEL_MODEL
+          }
+    ) as StreamChunk
   }
 }

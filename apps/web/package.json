@@ -19,6 +19,7 @@
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/ai": "1.0.0",
     "@tanstack/ai-client": "1.0.0",
+    "@tanstack/ai-mcp": "1.0.0",
     "@tanstack/ai-react": "1.0.0",
     "@tanstack/highlight": "1.2.0",
     "@tanstack/markdown": "1.0.0",

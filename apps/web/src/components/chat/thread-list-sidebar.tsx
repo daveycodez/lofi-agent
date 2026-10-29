@@ -7,6 +7,7 @@ import Archive from "@gravity-ui/icons/Archive"
 import Check from "@gravity-ui/icons/Check"
 import Comments from "@gravity-ui/icons/Comments"
 import Ellipsis from "@gravity-ui/icons/Ellipsis"
+import Gear from "@gravity-ui/icons/Gear"
 import LayoutSideContentLeft from "@gravity-ui/icons/LayoutSideContentLeft"
 import LogoGithub from "@gravity-ui/icons/LogoGithub"
 import Pencil from "@gravity-ui/icons/Pencil"
@@ -46,6 +47,7 @@ type SidebarProps = {
   onNavigate?: () => void
   /** Called when the active thread is archived or deleted. */
   onActiveRemoved: () => void
+  onOpenSettings: () => void
 }
 
 export function ThreadListSidebar(props: SidebarProps) {
@@ -74,7 +76,16 @@ export function ThreadListSidebar(props: SidebarProps) {
         <ThreadList {...props} />
       </div>
 
-      <div className="border-t border-separator p-3">
+      <div className="flex flex-col gap-0.5 border-t border-separator p-3">
+        <Button
+          fullWidth
+          variant="ghost"
+          className="justify-start px-2"
+          onPress={props.onOpenSettings}
+        >
+          <Gear />
+          Settings
+        </Button>
         <HeroLink
           href="https://github.com/daveycodez/lofi-agent"
           target="_blank"

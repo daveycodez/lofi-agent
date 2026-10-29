@@ -7,6 +7,7 @@
 import type {
   ChatTurn,
   Sampling,
+  ToolSpec,
   WorkerRequest,
   WorkerResponse
 } from "./local-model-protocol"
@@ -250,9 +251,13 @@ function load(modelId: string) {
 
 const running = new Map<string, StoppingCriteria>()
 
+/** End-of-turn tokens, dropped when special tokens are kept. */
+const END_TOKENS = /<\|im_end\|>|<\|endoftext\|>|<\|im_start\|>/g
+
 async function generate(
   id: string,
   chat: Array<ChatTurn>,
+  tools: Array<ToolSpec>,
   thinking: boolean,
   sampling: Sampling
 ) {
@@ -260,6 +265,7 @@ async function generate(
   const { tf, tokenizer, model } = await current.runtime
   // Models with a thinking mode reason in a <think> block before answering.
   const prompt = tokenizer.apply_chat_template(chat, {
+    ...(tools.length > 0 && { tools }),
     add_generation_prompt: true,
     tokenize: false,
     enable_thinking: thinking
@@ -272,10 +278,13 @@ async function generate(
   const inputs = tokenizer(prompt, { add_special_tokens: false })
   const stopping = new tf.InterruptableStoppingCriteria()
   running.set(id, stopping)
+  // With tools, keep special tokens: LFM2.5 marks its tool calls with them.
+  const keepSpecial = tools.length > 0
   const streamer = new tf.TextStreamer(tokenizer, {
     skip_prompt: true,
-    skip_special_tokens: true,
-    callback_function: (text: string) => {
+    skip_special_tokens: !keepSpecial,
+    callback_function: (raw: string) => {
+      const text = keepSpecial ? raw.replace(END_TOKENS, "") : raw
       if (text) ctx.postMessage({ type: "token", id, text })
     }
   })
@@ -301,7 +310,7 @@ ctx.onmessage = ({ data }) => {
   if (data.type === "load") {
     load(data.modelId).catch(() => undefined)
   } else if (data.type === "generate") {
-    generate(data.id, data.chat, data.thinking, data.sampling)
+    generate(data.id, data.chat, data.tools, data.thinking, data.sampling)
       .then(() => ctx.postMessage({ type: "done", id: data.id }))
       .catch((error: unknown) =>
         ctx.postMessage({

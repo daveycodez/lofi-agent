@@ -15,8 +15,10 @@ import Microphone from "@gravity-ui/icons/Microphone"
 import Pencil from "@gravity-ui/icons/Pencil"
 import StopFill from "@gravity-ui/icons/StopFill"
 import TrashBin from "@gravity-ui/icons/TrashBin"
+import TriangleExclamation from "@gravity-ui/icons/TriangleExclamation"
 import Volume from "@gravity-ui/icons/Volume"
 import VolumeXmark from "@gravity-ui/icons/VolumeXmark"
+import Wrench from "@gravity-ui/icons/Wrench"
 import {
   Alert,
   Button,
@@ -39,6 +41,7 @@ import type { ComponentProps, ReactNode } from "react"
 import { Markdown } from "#/components/chat/markdown"
 import { ModelSelect } from "#/components/chat/model-select"
 import { useDictation } from "#/lib/dictation"
+import { checkMcpServers, useMcpTools } from "#/lib/mcp"
 import { splitThinking } from "#/lib/thinking"
 import {
   canThink,
@@ -89,10 +92,102 @@ function replyOf(message: UIMessage) {
   const thoughts = message.parts
     .map((p) => (p.type === "thinking" ? p.content.trim() : ""))
     .filter(Boolean)
+  const toolCalls = message.parts.flatMap((p): Array<ToolCallView> => {
+    if (p.type !== "tool-call") return []
+    const result = message.parts.find(
+      (r) => r.type === "tool-result" && r.toolCallId === p.id
+    )
+    const error =
+      result?.type === "tool-result" &&
+      (result.error || result.state === "error")
+        ? (result.error ?? String(result.content))
+        : p.state === "error"
+          ? "The tool failed."
+          : undefined
+    const output =
+      p.output !== undefined
+        ? typeof p.output === "string"
+          ? p.output
+          : JSON.stringify(p.output, null, 2)
+        : result?.type === "tool-result" && typeof result.content === "string"
+          ? result.content
+          : undefined
+    return [{ id: p.id, name: p.name, arguments: p.arguments, output, error }]
+  })
   return {
     thinking: [...thoughts, thinking].filter(Boolean).join("\n\n"),
-    text: answer
+    text: answer,
+    toolCalls
   }
+}
+
+type ToolCallView = {
+  id: string
+  name: string
+  /** JSON arguments, as the model wrote them. */
+  arguments: string
+  output?: string
+  error?: string
+}
+
+/** Pretty-prints JSON arguments, or returns them as they are. */
+function prettyArguments(json: string) {
+  try {
+    return JSON.stringify(JSON.parse(json), null, 2)
+  } catch {
+    return json
+  }
+}
+
+/** A tool the model called: its name, and its arguments and result inside. */
+function ToolCallBlock({
+  call,
+  isRunning
+}: {
+  call: ToolCallView
+  isRunning: boolean
+}) {
+  const pending = call.output === undefined && !call.error
+  return (
+    <Disclosure>
+      <Disclosure.Heading>
+        <Button
+          slot="trigger"
+          size="sm"
+          variant="ghost"
+          className="-ms-3 text-muted"
+        >
+          {pending && isRunning ? (
+            <Spinner size="sm" color="current" />
+          ) : call.error ? (
+            <TriangleExclamation className="text-danger" />
+          ) : (
+            <Wrench />
+          )}
+          <span className="font-mono text-xs">{call.name}</span>
+          <Disclosure.Indicator />
+        </Button>
+      </Disclosure.Heading>
+      <Disclosure.Content>
+        <Disclosure.Body className="flex flex-col gap-2 border-s-2 border-separator ps-3 text-xs">
+          <p className="text-muted">Arguments</p>
+          <pre className="max-h-48 overflow-auto rounded-xl bg-surface-secondary p-3 font-mono whitespace-pre-wrap">
+            {prettyArguments(call.arguments)}
+          </pre>
+          {(call.output !== undefined || call.error) && (
+            <>
+              <p className="text-muted">{call.error ? "Error" : "Result"}</p>
+              <pre
+                className={`max-h-60 overflow-auto rounded-xl bg-surface-secondary p-3 font-mono whitespace-pre-wrap ${call.error ? "text-danger" : ""}`}
+              >
+                {call.error ?? call.output}
+              </pre>
+            </>
+          )}
+        </Disclosure.Body>
+      </Disclosure.Content>
+    </Disclosure>
+  )
 }
 
 /** Icon-only ghost button with a tooltip. */
@@ -141,8 +236,12 @@ export function Thread({
   } = useChat({
     connection: routedConnection,
     threadId,
-    persistence: chatPersistence
+    persistence: chatPersistence,
+    // MCP server tools; useChat runs them in the browser when called.
+    tools: useMcpTools()
   })
+  // Connect to the user's MCP servers so their tools are ready.
+  useEffect(checkMcpServers, [])
   const [composerValue, setComposerValue] = useState("")
   const isEmpty = messages.length === 0 && !isHydrating
 
@@ -260,6 +359,8 @@ export function Thread({
                   <AssistantMessage
                     key={message.id}
                     {...replyOf(message)}
+                    // After a tool call, the reply goes on in a new message.
+                    continues={messages[index - 1]?.role === "assistant"}
                     isLast={isLast}
                     isRunning={isLoading && isLast}
                     seconds={timings[message.id]}
@@ -632,6 +733,8 @@ function ThinkingBlock({
 function AssistantMessage({
   text,
   thinking = "",
+  toolCalls = [],
+  continues = false,
   isLast,
   isRunning,
   seconds,
@@ -641,6 +744,9 @@ function AssistantMessage({
 }: {
   text: string
   thinking?: string
+  toolCalls?: Array<ToolCallView>
+  /** Continues the assistant message before it, as part of the same reply. */
+  continues?: boolean
   isLast: boolean
   isRunning: boolean
   seconds?: number
@@ -649,17 +755,26 @@ function AssistantMessage({
   onDelete?: () => void
 }) {
   return (
-    <div className="group flex flex-col gap-2">
+    // A continued reply sits as close as the parts within a message
+    // (gap-2), not the gap between messages (gap-y-6).
+    <div className={`group flex flex-col gap-2 ${continues ? "-mt-4" : ""}`}>
       {thinking && (
-        <ThinkingBlock thinking={thinking} isThinking={isRunning && !text} />
+        <ThinkingBlock
+          thinking={thinking}
+          isThinking={isRunning && !text && toolCalls.length === 0}
+        />
       )}
+      {toolCalls.map((call) => (
+        <ToolCallBlock key={call.id} call={call} isRunning={isRunning} />
+      ))}
       {text ? (
         <div className="markdown prose max-w-none wrap-break-word">
           <Markdown>{text}</Markdown>
         </div>
       ) : (
         isRunning &&
-        !thinking && (
+        !thinking &&
+        toolCalls.length === 0 && (
           <div className="flex items-center gap-2 text-sm text-muted">
             <Spinner size="sm" color="current" />
             Thinking…

@@ -36,13 +36,15 @@ const LOCAL_MODELS: Partial<Record<ModelId, string>> = {
 const lfm25 = localModelConnection({
   modelId: LFM2_5_ID,
   name: "LFM2.5",
-  sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.05 }
+  sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.05 },
+  toolFormat: "lfm2"
 })
 // LFM2.5-1.2B-Thinking card.
 const lfm25Thinking = localModelConnection({
   modelId: LFM2_5_THINKING_ID,
   name: "LFM2.5 Thinking",
   sampling: { temperature: 0.05, top_k: 50, repetition_penalty: 1.05 },
+  toolFormat: "lfm2",
   // Always thinks: give it the longer thinking budget.
   thinking: () => true
 })
@@ -69,6 +71,7 @@ export const MODELS: Array<{
       modelId: LFM3_ID,
       name: "LFM3",
       sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.1 },
+      toolFormat: "lfm3",
       thinking: () => thinkingStore.get()
     })
   },
