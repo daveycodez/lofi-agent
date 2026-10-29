@@ -383,7 +383,7 @@ function ThreadListItem({
         to="/"
         search={{ thread: thread.id }}
         onClick={onNavigate}
-        className="flex h-full min-w-0 flex-1 items-center rounded-lg px-2 text-sm outline-none group-hover:pe-9 group-has-aria-expanded:pe-9 group-data-active:pe-9 focus-visible:ring-2 focus-visible:ring-focus"
+        className="flex h-full min-w-0 flex-1 items-center rounded-lg ps-2 pe-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-focus"
       >
         <span className="min-w-0 flex-1 truncate">
           {thread.title || "New chat"}
@@ -395,7 +395,7 @@ function ThreadListItem({
           size="sm"
           variant="ghost"
           aria-label="Chat actions"
-          className="absolute end-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 group-data-active:opacity-100 aria-expanded:opacity-100 focus-visible:opacity-100"
+          className="absolute end-1 top-1/2 -translate-y-1/2"
         >
           <Ellipsis />
         </Button>
