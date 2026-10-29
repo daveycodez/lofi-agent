@@ -29,6 +29,15 @@ export type McpServer = {
   builtIn?: boolean
   /** Only these of the server's tools are used (all of them when unset). */
   onlyTools?: Array<string>
+  /**
+   * Only these of each tool's arguments are offered to the model (all of
+   * them when unset).
+   */
+  onlyArgs?: Array<string>
+  /** Arguments sent with every call, on top of the model's. */
+  fixedArgs?: Record<string, unknown>
+  /** Offer only the first paragraph of each tool's description. */
+  shortDescription?: boolean
 }
 
 export type McpTool = {
@@ -47,13 +56,21 @@ export type McpServerStatus =
 const BUILT_IN_SERVERS: Array<Omit<McpServer, "enabled">> = [
   {
     // Web search. Works without a key (rate-limited per user).
-    id: "built-in:exa",
-    name: "Exa Web Search",
-    url: "https://mcp.exa.ai/mcp",
+    id: "built-in:firecrawl",
+    name: "Firecrawl Web Search",
+    url: "https://mcp.firecrawl.dev/v2/mcp",
     builtIn: true,
-    // Search only: small models fetch made-up page URLs, and the search
+    // Search only: small models scrape made-up page URLs, and the search
     // results already carry the relevant text.
-    onlyTools: ["web_search_exa"]
+    onlyTools: ["firecrawl_search"],
+    // The rest of the tool's description and arguments cover paid features
+    // (data providers, scraping every result, enterprise modes). Offered to a
+    // small model they make the prompt several times longer, and it fills
+    // them in.
+    onlyArgs: ["query", "objective"],
+    shortDescription: true,
+    // The app keeps 8 results at most; 5 keeps the prompt short.
+    fixedArgs: { limit: 5 }
   }
 ]
 
@@ -171,7 +188,6 @@ function disconnect(id: string) {
   void client?.then((c) => c.close()).catch(() => undefined)
 }
 
-/** Connects to `server`, lists its tools, and records the result. */
 /**
  * Removes every sentence that names one of `hidden` from a description, so a
  * model isn't told to use a tool it doesn't have.
@@ -212,6 +228,24 @@ function schemaWithoutMentions(
   )
 }
 
+/** A tool's argument schema with only the `keep` arguments. */
+function onlyArgs(schema: object, keep: Array<string> | undefined) {
+  const s = schema as {
+    properties?: Record<string, unknown>
+    required?: Array<string>
+  }
+  if (!keep || !s.properties) return schema
+  return {
+    ...s,
+    properties: Object.fromEntries(
+      Object.entries(s.properties).filter(([name]) => keep.includes(name))
+    ),
+    ...(s.required && {
+      required: s.required.filter((name) => keep.includes(name))
+    })
+  }
+}
+
 /** Connects to `server`, lists its tools, and records the result. */
 export async function checkMcpServer(server: McpServer) {
   disconnect(server.id)
@@ -228,9 +262,14 @@ export async function checkMcpServer(server: McpServer) {
         .filter((t) => keep(t.name))
         .map((t) => ({
           name: t.name,
-          description: withoutMentions(t.description, hidden),
+          description: withoutMentions(
+            server.shortDescription
+              ? t.description.trim().split(/\n\s*\n/)[0]
+              : t.description,
+            hidden
+          ),
           inputSchema: schemaWithoutMentions(
-            t.inputSchema ?? { type: "object" },
+            onlyArgs(t.inputSchema ?? { type: "object" }, server.onlyArgs),
             hidden
           ) as JSONSchema
         }))
@@ -264,10 +303,10 @@ type CallToolResult = {
 /** Runs one MCP tool and returns its result as text for the model. */
 async function runMcpTool(server: McpServer, name: string, input: unknown) {
   const client = await connect(server)
-  const result = (await client.callTool(
-    name,
-    (input ?? {}) as Record<string, unknown>
-  )) as CallToolResult
+  const result = (await client.callTool(name, {
+    ...(input as Record<string, unknown> | undefined),
+    ...server.fixedArgs
+  })) as CallToolResult
   const text =
     result.content
       ?.map((c) => (c.type === "text" ? (c.text ?? "") : `[${c.type}]`))

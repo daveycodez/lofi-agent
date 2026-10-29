@@ -31,6 +31,11 @@ export function siteOf(url: string) {
 function snippet(text: string) {
   const flat = text
     .replace(/```[\s\S]*?```/g, " ")
+    // Images go; links keep their text.
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\\([\\[\]()*_#>-])/g, "$1")
+    .replace(/\\(?=\s)/g, "")
     .replace(/^#+\s*/gm, "")
     .replace(/\s+/g, " ")
     .trim()
