@@ -56,7 +56,7 @@ export function ModelSelect() {
     isError?: boolean
   } | null =
     afm === "checking"
-      ? { text: "Connecting to Apple model", progress: null }
+      ? { text: "Loading model", progress: null }
       : afm === "unavailable"
         ? { text: "Apple model not available", isError: true }
         : model === "lfm3" && lfm3.state === "loading"
