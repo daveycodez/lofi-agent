@@ -15,9 +15,6 @@ import { createStore } from "#/lib/store"
  * Web Worker (local-model.worker.ts) so loading and generating never block
  * the page. The worker holds one model at a time.
  */
-const SYSTEM_PROMPT =
-  "You are a helpful assistant running fully on the user's device. Be concise. Use Markdown when it helps."
-
 export type LocalModelStatus =
   | { state: "idle" }
   | {
@@ -156,7 +153,8 @@ export function localModelConnection(options: {
         return
       }
 
-      const chat: Array<ChatTurn> = [{ role: "system", content: SYSTEM_PROMPT }]
+      // No system prompt: just the conversation, as the model card shows.
+      const chat: Array<ChatTurn> = []
       for (const m of messages) {
         if (m.role !== "user" && m.role !== "assistant") continue
         const content = textOf(m)
