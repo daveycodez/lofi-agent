@@ -81,34 +81,25 @@ function post(message: WorkerRequest) {
 }
 
 /**
- * Experiment: ?upload=write or ?upload=write-wait picks how weights are sent
- * to the GPU (remembered, since sending a message rewrites the URL).
+ * Experiments: ?upload=write|write-wait picks how weights are sent to the GPU,
+ * ?wait=1000&every=32 pauses 1 s after every 32 MB loaded. Read once when the
+ * page opens, because sending a message rewrites the URL to ?thread=.
  */
+const experimentParams =
+  typeof window === "undefined"
+    ? new URLSearchParams()
+    : new URLSearchParams(window.location.search)
+const experiment = (key: string) => experimentParams.get(key)
+
 function uploadMode(): UploadMode {
-  try {
-    const fromUrl = new URLSearchParams(window.location.search).get("upload")
-    if (fromUrl) localStorage.setItem("lofi-agent:upload", fromUrl)
-    const mode = fromUrl ?? localStorage.getItem("lofi-agent:upload")
-    return mode === "write" || mode === "write-wait" ? mode : "default"
-  } catch {
-    return "default"
-  }
+  const mode = experiment("upload")
+  return mode === "write" || mode === "write-wait" ? mode : "default"
 }
 
-/** Experiment: ?wait=1000&every=32 pauses 1 s after every 32 MB loaded. */
 function loadPause(): LoadPause {
-  try {
-    const params = new URLSearchParams(window.location.search)
-    for (const key of ["wait", "every"]) {
-      const value = params.get(key)
-      if (value !== null) localStorage.setItem(`lofi-agent:${key}`, value)
-    }
-    return {
-      ms: Number(localStorage.getItem("lofi-agent:wait")) || 0,
-      everyMb: Number(localStorage.getItem("lofi-agent:every")) || 64
-    }
-  } catch {
-    return { ms: 0, everyMb: 64 }
+  return {
+    ms: Number(experiment("wait")) || 0,
+    everyMb: Number(experiment("every")) || 64
   }
 }
 
