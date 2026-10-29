@@ -348,7 +348,7 @@ function Composer({
               submit()
             }
           }}
-          className="min-h-0 w-full flex-none resize-none px-3.5 py-0"
+          className="min-h-0 w-full flex-none resize-none px-3.5 py-0 text-base"
         />
         <InputGroup.Suffix className="flex w-full items-center gap-1.5 px-3 py-0">
           <ModelSelect />
@@ -459,7 +459,7 @@ function EditComposer({
           onKeyDown={(e) => {
             if (e.key === "Escape") onCancel()
           }}
-          className="min-h-0 w-full flex-none resize-none px-3.5 py-0"
+          className="min-h-0 w-full flex-none resize-none px-3.5 py-0 text-base"
         />
         <InputGroup.Suffix className="flex w-full items-center justify-end gap-1.5 px-3 py-0">
           <Button size="sm" variant="ghost" onPress={onCancel}>
