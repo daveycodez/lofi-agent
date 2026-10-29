@@ -38,17 +38,90 @@ function parseValue(raw: string): unknown {
   }
 }
 
+/** After a value: the next argument (`, name=`), or the end of the call. */
+const VALUE_END = /^\s*(?:,\s*[A-Za-z_]\w*\s*=|,?\s*\)|$)/
+
+/**
+ * Where the string starting at `body[start]` ends (the index of its closing
+ * quote). The model doesn't escape quotes inside its strings ('JWST's
+ * findings'), so a quote only closes the string when the argument ends
+ * after it; otherwise it's part of the text.
+ */
+function stringEnd(body: string, start: number) {
+  const quote = body[start]
+  let last = -1
+  for (let i = start + 1; i < body.length; i++) {
+    if (body[i] === "\\") i++
+    else if (body[i] === quote) {
+      if (VALUE_END.test(body.slice(i + 1))) return i
+      last = i
+    }
+  }
+  return last
+}
+
+/** A Python string literal's text, `\'` and `\"` included. */
+function stringText(raw: string) {
+  const inner = raw.slice(1, -1)
+  try {
+    const escaped = inner.replace(/\\'/g, "'").replace(/(^|[^\\])"/g, '$1\\"')
+    return JSON.parse(`"${escaped}"`) as string
+  } catch {
+    return inner
+  }
+}
+
+/** Where a `[…]` or `{…}` starting at `body[start]` ends, strings skipped. */
+function bracketEnd(body: string, start: number) {
+  let depth = 0
+  for (let i = start; i < body.length; i++) {
+    const c = body[i]
+    if (c === '"' || c === "'") {
+      const end = stringEnd(body, i)
+      if (end < 0) return -1
+      i = end
+    } else if (c === "[" || c === "{") depth++
+    else if ((c === "]" || c === "}") && --depth === 0) return i
+  }
+  return -1
+}
+
 /** `[name(a="x", b=2), other()]` → calls. */
 function parsePythonic(body: string) {
   const calls: Array<ParsedToolCall> = []
-  const call =
-    /([A-Za-z_][\w.-]*)\(((?:[^()"']|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*)\)/g
-  for (const m of body.matchAll(call)) {
+  const callStart = /([A-Za-z_][\w.-]*)\(/g
+  let m: RegExpExecArray | null
+  while ((m = callStart.exec(body))) {
     const args: Record<string, unknown> = {}
-    const arg =
-      /(\w+)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\[[^\]]*\]|\{[^}]*\}|[^,]+)/g
-    for (const a of m[2].matchAll(arg)) args[a[1]] = parseValue(a[2])
+    let i = m.index + m[0].length
+    for (;;) {
+      const key = /^\s*([A-Za-z_]\w*)\s*=\s*/.exec(body.slice(i))
+      if (!key) break
+      i += key[0].length
+      const first = body[i]
+      let end: number
+      if (first === '"' || first === "'") {
+        end = stringEnd(body, i)
+        if (end < 0) break
+        args[key[1]] = stringText(body.slice(i, end + 1))
+      } else if (first === "[" || first === "{") {
+        end = bracketEnd(body, i)
+        if (end < 0) break
+        args[key[1]] = parseValue(body.slice(i, end + 1))
+      } else {
+        const rest = /^[^,)]*/.exec(body.slice(i))?.[0] ?? ""
+        end = i + rest.length - 1
+        args[key[1]] = parseValue(rest)
+      }
+      i = end + 1
+      const comma = /^\s*,/.exec(body.slice(i))
+      if (!comma) break
+      i += comma[0].length
+    }
     calls.push({ name: m[1], args })
+    // The next call starts after this one's closing parenthesis.
+    const close = body.indexOf(")", i)
+    callStart.lastIndex = close < 0 ? body.length : close + 1
   }
   return calls
 }
