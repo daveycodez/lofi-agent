@@ -6,6 +6,10 @@
   .markdown > * + * {
     margin-top: 0.75em;
   }
+  /* Keep single line breaks from chat replies (poems, addresses, lists without markers). */
+  .markdown p {
+    white-space: pre-line;
+  }
   .markdown h1,
   .markdown h2,
   .markdown h3 {
