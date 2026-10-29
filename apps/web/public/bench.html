@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Tool-calling bench</title>
+<style>
+  body { font: 14px system-ui; margin: 16px; }
+  table { border-collapse: collapse; margin-top: 12px; }
+  td, th { border: 1px solid #ccc; padding: 4px 8px; vertical-align: top; }
+  pre { white-space: pre-wrap; max-width: 520px; margin: 0; font-size: 11px; }
+</style>
+</head>
+<body>
+<h1>Tool-calling bench (temporary, not committed)</h1>
+<p id="status">idle</p>
+<div id="out"></div>
+<script type="module">
+const MODELS = {
+  "lfm2.5-1.2b": { id: "LiquidAI/LFM2.5-1.2B-Instruct-ONNX" },
+  "lfm2.5-1.2b-thinking": { id: "LiquidAI/LFM2.5-1.2B-Thinking-ONNX", thinking: true },
+  "qwen3.5-0.8b": { id: "onnx-community/Qwen3.5-0.8B-Text-ONNX" },
+  "qwen3-0.6b": { id: "onnx-community/Qwen3-0.6B-ONNX" },
+  "lfm2-700m": { id: "onnx-community/LFM2-700M-ONNX" },
+  "granite-4.0-350m": { id: "onnx-community/granite-4.0-350m-ONNX" },
+  "lfm3-1.7b": { id: "onnx-community/LFM3-1.7B-ONNX", opfs: "lfm3-1.7b-q4f16.onnx_data" }
+}
+
+const WORKER = `
+const TOOLS = [
+  { type: "function", function: { name: "get_weather", description: "Get the current weather for a city.",
+    parameters: { type: "object", properties: { city: { type: "string", description: "City name" }, unit: { type: "string", enum: ["celsius", "fahrenheit"] } }, required: ["city"] } } },
+  { type: "function", function: { name: "add_numbers", description: "Add two numbers together.",
+    parameters: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] } } },
+  { type: "function", function: { name: "create_event", description: "Add an event to the user's calendar.",
+    parameters: { type: "object", properties: { title: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, time: { type: "string", description: "HH:MM, 24-hour" } }, required: ["title", "date"] } } },
+  { type: "function", function: { name: "send_email", description: "Send an email.",
+    parameters: { type: "object", properties: { to: { type: "string" }, subject: { type: "string" }, body: { type: "string" } }, required: ["to", "body"] } } },
+  { type: "function", function: { name: "search_web", description: "Search the web for up-to-date information.",
+    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } }
+]
+const lc = (v) => String(v ?? "").toLowerCase()
+const CASES = [
+  { id: "weather", prompt: "What's the weather in Tokyo right now?", names: ["get_weather"], check: (c) => lc(c[0].args.city).includes("tokyo") },
+  { id: "weather-unit", prompt: "How hot is it in Phoenix? Give it to me in Fahrenheit.", names: ["get_weather"], check: (c) => lc(c[0].args.city).includes("phoenix") && lc(c[0].args.unit) === "fahrenheit" },
+  { id: "add", prompt: "Use the calculator tool: what is 1234.5 plus 8765.25?", names: ["add_numbers"], check: (c) => [Number(c[0].args.a), Number(c[0].args.b)].sort().join() === [1234.5, 8765.25].sort().join() },
+  { id: "two-cities", prompt: "Compare the current weather in Paris and Berlin.", names: ["get_weather", "get_weather"], check: (c) => { const s = c.map((x) => lc(x.args.city)).join(" "); return s.includes("paris") && s.includes("berlin") } },
+  { id: "event", prompt: "Put a dentist appointment on my calendar for 2026-11-03 at 15:30.", names: ["create_event"], check: (c) => lc(c[0].args.title).includes("dentist") && String(c[0].args.date).includes("2026-11-03") && String(c[0].args.time ?? "").includes("15:30") },
+  { id: "email", prompt: "Email bob@example.com and tell him I'm running 10 minutes late.", names: ["send_email"], check: (c) => lc(c[0].args.to) === "bob@example.com" && /late|10/.test(lc(c[0].args.body)) },
+  { id: "search", prompt: "Search the web for the release date of the next iPhone.", names: ["search_web"], check: (c) => lc(c[0].args.query).includes("iphone") },
+  { id: "no-tool-haiku", prompt: "Write a haiku about autumn.", names: [] },
+  { id: "no-tool-chat", prompt: "Thanks, that's all for now!", names: [] },
+  { id: "event-relative", prompt: "Today is 2026-11-02. Add lunch with Sam tomorrow at noon to my calendar.", names: ["create_event"], check: (c) => /sam|lunch/.test(lc(c[0].args.title)) && String(c[0].args.date).includes("2026-11-03") && /^12:00/.test(String(c[0].args.time ?? "")) },
+  { id: "email-subject", prompt: "Send an email to alice@corp.com with the subject 'Q3 report' saying the numbers are attached.", names: ["send_email"], check: (c) => lc(c[0].args.to) === "alice@corp.com" && lc(c[0].args.subject).includes("q3") && /attach/.test(lc(c[0].args.body)) },
+  { id: "pick-search", prompt: "Who won the most recent Formula 1 race?", names: ["search_web"], check: (c) => /f(ormula)?\s*1|race/.test(lc(c[0].args.query)) },
+  { id: "mixed-tools", prompt: "Check the weather in Rome and also add 17 and 25 for me.", names: ["add_numbers", "get_weather"], check: (c) => { const w = c.find((x) => x.name === "get_weather"); const a = c.find((x) => x.name === "add_numbers"); return lc(w.args.city).includes("rome") && [Number(a.args.a), Number(a.args.b)].sort().join() === [17, 25].sort().join() } },
+  { id: "missing-info", prompt: "Send an email for me.", names: [] },
+  { id: "no-tool-translate", prompt: "Translate 'good morning' into Spanish.", names: [] }
+]
+
+// Parse every tool-call format these families use.
+function pyValue(s) {
+  s = s.trim()
+  if (/^(['"]).*\\1$/s.test(s)) return s.slice(1, -1)
+  if (s === "True" || s === "true") return true
+  if (s === "False" || s === "false") return false
+  if (s === "None" || s === "null") return null
+  const n = Number(s); if (!Number.isNaN(n) && s !== "") return n
+  try { return JSON.parse(s) } catch { return s }
+}
+function parsePythonic(body) {
+  const calls = []
+  const re = /([A-Za-z_][\\w.]*)\\(((?:[^()"']|"(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*')*)\\)/g
+  let m
+  while ((m = re.exec(body))) {
+    const args = {}
+    const are = /(\\w+)\\s*=\\s*("(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'|[^,]+)/g
+    let a
+    while ((a = are.exec(m[2]))) args[a[1]] = pyValue(a[2])
+    calls.push({ name: m[1], args })
+  }
+  return calls
+}
+function parseCalls(raw) {
+  const calls = []
+  for (const m of raw.matchAll(/<tool_call>([\\s\\S]*?)(?:<\\/tool_call>|$)/g)) {
+    const body = m[1].trim()
+    const fn = [...body.matchAll(/<function=([^>]+)>([\\s\\S]*?)<\\/function>/g)]
+    if (fn.length) {
+      for (const f of fn) {
+        const args = {}
+        for (const p of f[2].matchAll(/<parameter=([^>]+)>([\\s\\S]*?)<\\/parameter>/g)) args[p[1].trim()] = pyValue(p[2].trim())
+        calls.push({ name: f[1].trim(), args })
+      }
+      continue
+    }
+    try { const j = JSON.parse(body); calls.push({ name: j.name, args: typeof j.arguments === "string" ? JSON.parse(j.arguments) : (j.arguments ?? j.parameters ?? {}) }); continue } catch {}
+    calls.push(...parsePythonic(body))
+  }
+  if (calls.length) return calls
+  for (const m of raw.matchAll(/<\\|tool_call_start\\|>([\\s\\S]*?)(?:<\\|tool_call_end\\|>|$)/g)) calls.push(...parsePythonic(m[1]))
+  return calls
+}
+
+onmessage = async ({ data: { key, model } }) => {
+  let live = 0, peak = 0
+  const sizes = new WeakMap()
+  const adapter = await navigator.gpu.requestAdapter()
+  const proto = Object.getPrototypeOf(await adapter.requestDevice())
+  const create = proto.createBuffer
+  proto.createBuffer = function (d) { const b = create.call(this, d); sizes.set(b, d.size); live += d.size; peak = Math.max(peak, live); return b }
+  const destroy = GPUBuffer.prototype.destroy
+  GPUBuffer.prototype.destroy = function () { const s = sizes.get(this); if (s) { live -= s; sizes.delete(this) } return destroy.call(this) }
+
+  const tf = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2")
+  tf.env.fetch = (url, init) => fetch(url, { ...init, referrerPolicy: "no-referrer" })
+  const t0 = performance.now()
+  const opts = { dtype: "q4f16", device: "webgpu" }
+  let handle
+  if (model.opfs) {
+    const dir = await navigator.storage.getDirectory()
+    handle = await (await dir.getFileHandle(model.opfs)).createSyncAccessHandle()
+    const size = handle.getSize()
+    const view = new Uint8Array(0)
+    Object.defineProperties(view, { byteLength: { get: () => size }, length: { get: () => size },
+      subarray: { value: (b = 0, e = size) => { const s = new Uint8Array(e - b); handle.read(s, { at: b }); return s } } })
+    Object.assign(opts, { use_external_data_format: 0, session_options: { externalData: [{ path: "model_q4f16.onnx_data", data: view }] } })
+  }
+  const tokenizer = await tf.AutoTokenizer.from_pretrained(model.id)
+  const lm = await tf.AutoModelForCausalLM.from_pretrained(model.id, opts)
+  handle?.close()
+  const loadMs = performance.now() - t0
+  const afterLoad = live
+  peak = live
+
+  const results = []
+  let genTokens = 0, genMs = 0
+  for (const c of CASES) {
+    const messages = [{ role: "user", content: c.prompt }]
+    const prompt = tokenizer.apply_chat_template(messages, { tools: TOOLS, add_generation_prompt: true, tokenize: false, enable_thinking: !!model.thinking })
+    const inputs = tokenizer(prompt, { add_special_tokens: false })
+    const n = inputs.input_ids.dims[1]
+    const g0 = performance.now()
+    const out = await lm.generate({ ...inputs, max_new_tokens: model.thinking ? 1536 : 200, do_sample: false })
+    const ms = performance.now() - g0
+    const newIds = out.slice(null, [n, null])
+    const newCount = out.dims[1] - n
+    genTokens += newCount; genMs += ms
+    let raw = tokenizer.batch_decode(newIds, { skip_special_tokens: false })[0]
+    // Stop at the end of the model's turn (some configs don't stop generation there).
+    const ends = ["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<end_of_turn>", "<|eot_id|>"]
+    for (const e of ends) { const i = raw.indexOf(e); if (i >= 0) raw = raw.slice(0, i) }
+    const visible = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, "")
+    const calls = parseCalls(visible)
+    const names = calls.map((x) => x.name).sort()
+    const nameOk = JSON.stringify(names) === JSON.stringify([...c.names].sort())
+    let argsOk = nameOk
+    if (nameOk && c.check) { try { argsOk = !!c.check(calls) } catch { argsOk = false } }
+    results.push({ id: c.id, pass: nameOk && argsOk, nameOk, calls: JSON.stringify(calls), raw: raw.slice(0, 400) })
+  }
+  postMessage({ key, loadS: +(loadMs / 1000).toFixed(1), gpuAfterLoadMB: Math.round(afterLoad / 1e6), gpuPeakMB: Math.round(peak / 1e6),
+    tokPerS: +(genTokens / (genMs / 1000)).toFixed(1), score: results.filter((r) => r.pass).length + "/" + results.length, results })
+}
+`
+
+const status = document.getElementById("status")
+const out = document.getElementById("out")
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c])
+window.bench = {}
+
+async function runOne(key) {
+  status.textContent = `running ${key}…`
+  const w = new Worker(URL.createObjectURL(new Blob([WORKER], { type: "text/javascript" })), { type: "module" })
+  const r = await new Promise((res) => { w.onmessage = (e) => res(e.data); w.onerror = (e) => res({ key, error: e.message }); w.postMessage({ key, model: MODELS[key] }) })
+  w.terminate()
+  window.bench[key] = r
+  const rows = (r.results ?? []).map((x) => `<tr><td>${x.id}</td><td>${x.pass ? "✅" : x.nameOk ? "⚠️ args" : "❌"}</td><td><pre>${esc(x.calls)}</pre></td><td><pre>${esc(x.raw)}</pre></td></tr>`).join("")
+  out.insertAdjacentHTML("beforeend", `<h2>${key}: ${r.score ?? "error"} · ${r.tokPerS ?? "-"} tok/s · GPU ${r.gpuAfterLoadMB ?? "-"} MB (peak ${r.gpuPeakMB ?? "-"}) · load ${r.loadS ?? "-"} s</h2>${r.error ? `<p>${esc(r.error)}</p>` : ""}<table>${rows}</table>`)
+  return r
+}
+
+const keys = (new URLSearchParams(location.search).get("models") ?? Object.keys(MODELS).join(",")).split(",")
+for (const key of keys) await runOne(key)
+status.textContent = "done"
+window.benchDone = true
+</script>
+<script>
+  // Pass the model table into the module above.
+</script>
+</body>
+</html>
