@@ -336,14 +336,13 @@ async function loadRuntime(modelId: string): Promise<Runtime> {
       use_external_data_format: 0,
       session_options: {
         externalData: [{ path: WEIGHTS, data: weights.data }],
-        // onnxruntime's default ("bucket") keeps a GPU buffer of every size
-        // it has used. While generating, attention buffers grow a token at a
-        // time, so that cache grows too: hundreds of MB over a long reply,
-        // past an iPhone's memory limit. lazyRelease frees buffers after
-        // each step instead.
-        executionProviders: [
-          { name: "webgpu", storageBufferCacheMode: "lazyRelease" }
-        ]
+        // onnxruntime's default buffer cache ("bucket") reuses GPU buffers
+        // between steps. "lazyRelease" frees them after every step instead,
+        // which creates and destroys ~27 MB of buffers per token for LFM3;
+        // WebKit releases destroyed buffers late, so a long reply climbed
+        // past an iPhone's memory limit (on a Mac: 1,672 MB at 1,000 tokens
+        // and climbing, against 1,137 MB and flat with bucket).
+        executionProviders: ["webgpu"]
       }
     })
     return { tf, tokenizer, model }
