@@ -1,22 +1,14 @@
 import ChevronDown from "@gravity-ui/icons/ChevronDown"
-import {
-  Button,
-  ListBox,
-  Popover,
-  ProgressCircle,
-  Spinner
-} from "@heroui/react"
+import { Button, ListBox, Popover, Spinner } from "@heroui/react"
 import { useRef, useState } from "react"
 
 import {
   afmStatus,
   checkAfm,
-  loadModel,
   modelInfo,
   modelStore,
   useCurrentModel,
-  useModels,
-  useModelStatus
+  useModels
 } from "#/lib/llm/models"
 import type { ModelId } from "#/lib/llm/models"
 import { AppleSetupModal } from "#/components/chat/apple-setup-modal"
@@ -34,7 +26,6 @@ export function ModelSelect() {
   const model = useCurrentModel()
   const models = useModels()
   const afm = afmStatus.use()
-  const local = useModelStatus(model)
   const [isOpen, setIsOpen] = useState(false)
   const current = modelInfo(model)
   // Counts picks, so a slow Apple check can't undo a newer choice.
@@ -62,31 +53,18 @@ export function ModelSelect() {
     }
     setPending(null)
     afmStatus.set("idle")
+    // A local model downloads when the first message is sent to it.
     modelStore.set(key)
-    // Start loading (downloading the first time) as soon as it's picked.
-    loadModel(key)
   }
 
-  // `progress` is 0-1 for a determinate download, null to just show activity.
-  const status: {
-    text: string
-    progress?: number | null
-    isError?: boolean
-  } | null =
+  // Apple's model is checked when picked; local models report their
+  // download in the reply.
+  const status: { text: string; isError?: boolean } | null =
     afm === "checking"
-      ? { text: "Loading model", progress: null }
+      ? { text: "Loading model" }
       : afm === "unavailable"
         ? { text: "Apple model not available", isError: true }
-        : local.state === "loading"
-          ? !local.cached && local.progress < 1
-            ? {
-                text: `Downloading ${Math.round(local.progress * 100)}%`,
-                progress: local.progress
-              }
-            : { text: "Loading model", progress: null }
-          : local.state === "error"
-            ? { text: "Couldn't load", isError: true }
-            : null
+        : null
 
   return (
     <div className="flex items-center gap-2">
@@ -137,19 +115,7 @@ export function ModelSelect() {
         <span
           className={`flex items-center gap-1.5 text-xs whitespace-nowrap tabular-nums ${status.isError ? "text-danger" : "text-muted"}`}
         >
-          {status.progress === null && <Spinner size="sm" color="current" />}
-          {typeof status.progress === "number" && (
-            <ProgressCircle
-              aria-label={status.text}
-              size="sm"
-              value={status.progress * 100}
-            >
-              <ProgressCircle.Track>
-                <ProgressCircle.TrackCircle />
-                <ProgressCircle.FillCircle className="stroke-current" />
-              </ProgressCircle.Track>
-            </ProgressCircle>
-          )}
+          {!status.isError && <Spinner size="sm" color="current" />}
           {status.text}
         </span>
       )}

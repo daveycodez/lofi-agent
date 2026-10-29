@@ -49,13 +49,11 @@ import type { Source } from "#/lib/sources"
 import { splitThinking } from "#/lib/thinking"
 import {
   canThink,
-  loadModel,
   routedConnection,
   thinkingStore,
   useCurrentModel,
   useModelStatus
 } from "#/lib/llm/models"
-import type { ModelId } from "#/lib/llm/models"
 import { chatPersistence, touchThread } from "#/lib/threads"
 
 const SUGGESTIONS = [
@@ -299,6 +297,15 @@ export function Thread({
   useEffect(checkMcpServers, [])
   const [composerValue, setComposerValue] = useState("")
   const isEmpty = messages.length === 0 && !isHydrating
+  // A model downloads when the first message is sent to it; the reply's
+  // "Thinking…" shows the download's progress until it's done.
+  const modelStatus = useModelStatus(useCurrentModel())
+  const downloading =
+    modelStatus.state === "loading" &&
+    !modelStatus.cached &&
+    modelStatus.progress < 1
+      ? modelStatus.progress
+      : null
   const replySources = useMemo(() => sourcesByReply(messages), [messages])
 
   // Response time per assistant message (this session only).
@@ -420,6 +427,7 @@ export function Thread({
                     continues={messages[index - 1]?.role === "assistant"}
                     isLast={isLast}
                     isRunning={isLoading && isLast}
+                    downloading={isLast ? downloading : null}
                     seconds={timings[message.id]}
                     error={isLast && !isLoading ? error : undefined}
                     onReload={() => void reload()}
@@ -437,6 +445,7 @@ export function Thread({
                 text=""
                 isLast
                 isRunning={isLoading}
+                downloading={downloading}
                 error={isLoading ? undefined : error}
                 onReload={() => void reload()}
               />
@@ -507,10 +516,8 @@ function Composer({
   onStop: () => void
 }) {
   const textAreaRef = useAutoGrow(value, 192)
-  // Can't send while the selected model is still downloading.
   const model = useCurrentModel()
-  const isModelLoading = useModelStatus(model).state === "loading"
-  const canSend = !!value.trim() && !isRunning && !isModelLoading
+  const canSend = !!value.trim() && !isRunning
 
   // Dictation adds to whatever was already typed when it started.
   const dictation = useDictation()
@@ -556,7 +563,7 @@ function Composer({
         />
         <InputGroup.Suffix className="flex w-full items-center gap-1.5 px-3 py-0">
           <ModelSelect />
-          {canThink(model) && <ThinkToggle model={model} />}
+          {canThink(model) && <ThinkToggle />}
           <div className="ms-auto flex items-center gap-1">
             {dictation.isSupported && (
               <Tooltip delay={300}>
@@ -728,7 +735,7 @@ function EditComposer({
 }
 
 /** Turns on reasoning before answering, for models that can think. */
-function ThinkToggle({ model }: { model: ModelId }) {
+function ThinkToggle() {
   const isThinking = thinkingStore.use()
   return (
     <Tooltip delay={300}>
@@ -738,8 +745,6 @@ function ThinkToggle({ model }: { model: ModelId }) {
         isSelected={isThinking}
         onChange={(on) => {
           thinkingStore.set(on)
-          // LFM2.5 thinks with a separate model: start loading it now.
-          if (model === "lfm2.5") loadModel(model)
         }}
         aria-label="Think before answering"
         className={isThinking ? undefined : "text-muted"}
@@ -796,6 +801,7 @@ function AssistantMessage({
   continues = false,
   isLast,
   isRunning,
+  downloading = null,
   seconds,
   error,
   onReload,
@@ -810,6 +816,8 @@ function AssistantMessage({
   continues?: boolean
   isLast: boolean
   isRunning: boolean
+  /** How much of the model has downloaded (0-1), while it downloads. */
+  downloading?: number | null
   seconds?: number
   error?: Error
   onReload: () => void
@@ -838,7 +846,9 @@ function AssistantMessage({
         toolCalls.length === 0 && (
           <div className="flex items-center gap-2 text-sm text-muted">
             <Spinner size="sm" color="current" />
-            Thinking…
+            {downloading === null
+              ? "Thinking…"
+              : `Downloading ${Math.round(downloading * 100)}%`}
           </div>
         )
       )}
