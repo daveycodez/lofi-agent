@@ -19,6 +19,7 @@ import {
   useModelStatus
 } from "#/lib/llm/models"
 import type { ModelId } from "#/lib/llm/models"
+import { AppleSetupModal } from "#/components/chat/apple-setup-modal"
 
 /** Provider logo. The SVGs are drawn in black, so invert them in dark mode. */
 function ModelLogo({ src }: { src: string }) {
@@ -40,6 +41,8 @@ export function ModelSelect() {
   const lastPick = useRef(0)
   // The Apple model while its check runs, so the checkmark moves right away.
   const [pending, setPending] = useState<ModelId | null>(null)
+  // Setup steps, shown when Apple's model can't be reached.
+  const [setupOpen, setSetupOpen] = useState(false)
 
   const select = async (key: ModelId) => {
     setIsOpen(false)
@@ -53,6 +56,7 @@ export function ModelSelect() {
       if (pick !== lastPick.current) return
       setPending(null)
       afmStatus.set(isAvailable ? "idle" : "unavailable")
+      setSetupOpen(!isAvailable)
       if (isAvailable) modelStore.set(key)
       return
     }
@@ -86,6 +90,12 @@ export function ModelSelect() {
 
   return (
     <div className="flex items-center gap-2">
+      <AppleSetupModal
+        isOpen={setupOpen}
+        onOpenChange={setSetupOpen}
+        onRetry={() => void select("apple-fm")}
+        isChecking={afm === "checking"}
+      />
       <Popover isOpen={isOpen} onOpenChange={setIsOpen}>
         <Button
           size="sm"
