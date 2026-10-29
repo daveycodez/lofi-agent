@@ -155,11 +155,22 @@ export const useModelStatus = (id: ModelId) => {
   return (modelId ? localModelStatus(modelId) : IDLE).use()
 }
 
-export const modelInfo = (id: ModelId) =>
-  MODELS.find((m) => m.id === id) ?? MODELS[0]
+/**
+ * The model to start with, and to fall back on: LFM3 Web runs anywhere,
+ * iPhone Safari included, with thinking on (see `thinkingStore`).
+ */
+export const DEFAULT_MODEL: ModelId = "lfm3-web"
 
-/** The model the user picked. LFM3 runs anywhere, so it's the default. */
-export const modelStore = createStore<ModelId>("lfm3", "lofi-agent:model")
+export const modelInfo = (id: ModelId) =>
+  MODELS.find((m) => m.id === id) ??
+  MODELS.find((m) => m.id === DEFAULT_MODEL) ??
+  MODELS[0]
+
+/** The model the user picked; saved only once they pick one. */
+export const modelStore = createStore<ModelId>(
+  DEFAULT_MODEL,
+  "lofi-agent:model"
+)
 
 /** Apple's model only exists on macOS and iOS (iPadOS reports itself as a Mac). */
 const isApplePlatform = () =>
@@ -171,7 +182,7 @@ const useIsApplePlatform = () =>
   useSyncExternalStore(noopSubscribe, isApplePlatform, () => false)
 
 const onPlatform = (id: ModelId, isApple: boolean): ModelId =>
-  id === "apple-fm" && !isApple ? "lfm3" : id
+  id === "apple-fm" && !isApple ? DEFAULT_MODEL : id
 
 export const currentModel = () =>
   onPlatform(modelStore.get(), isApplePlatform())
