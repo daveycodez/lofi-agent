@@ -85,6 +85,7 @@ function IconAction({
         size="sm"
         variant="ghost"
         aria-label={label}
+        className="text-muted"
         {...props}
       >
         {children}
@@ -267,6 +268,7 @@ export function Thread({
             <IconAction
               label="Scroll to bottom"
               variant="outline"
+              className=""
               onPress={() => scrollToBottom()}
             >
               <ArrowDown />
