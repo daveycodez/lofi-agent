@@ -47,8 +47,6 @@ const WEIGHTS_URL = `https://huggingface.co/${MODEL_ID}/resolve/main/onnx/${WEIG
 /** Where the weights live on disk, plus a marker written once they're complete. */
 const OPFS_FILE = "lfm3-1.7b-q4f16.onnx_data"
 const OPFS_DONE = `${OPFS_FILE}.done`
-/** Read and write in 64 MB pieces so no single transfer is huge. */
-const CHUNK = 64 * 1024 * 1024
 
 /** OPFS sync access handles (worker-only, not in the DOM typings). */
 type SyncAccessHandle = {
@@ -111,21 +109,30 @@ async function downloadWeights(onProgress: (progress: number) => void) {
   return true
 }
 
-/** Reads the weights from disk into one buffer, in pieces. */
-async function readWeights() {
+/**
+ * Opens the weights on disk as a stand-in for the whole buffer. ONNX Runtime
+ * only asks the buffer for its size and for one tensor's slice at a time, so
+ * each slice is read from disk when asked. This keeps the 1.09 GB file out of
+ * memory: iPhone Safari kills the page past 2 GB, and a full copy plus the GPU
+ * upload went over. Call close() once the model is created.
+ */
+async function openWeights() {
   const dir = await navigator.storage.getDirectory()
   const handle = await openSync(await dir.getFileHandle(OPFS_FILE))
-  try {
-    const buffer = new Uint8Array(handle.getSize())
-    for (let at = 0; at < buffer.length; at += CHUNK) {
-      handle.read(buffer.subarray(at, Math.min(at + CHUNK, buffer.length)), {
-        at
-      })
+  const size = handle.getSize()
+  const view = new Uint8Array(0)
+  Object.defineProperties(view, {
+    byteLength: { get: () => size },
+    length: { get: () => size },
+    subarray: {
+      value: (begin = 0, end = size) => {
+        const slice = new Uint8Array(end - begin)
+        handle.read(slice, { at: begin })
+        return slice
+      }
     }
-    return buffer
-  } finally {
-    handle.close()
-  }
+  })
+  return { data: view, close: () => handle.close() }
 }
 
 /** Frees the 1 GB copy an earlier version kept in Cache Storage. */
@@ -170,14 +177,15 @@ function load() {
     const tokenizer = await tf.AutoTokenizer.from_pretrained(MODEL_ID)
     // Hand ONNX Runtime the weights directly; Transformers.js would
     // otherwise download and cache them itself.
+    const weights = await openWeights()
     const model = await tf.AutoModelForCausalLM.from_pretrained(MODEL_ID, {
       dtype: "q4f16",
       device: "webgpu",
       use_external_data_format: 0,
       session_options: {
-        externalData: [{ path: WEIGHTS_NAME, data: await readWeights() }]
+        externalData: [{ path: WEIGHTS_NAME, data: weights.data }]
       }
-    })
+    }).finally(weights.close)
     ctx.postMessage({ type: "ready" })
     return { tf, tokenizer, model }
   })().catch((error: unknown) => {
