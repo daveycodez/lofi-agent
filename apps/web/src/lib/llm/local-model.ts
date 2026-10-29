@@ -127,6 +127,16 @@ export function loadLocalModel(modelId: string) {
 }
 
 /** The text of a message's content (text parts only). */
+/**
+ * A tool result for the model. A failed tool gives its error message, so the
+ * model can see what went wrong and try again.
+ */
+function toolResultText(m: ModelMessage) {
+  const text = contentText(m.content)
+  if (m.error) return `Error: ${m.error}`
+  return text && text !== "null" ? text : "The tool returned nothing."
+}
+
 function contentText(content: ModelMessage["content"]) {
   if (typeof content === "string") return content
   return (content ?? [])
@@ -158,7 +168,7 @@ function toChatTurns(
   for (const m of convertMessagesToModelMessages(messages)) {
     const content = contentText(m.content)
     if (m.role === "tool") {
-      chat.push({ role: "tool", content })
+      chat.push({ role: "tool", content: toolResultText(m) })
       continue
     }
     const calls = (m.toolCalls ?? []).map((call) => ({

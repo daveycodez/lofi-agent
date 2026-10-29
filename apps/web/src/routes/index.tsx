@@ -14,7 +14,7 @@ import { v7 as uuidv7 } from "uuid"
 
 import { Thread } from "#/components/chat/thread"
 import { ThreadListSidebar } from "#/components/chat/thread-list-sidebar"
-import { SettingsModal } from "#/components/settings/settings-modal"
+import { McpServersModal } from "#/components/mcp/mcp-servers-modal"
 import { createStore } from "#/lib/store"
 import { archiveThread, deleteThread, threadsStore } from "#/lib/threads"
 
@@ -41,7 +41,7 @@ function Assistant() {
 
   const sidebarOpen = sidebarOpenStore.use()
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [mcpOpen, setMcpOpen] = useState(false)
   const meta = threadsStore.use().find((t) => t.id === threadId)
 
   const newThread = () => {
@@ -53,9 +53,9 @@ function Assistant() {
     activeId: threadId,
     onNewThread: newThread,
     onActiveRemoved: newThread,
-    onOpenSettings: () => {
+    onOpenMcpServers: () => {
       setDrawerOpen(false)
-      setSettingsOpen(true)
+      setMcpOpen(true)
     }
   }
 
@@ -91,7 +91,7 @@ function Assistant() {
         </Drawer.Content>
       </Drawer.Backdrop>
 
-      <SettingsModal isOpen={settingsOpen} onOpenChange={setSettingsOpen} />
+      <McpServersModal isOpen={mcpOpen} onOpenChange={setMcpOpen} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-separator px-4">

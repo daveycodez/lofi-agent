@@ -35,13 +35,16 @@ import {
 } from "@heroui/react"
 import type { UIMessage } from "@tanstack/ai"
 import { useChat } from "@tanstack/ai-react"
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { ComponentProps, ReactNode } from "react"
 
 import { Markdown } from "#/components/chat/markdown"
 import { ModelSelect } from "#/components/chat/model-select"
+import { SourceList } from "#/components/chat/sources"
 import { useDictation } from "#/lib/dictation"
 import { checkMcpServers, useMcpTools } from "#/lib/mcp"
+import { parseSources } from "#/lib/sources"
+import type { Source } from "#/lib/sources"
 import { splitThinking } from "#/lib/thinking"
 import {
   canThink,
@@ -121,6 +124,49 @@ function replyOf(message: UIMessage) {
   }
 }
 
+/** The sources in each tool result of a message, in order. */
+function sourceListsOf(message: UIMessage) {
+  return message.parts
+    .map((p) =>
+      p.type === "tool-call" && typeof p.output === "string"
+        ? parseSources(p.output)
+        : p.type === "tool-result" && typeof p.content === "string"
+          ? parseSources(p.content)
+          : []
+    )
+    .filter((list) => list.length > 0)
+}
+
+type ReplySources = {
+  /** Every source the reply's tools returned, once each. */
+  all: Array<Source>
+  /** The latest tool result's sources, which `[n]` in the answer refers to. */
+  cited: Array<Source>
+}
+
+/**
+ * Sources for each reply, keyed by the reply's last message. A reply that
+ * called tools spans several assistant messages: the calls, then the answer.
+ */
+function sourcesByReply(messages: ReadonlyArray<UIMessage>) {
+  const byReply = new Map<string, ReplySources>()
+  let lists: Array<Array<Source>> = []
+  messages.forEach((message, i) => {
+    if (message.role !== "assistant") {
+      lists = []
+      return
+    }
+    lists.push(...sourceListsOf(message))
+    if (messages[i + 1]?.role === "assistant" || lists.length === 0) return
+    const seen = new Set<string>()
+    byReply.set(message.id, {
+      all: lists.flat().filter((s) => !seen.has(s.url) && seen.add(s.url)),
+      cited: lists.at(-1) ?? []
+    })
+  })
+  return byReply
+}
+
 type ToolCallView = {
   id: string
   name: string
@@ -165,7 +211,8 @@ function ToolCallBlock({
             <Wrench />
           )}
           <span className="font-mono text-xs">{call.name}</span>
-          <Disclosure.Indicator />
+          {/* Buttons pull icons in by 2px; keep the caret 8px from the label. */}
+          <Disclosure.Indicator className="ms-0" />
         </Button>
       </Disclosure.Heading>
       <Disclosure.Content>
@@ -244,6 +291,7 @@ export function Thread({
   useEffect(checkMcpServers, [])
   const [composerValue, setComposerValue] = useState("")
   const isEmpty = messages.length === 0 && !isHydrating
+  const replySources = useMemo(() => sourcesByReply(messages), [messages])
 
   // Response time per assistant message (this session only).
   const [timings, setTimings] = useState<Record<string, number>>({})
@@ -359,6 +407,7 @@ export function Thread({
                   <AssistantMessage
                     key={message.id}
                     {...replyOf(message)}
+                    sources={replySources.get(message.id)}
                     // After a tool call, the reply goes on in a new message.
                     continues={messages[index - 1]?.role === "assistant"}
                     isLast={isLast}
@@ -718,7 +767,8 @@ function ThinkingBlock({
         >
           {isThinking && <Spinner size="sm" color="current" />}
           {isThinking ? "Thinking…" : "Thoughts"}
-          <Disclosure.Indicator />
+          {/* Buttons pull icons in by 2px; keep the caret 8px from the label. */}
+          <Disclosure.Indicator className="ms-0" />
         </Button>
       </Disclosure.Heading>
       <Disclosure.Content>
@@ -734,6 +784,7 @@ function AssistantMessage({
   text,
   thinking = "",
   toolCalls = [],
+  sources,
   continues = false,
   isLast,
   isRunning,
@@ -745,6 +796,8 @@ function AssistantMessage({
   text: string
   thinking?: string
   toolCalls?: Array<ToolCallView>
+  /** Sources from the reply's tool calls, shown under the answer. */
+  sources?: ReplySources
   /** Continues the assistant message before it, as part of the same reply. */
   continues?: boolean
   isLast: boolean
@@ -769,7 +822,7 @@ function AssistantMessage({
       ))}
       {text ? (
         <div className="markdown prose max-w-none wrap-break-word">
-          <Markdown>{text}</Markdown>
+          <Markdown sources={sources?.cited}>{text}</Markdown>
         </div>
       ) : (
         isRunning &&
@@ -780,6 +833,9 @@ function AssistantMessage({
             Thinking…
           </div>
         )
+      )}
+      {text && sources && sources.all.length > 0 && (
+        <SourceList sources={sources.all} />
       )}
       {error && (
         <Alert status="danger">

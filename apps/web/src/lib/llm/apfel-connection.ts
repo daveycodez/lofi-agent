@@ -17,7 +17,7 @@ type OpenAIToolCall = {
 }
 
 type OpenAIMessage =
-  | { role: "system" | "user"; content: string }
+  | { role: "user"; content: string }
   | {
       role: "assistant"
       content: string | null
@@ -25,8 +25,15 @@ type OpenAIMessage =
     }
   | { role: "tool"; tool_call_id: string; content: string }
 
-const SYSTEM_PROMPT =
-  "You are a helpful assistant running fully on the user's device. Be concise. Use Markdown when it helps."
+/**
+ * A tool result for the model. A failed tool gives its error message, so the
+ * model can see what went wrong and try again.
+ */
+function toolResultText(m: ModelMessage) {
+  const text = contentText(m.content)
+  if (m.error) return `Error: ${m.error}`
+  return text && text !== "null" ? text : "The tool returned nothing."
+}
 
 function contentText(content: ModelMessage["content"]) {
   if (typeof content === "string") return content
@@ -38,11 +45,16 @@ function contentText(content: ModelMessage["content"]) {
 function toOpenAIMessages(
   messages: Array<UIMessage> | Array<ModelMessage>
 ): Array<OpenAIMessage> {
-  const out: Array<OpenAIMessage> = [{ role: "system", content: SYSTEM_PROMPT }]
+  // No system prompt: just the conversation.
+  const out: Array<OpenAIMessage> = []
   for (const m of convertMessagesToModelMessages(messages)) {
     const content = contentText(m.content)
     if (m.role === "tool") {
-      out.push({ role: "tool", tool_call_id: m.toolCallId ?? "", content })
+      out.push({
+        role: "tool",
+        tool_call_id: m.toolCallId ?? "",
+        content: toolResultText(m)
+      })
     } else if (m.role === "assistant" && m.toolCalls?.length) {
       out.push({
         role: "assistant",

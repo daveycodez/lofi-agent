@@ -1,8 +1,9 @@
 /**
- * MCP servers the user adds. The browser connects to each one directly with
- * TanStack AI's MCP client (Streamable HTTP), so a server only works if it
- * allows requests from this site (CORS). The list, including any token,
- * stays in this browser's storage.
+ * MCP servers: the built-in ones, then those the user adds. The browser
+ * connects to each one directly with TanStack AI's MCP client (Streamable
+ * HTTP), so a server only works if it allows requests from this site
+ * (CORS). The list, on/off choices and any tokens stay in this browser's
+ * storage.
  */
 import { toolDefinition } from "@tanstack/ai"
 import type { JSONSchema } from "@tanstack/ai"
@@ -10,6 +11,7 @@ import type { MCPClient } from "@tanstack/ai-mcp"
 import { useMemo } from "react"
 import { v7 as uuidv7 } from "uuid"
 
+import { compactToolResult } from "#/lib/sources"
 import { createStore } from "#/lib/store"
 
 export type McpServer = {
@@ -19,6 +21,12 @@ export type McpServer = {
   /** Sent as `Authorization: Bearer <token>` when set. */
   token?: string
   enabled: boolean
+  /**
+   * Comes with the app: always listed first, and can't be removed. Its tools
+   * are offered first too: small models tend to pick the first tool that
+   * might fit, so the general ones should lead.
+   */
+  builtIn?: boolean
 }
 
 export type McpTool = {
@@ -33,10 +41,67 @@ export type McpServerStatus =
   | { state: "connected"; tools: Array<McpTool> }
   | { state: "error"; message: string }
 
-export const mcpServersStore = createStore<Array<McpServer>>(
+/** Servers that come with the app. They're on unless the user turns them off. */
+const BUILT_IN_SERVERS: Array<Omit<McpServer, "enabled">> = [
+  {
+    // Web search. Works without a key (rate-limited per user).
+    id: "built-in:exa",
+    name: "Exa Web Search",
+    url: "https://mcp.exa.ai/mcp",
+    builtIn: true
+  }
+]
+
+/** On or off for each built-in server, by id. Missing means on. */
+const builtInEnabledStore = createStore<Record<string, boolean>>(
+  {},
+  "lofi-agent:mcp-built-in"
+)
+
+/** Servers the user added. */
+const customServersStore = createStore<Array<McpServer>>(
   [],
   "lofi-agent:mcp-servers"
 )
+
+/** A URL in one form, to spot the same server added twice. */
+function sameUrl(url: string) {
+  try {
+    const u = new URL(url.trim())
+    return `${u.origin}${u.pathname.replace(/\/+$/, "")}${u.search}`
+  } catch {
+    return url.trim()
+  }
+}
+
+/** Built-in servers first, then the user's (minus copies of a built-in). */
+function allServers(
+  custom: Array<McpServer>,
+  builtInEnabled: Record<string, boolean>
+): Array<McpServer> {
+  const builtIns = BUILT_IN_SERVERS.map((s) => ({
+    ...s,
+    enabled: builtInEnabled[s.id] ?? true
+  }))
+  const urls = new Set(builtIns.map((s) => sameUrl(s.url)))
+  return [...builtIns, ...custom.filter((s) => !urls.has(sameUrl(s.url)))]
+}
+
+export const getMcpServers = () =>
+  allServers(customServersStore.get(), builtInEnabledStore.get())
+
+export function useMcpServers() {
+  const custom = customServersStore.use()
+  const builtInEnabled = builtInEnabledStore.use()
+  return useMemo(
+    () => allServers(custom, builtInEnabled),
+    [custom, builtInEnabled]
+  )
+}
+
+/** Whether a server with this URL is already in the list. */
+export const hasMcpServer = (url: string) =>
+  getMcpServers().some((s) => sameUrl(s.url) === sameUrl(url))
 
 /** Connection status by server id, for this session only. */
 export const mcpStatusStore = createStore<Record<string, McpServerStatus>>({})
@@ -124,7 +189,7 @@ export async function checkMcpServer(server: McpServer) {
 /** Checks enabled servers this session hasn't reached yet. */
 export function checkMcpServers() {
   const status = mcpStatusStore.get()
-  for (const server of mcpServersStore.get()) {
+  for (const server of getMcpServers()) {
     if (server.enabled && !status[server.id]) void checkMcpServer(server)
   }
 }
@@ -156,9 +221,17 @@ async function runMcpTool(server: McpServer, name: string, input: unknown) {
       ? ""
       : JSON.stringify(result.structuredContent))
   if (result.isError) throw new Error(text || "The tool failed.")
-  return text.length > MAX_RESULT_CHARS
-    ? `${text.slice(0, MAX_RESULT_CHARS)}\n…(cut to ${MAX_RESULT_CHARS} characters)`
-    : text
+  return shorten(compactToolResult(text))
+}
+
+/** Cuts a result to MAX_RESULT_CHARS, keeping a trailing Sources list whole. */
+function shorten(text: string) {
+  if (text.length <= MAX_RESULT_CHARS) return text
+  const at = text.lastIndexOf("\n\nSources:\n")
+  const tail = at >= 0 ? text.slice(at) : ""
+  const head = at >= 0 ? text.slice(0, at) : text
+  const room = Math.max(0, MAX_RESULT_CHARS - tail.length)
+  return `${head.slice(0, room)}\n…(cut to ${MAX_RESULT_CHARS} characters)${tail}`
 }
 
 /**
@@ -167,10 +240,11 @@ async function runMcpTool(server: McpServer, name: string, input: unknown) {
  * servers have a tool with the same name, the first one wins.
  */
 export function useMcpTools() {
-  const servers = mcpServersStore.use()
+  const servers = useMcpServers()
   const status = mcpStatusStore.use()
   return useMemo(() => {
     const seen = new Set<string>()
+    // Built-in servers come first in the list, so their tools lead.
     return servers.flatMap((server) => {
       const s = status[server.id]
       if (!server.enabled || s?.state !== "connected") return []
@@ -208,20 +282,26 @@ export function addMcpServer(input: {
     token: input.token?.trim() || undefined,
     enabled: true
   }
-  mcpServersStore.set((all) => [...all, server])
+  customServersStore.set((all) => [...all, server])
   void checkMcpServer(server)
   return server
 }
 
 export function setMcpServerEnabled(id: string, enabled: boolean) {
   if (!enabled) disconnect(id)
-  mcpServersStore.set((all) =>
+  if (BUILT_IN_SERVERS.some((s) => s.id === id)) {
+    builtInEnabledStore.set((all) => ({ ...all, [id]: enabled }))
+    return
+  }
+  customServersStore.set((all) =>
     all.map((s) => (s.id === id ? { ...s, enabled } : s))
   )
 }
 
+/** Removes a server the user added (built-in ones stay). */
 export function removeMcpServer(id: string) {
+  if (BUILT_IN_SERVERS.some((s) => s.id === id)) return
   disconnect(id)
-  mcpServersStore.set((all) => all.filter((s) => s.id !== id))
+  customServersStore.set((all) => all.filter((s) => s.id !== id))
   mcpStatusStore.set(({ [id]: _removed, ...rest }) => rest)
 }

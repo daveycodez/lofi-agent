@@ -1,5 +1,5 @@
 /**
- * Settings, in a modal. For now it holds the user's MCP servers: add one by
+ * The MCP servers modal: the built-in servers and the user's own. Add one by
  * URL, see whether the browser can reach it and which tools it offers, turn
  * it off, or remove it.
  */
@@ -25,14 +25,15 @@ import {
   addMcpServer,
   checkMcpServer,
   checkMcpServers,
-  mcpServersStore,
+  hasMcpServer,
   mcpStatusStore,
   removeMcpServer,
-  setMcpServerEnabled
+  setMcpServerEnabled,
+  useMcpServers
 } from "#/lib/mcp"
 import type { McpServer } from "#/lib/mcp"
 
-export function SettingsModal({
+export function McpServersModal({
   isOpen,
   onOpenChange
 }: {
@@ -45,7 +46,7 @@ export function SettingsModal({
         <Modal.Dialog>
           <Modal.CloseTrigger />
           <Modal.Header>
-            <Modal.Heading>Settings</Modal.Heading>
+            <Modal.Heading>MCP Servers</Modal.Heading>
           </Modal.Header>
           <Modal.Body>
             <McpServersSection />
@@ -57,21 +58,18 @@ export function SettingsModal({
 }
 
 function McpServersSection() {
-  const servers = mcpServersStore.use()
+  const servers = useMcpServers()
 
   // Check servers this session hasn't reached yet.
   useEffect(checkMcpServers, [])
 
   return (
     <section className="flex flex-col gap-4">
-      <div>
-        <h3 className="text-sm font-medium">MCP Servers</h3>
-        <p className="mt-1 text-sm text-muted">
-          Give the model tools from remote MCP servers. Your browser connects to
-          each server directly, so the server has to allow connections from this
-          site.
-        </p>
-      </div>
+      <p className="text-sm text-muted">
+        Give the model tools from remote MCP servers. Your browser connects to
+        each server directly, so the server has to allow connections from this
+        site.
+      </p>
       {servers.length > 0 && (
         <ul className="flex flex-col gap-2">
           {servers.map((server) => (
@@ -90,21 +88,26 @@ function McpServerRow({ server }: { server: McpServer }) {
     <li className="flex flex-col gap-2 rounded-2xl bg-surface-secondary p-3">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{server.name}</p>
+          <p className="truncate text-sm font-medium text-foreground">
+            {server.name}
+          </p>
           <p className="truncate text-xs text-muted">{server.url}</p>
         </div>
-        <Tooltip delay={300}>
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label={`Remove ${server.name}`}
-            onPress={() => removeMcpServer(server.id)}
-          >
-            <TrashBin className="text-danger" />
-          </Button>
-          <Tooltip.Content>Remove server</Tooltip.Content>
-        </Tooltip>
+        {/* Built-in servers can be turned off, not removed. */}
+        {!server.builtIn && (
+          <Tooltip delay={300}>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label={`Remove ${server.name}`}
+              onPress={() => removeMcpServer(server.id)}
+            >
+              <TrashBin className="text-danger" />
+            </Button>
+            <Tooltip.Content>Remove server</Tooltip.Content>
+          </Tooltip>
+        )}
         <Switch
           aria-label={`Use ${server.name}`}
           isSelected={server.enabled}
@@ -114,7 +117,8 @@ function McpServerRow({ server }: { server: McpServer }) {
               void checkMcpServer({ ...server, enabled })
             }
           }}
-          className="mt-1"
+          // The default off track (--default) matches the row's surface.
+          className="mt-1 [--switch-control-bg:var(--muted)]"
         >
           <Switch.Content>
             <Switch.Control>
@@ -170,6 +174,7 @@ function McpServerRow({ server }: { server: McpServer }) {
 function urlError(value: string) {
   try {
     const url = new URL(value.trim())
+    if (hasMcpServer(value)) return "This server is already in the list."
     if (url.protocol === "https:") return null
     if (
       url.protocol === "http:" &&

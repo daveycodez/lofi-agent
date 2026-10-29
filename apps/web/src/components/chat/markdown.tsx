@@ -12,13 +12,15 @@ import { Button, Tooltip } from "@heroui/react"
 import { Markdown as TanStackMarkdown } from "@tanstack/markdown/react"
 import type { MarkdownComponents } from "@tanstack/markdown/react"
 import { streamingMarkdownExtension } from "@tanstack/markdown/extensions/streaming"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { ComponentPropsWithoutRef } from "react"
 import { mathExtension } from "tanstack-markdown-math"
 import { MathBlock, MathInline } from "tanstack-markdown-math/react"
 
+import { CitationChip } from "#/components/chat/sources"
 import { highlightMarkdownCode, highlightThemeCss } from "#/lib/highlight"
 import { normalizeMath } from "#/lib/math"
+import type { Source } from "#/lib/sources"
 
 const extensions = [
   streamingMarkdownExtension(),
@@ -114,6 +116,30 @@ function Link({ children, ...props }: ComponentPropsWithoutRef<"a">) {
   )
 }
 
+/**
+ * Turns `[1]` and `[1, 2]` citations of known sources into `#cite-n` links,
+ * which render as source chips. Code is left alone.
+ */
+function linkCitations(text: string, sources: Array<Source>) {
+  const known = new Set(sources.map((s) => s.n))
+  return text
+    .split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/g)
+    .map((part, i) =>
+      i % 2 === 1
+        ? part
+        : part.replace(
+            /\[(\d{1,2}(?:\s*,\s*\d{1,2})*)\](?![(:])/g,
+            (match, list: string) => {
+              const ns = list.split(",").map((n) => Number(n.trim()))
+              return ns.every((n) => known.has(n))
+                ? ns.map((n) => `[${n}](#cite-${n})`).join("")
+                : match
+            }
+          )
+    )
+    .join("")
+}
+
 const components: MarkdownComponents = {
   MathBlock,
   MathInline,
@@ -121,7 +147,27 @@ const components: MarkdownComponents = {
   a: Link
 }
 
-export function Markdown({ children }: { children: string }) {
+export function Markdown({
+  children,
+  sources = []
+}: {
+  children: string
+  /** Sources the text may cite as `[n]`. */
+  sources?: Array<Source>
+}) {
+  // Citation links render as chips for their source.
+  const withCitations = useMemo<MarkdownComponents>(() => {
+    if (sources.length === 0) return components
+    const byN = new Map(sources.map((s) => [s.n, s]))
+    return {
+      ...components,
+      a: (props: ComponentPropsWithoutRef<"a">) => {
+        const n = /^#cite-(\d+)$/.exec(props.href ?? "")?.[1]
+        const source = n ? byN.get(Number(n)) : undefined
+        return source ? <CitationChip source={source} /> : <Link {...props} />
+      }
+    }
+  }, [sources])
   return (
     <>
       {/* Code colors, added to the page once however many messages render. */}
@@ -133,9 +179,11 @@ export function Markdown({ children }: { children: string }) {
         frontmatter={false}
         headingIds={false}
         highlighter={highlightMarkdownCode}
-        components={components}
+        components={withCitations}
       >
-        {normalizeMath(children)}
+        {normalizeMath(
+          sources.length > 0 ? linkCitations(children, sources) : children
+        )}
       </TanStackMarkdown>
     </>
   )

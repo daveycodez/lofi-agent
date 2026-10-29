@@ -95,7 +95,8 @@ export function ModelSelect() {
         >
           <ModelLogo src={current.icon} />
           {current.name}
-          <ChevronDown />
+          {/* Buttons pull icons in by 2px; keep the caret 8px from the label. */}
+          <ChevronDown className="ms-0" />
         </Button>
         <Popover.Content placement="bottom start">
           <Popover.Dialog aria-label="Model" className="p-1">

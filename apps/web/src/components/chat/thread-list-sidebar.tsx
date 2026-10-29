@@ -7,11 +7,11 @@ import Archive from "@gravity-ui/icons/Archive"
 import Check from "@gravity-ui/icons/Check"
 import Comments from "@gravity-ui/icons/Comments"
 import Ellipsis from "@gravity-ui/icons/Ellipsis"
-import Gear from "@gravity-ui/icons/Gear"
 import LayoutSideContentLeft from "@gravity-ui/icons/LayoutSideContentLeft"
 import LogoGithub from "@gravity-ui/icons/LogoGithub"
 import Pencil from "@gravity-ui/icons/Pencil"
 import Pin from "@gravity-ui/icons/Pin"
+import PlugConnection from "@gravity-ui/icons/PlugConnection"
 import PinSlash from "@gravity-ui/icons/PinSlash"
 import Plus from "@gravity-ui/icons/Plus"
 import TrashBin from "@gravity-ui/icons/TrashBin"
@@ -47,7 +47,7 @@ type SidebarProps = {
   onNavigate?: () => void
   /** Called when the active thread is archived or deleted. */
   onActiveRemoved: () => void
-  onOpenSettings: () => void
+  onOpenMcpServers: () => void
 }
 
 export function ThreadListSidebar(props: SidebarProps) {
@@ -81,10 +81,10 @@ export function ThreadListSidebar(props: SidebarProps) {
           fullWidth
           variant="ghost"
           className="justify-start px-2"
-          onPress={props.onOpenSettings}
+          onPress={props.onOpenMcpServers}
         >
-          <Gear />
-          Settings
+          <PlugConnection />
+          MCP Servers
         </Button>
         <HeroLink
           href="https://github.com/daveycodez/lofi-agent"
@@ -141,16 +141,17 @@ function ThreadList({
 
   return (
     <>
+      {/* shrink-0: the list scrolls; these keep their size above it. */}
       <Button
         fullWidth
         variant="outline"
-        className="justify-start"
+        className="shrink-0 justify-start"
         onPress={() => {
           onNewThread()
           onNavigate?.()
         }}
       >
-        <Plus />
+        <Plus className="text-muted" />
         New thread
       </Button>
 
@@ -159,7 +160,7 @@ function ThreadList({
         aria-label="Search threads"
         value={search}
         onChange={setSearch}
-        className="mt-2"
+        className="mt-2 shrink-0"
       >
         <SearchField.Group>
           <SearchField.SearchIcon />
