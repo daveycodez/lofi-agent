@@ -41,37 +41,101 @@ const ctx = globalThis as unknown as {
   onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null
 }
 
-/** The weights file, under the URL Transformers.js uses as its cache key. */
-const WEIGHTS_URL = `https://huggingface.co/${MODEL_ID}/resolve/main/onnx/model_q4f16.onnx_data`
+/** The weights file: its name inside the ONNX graph, and where to download it. */
+const WEIGHTS_NAME = "model_q4f16.onnx_data"
+const WEIGHTS_URL = `https://huggingface.co/${MODEL_ID}/resolve/main/onnx/${WEIGHTS_NAME}`
+/** Where the weights live on disk, plus a marker written once they're complete. */
+const OPFS_FILE = "lfm3-1.7b-q4f16.onnx_data"
+const OPFS_DONE = `${OPFS_FILE}.done`
+/** Read and write in 64 MB pieces so no single transfer is huge. */
+const CHUNK = 64 * 1024 * 1024
+
+/** OPFS sync access handles (worker-only, not in the DOM typings). */
+type SyncAccessHandle = {
+  read: (buffer: Uint8Array, options: { at: number }) => number
+  write: (buffer: Uint8Array, options: { at: number }) => number
+  truncate: (size: number) => void
+  getSize: () => number
+  flush: () => void
+  close: () => void
+}
+const openSync = (file: FileSystemFileHandle) =>
+  (
+    file as unknown as {
+      createSyncAccessHandle: () => Promise<SyncAccessHandle>
+    }
+  ).createSyncAccessHandle()
+
+async function hasFile(dir: FileSystemDirectoryHandle, name: string) {
+  try {
+    await dir.getFileHandle(name)
+    return true
+  } catch {
+    return false
+  }
+}
 
 /**
- * Streams the 1.09 GB weights file from the network straight into
- * Transformers.js's cache, so it's never held in memory during the download.
- * Left to itself, Transformers.js buffers the whole file and then copies it
- * again to cache it, which is enough to crash a tab on iPhone.
- * Returns false when the file was already cached.
+ * Downloads the 1.09 GB weights into the Origin Private File System, writing
+ * each network chunk to disk as it arrives. Safari crashes when a single
+ * gigabyte-sized response goes through the Cache API, so Transformers.js's
+ * own caching can't be used for this file. Returns false if already on disk.
  */
 async function downloadWeights(onProgress: (progress: number) => void) {
-  const cache = await caches.open("transformers-cache")
-  if (await cache.match(WEIGHTS_URL)) return false
+  const dir = await navigator.storage.getDirectory()
+  if (await hasFile(dir, OPFS_DONE)) return false
   // Hugging Face rejects downloads referred from *.workers.dev.
   const res = await fetch(WEIGHTS_URL, { referrerPolicy: "no-referrer" })
   if (!res.ok || !res.body) {
     throw new Error(`Couldn't download the model (HTTP ${res.status}).`)
   }
   const total = Number(res.headers.get("content-length")) || 0
-  let loaded = 0
-  const counted = res.body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        loaded += chunk.byteLength
-        if (total) onProgress(loaded / total)
-        controller.enqueue(chunk)
-      }
-    })
+  const handle = await openSync(
+    await dir.getFileHandle(OPFS_FILE, { create: true })
   )
-  await cache.put(WEIGHTS_URL, new Response(counted, { headers: res.headers }))
+  try {
+    handle.truncate(0)
+    let written = 0
+    const reader = res.body.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      written += handle.write(value, { at: written })
+      if (total) onProgress(written / total)
+    }
+    handle.flush()
+  } finally {
+    handle.close()
+  }
+  await dir.getFileHandle(OPFS_DONE, { create: true })
   return true
+}
+
+/** Reads the weights from disk into one buffer, in pieces. */
+async function readWeights() {
+  const dir = await navigator.storage.getDirectory()
+  const handle = await openSync(await dir.getFileHandle(OPFS_FILE))
+  try {
+    const buffer = new Uint8Array(handle.getSize())
+    for (let at = 0; at < buffer.length; at += CHUNK) {
+      handle.read(buffer.subarray(at, Math.min(at + CHUNK, buffer.length)), {
+        at
+      })
+    }
+    return buffer
+  } finally {
+    handle.close()
+  }
+}
+
+/** Frees the 1 GB copy an earlier version kept in Cache Storage. */
+async function dropOldCacheCopy() {
+  try {
+    const cache = await caches.open("transformers-cache")
+    await cache.delete(WEIGHTS_URL)
+  } catch {
+    // Nothing to clean up.
+  }
 }
 
 let runtime: Promise<{
@@ -85,8 +149,8 @@ function load() {
     if (!("gpu" in navigator)) {
       throw new Error("LFM3 needs WebGPU, which this browser doesn't support.")
     }
-    // Download first (whole percents only, the stream reports per chunk),
-    // then load from the cache.
+    // Download to disk first (whole percents only, the stream reports
+    // per chunk), then load from disk.
     let lastPercent = -1
     await downloadWeights((progress) => {
       const percent = Math.floor(progress * 100)
@@ -99,13 +163,20 @@ function load() {
       })
     })
     ctx.postMessage({ type: "progress", progress: 0, cached: true })
+    void dropOldCacheCopy()
     const tf = (await import(
       /* @vite-ignore */ TRANSFORMERS_URL
     )) as TransformersModule
     const tokenizer = await tf.AutoTokenizer.from_pretrained(MODEL_ID)
+    // Hand ONNX Runtime the weights directly; Transformers.js would
+    // otherwise download and cache them itself.
     const model = await tf.AutoModelForCausalLM.from_pretrained(MODEL_ID, {
       dtype: "q4f16",
-      device: "webgpu"
+      device: "webgpu",
+      use_external_data_format: 0,
+      session_options: {
+        externalData: [{ path: WEIGHTS_NAME, data: await readWeights() }]
+      }
     })
     ctx.postMessage({ type: "ready" })
     return { tf, tokenizer, model }

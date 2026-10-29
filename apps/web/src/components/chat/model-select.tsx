@@ -123,7 +123,7 @@ export function ModelSelect() {
       </Popover>
       {status && (
         <span
-          className={`flex items-center gap-1.5 text-xs tabular-nums ${status.isError ? "text-danger" : "text-muted"}`}
+          className={`flex items-center gap-1.5 text-xs whitespace-nowrap tabular-nums ${status.isError ? "text-danger" : "text-muted"}`}
         >
           {status.progress === null && <Spinner size="sm" color="current" />}
           {typeof status.progress === "number" && (
