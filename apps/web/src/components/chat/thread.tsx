@@ -34,7 +34,7 @@ import type { ComponentProps, ReactNode } from "react"
 
 import { ModelSelect } from "#/components/chat/model-select"
 import { lfm3Status } from "#/lib/llm/lfm3-connection"
-import { modelStore, routedConnection } from "#/lib/llm/models"
+import { routedConnection, useCurrentModel } from "#/lib/llm/models"
 import { chatPersistence, touchThread } from "#/lib/threads"
 
 const SUGGESTIONS = [
@@ -312,10 +312,11 @@ function Composer({
   onStop: () => void
 }) {
   const textAreaRef = useAutoGrow(value, 192)
-  // Can't send while the selected model is still downloading.
-  const model = modelStore.use()
+  // Can't send until a model is chosen and done downloading.
+  const model = useCurrentModel()
   const lfm3 = lfm3Status.use()
-  const isModelLoading = model === "lfm3" && lfm3.state === "loading"
+  const isModelLoading =
+    !model || (model === "lfm3" && lfm3.state === "loading")
   const canSend = !!value.trim() && !isRunning && !isModelLoading
 
   const submit = () => {

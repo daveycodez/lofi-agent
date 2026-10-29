@@ -1,9 +1,15 @@
 import ChevronDown from "@gravity-ui/icons/ChevronDown"
-import { Button, ListBox, Popover } from "@heroui/react"
-import { useState } from "react"
+import { Button, ListBox, Popover, Skeleton } from "@heroui/react"
+import { useEffect, useState } from "react"
 
 import { lfm3Status, loadLfm3 } from "#/lib/llm/lfm3-connection"
-import { MODELS, modelInfo, modelStore } from "#/lib/llm/models"
+import {
+  checkAfm,
+  modelInfo,
+  modelStore,
+  useAvailableModels,
+  useCurrentModel
+} from "#/lib/llm/models"
 import type { ModelId } from "#/lib/llm/models"
 
 /** Provider logo. The SVGs are drawn in black, so invert them in dark mode. */
@@ -16,9 +22,18 @@ function ModelLogo({ src }: { src: string }) {
  * Popover with a single-selection ListBox (checkmark on the right).
  */
 export function ModelSelect() {
-  const model = modelStore.use()
+  const model = useCurrentModel()
+  const models = useAvailableModels()
   const lfm3 = lfm3Status.use()
   const [isOpen, setIsOpen] = useState(false)
+
+  useEffect(() => {
+    void checkAfm()
+  }, [])
+
+  // Still checking whether Apple's model is there.
+  if (!model) return <Skeleton className="h-8 w-40 rounded-full" />
+
   const current = modelInfo(model)
 
   const status =
@@ -57,7 +72,7 @@ export function ModelSelect() {
                 if (key === "lfm3") void loadLfm3().catch(() => undefined)
               }}
             >
-              {MODELS.map((m) => (
+              {models.map((m) => (
                 <ListBox.Item key={m.id} id={m.id} textValue={m.name}>
                   <span className="flex items-center gap-2">
                     <ModelLogo src={m.icon} />
