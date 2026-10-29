@@ -10,6 +10,7 @@ import ArrowUp from "@gravity-ui/icons/ArrowUp"
 import Check from "@gravity-ui/icons/Check"
 import Copy from "@gravity-ui/icons/Copy"
 import Ellipsis from "@gravity-ui/icons/Ellipsis"
+import Microphone from "@gravity-ui/icons/Microphone"
 import Pencil from "@gravity-ui/icons/Pencil"
 import StopFill from "@gravity-ui/icons/StopFill"
 import Volume from "@gravity-ui/icons/Volume"
@@ -33,6 +34,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import type { ComponentProps, ReactNode } from "react"
 
 import { ModelSelect } from "#/components/chat/model-select"
+import { useDictation } from "#/lib/dictation"
 import { lfm3Status } from "#/lib/llm/lfm3-connection"
 import { routedConnection, useCurrentModel } from "#/lib/llm/models"
 import { chatPersistence, touchThread } from "#/lib/threads"
@@ -319,8 +321,19 @@ function Composer({
     !model || (model === "lfm3" && lfm3.state === "loading")
   const canSend = !!value.trim() && !isRunning && !isModelLoading
 
+  // Dictation adds to whatever was already typed when it started.
+  const dictation = useDictation()
+  const toggleDictation = () => {
+    if (dictation.isListening) return dictation.stop()
+    const before = value.trimEnd()
+    dictation.start((text) =>
+      onChange(before ? `${before} ${text.trimStart()}` : text.trimStart())
+    )
+  }
+
   const submit = () => {
     if (!canSend) return
+    dictation.cancel()
     onSend(value.trim())
     onChange("")
   }
@@ -353,7 +366,33 @@ function Composer({
         />
         <InputGroup.Suffix className="flex w-full items-center gap-1.5 px-3 py-0">
           <ModelSelect />
-          <div className="ms-auto flex items-center gap-1.5">
+          <div className="ms-auto flex items-center gap-1">
+            {dictation.isSupported && (
+              <Tooltip delay={300}>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
+                  aria-label={
+                    dictation.isListening
+                      ? "Stop voice input"
+                      : "Start voice input"
+                  }
+                  aria-pressed={dictation.isListening}
+                  onPress={toggleDictation}
+                  className={
+                    dictation.isListening ? "text-danger" : "text-muted"
+                  }
+                >
+                  <Microphone />
+                </Button>
+                <Tooltip.Content>
+                  {dictation.isListening
+                    ? "Stop voice input"
+                    : "Start voice input"}
+                </Tooltip.Content>
+              </Tooltip>
+            )}
             {isRunning ? (
               <Tooltip delay={300}>
                 <Button
