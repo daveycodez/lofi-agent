@@ -7,6 +7,7 @@ import Archive from "@gravity-ui/icons/Archive"
 import Check from "@gravity-ui/icons/Check"
 import Comments from "@gravity-ui/icons/Comments"
 import Ellipsis from "@gravity-ui/icons/Ellipsis"
+import Gear from "@gravity-ui/icons/Gear"
 import LayoutSideContentLeft from "@gravity-ui/icons/LayoutSideContentLeft"
 import LogoGithub from "@gravity-ui/icons/LogoGithub"
 import Pencil from "@gravity-ui/icons/Pencil"
@@ -18,10 +19,10 @@ import TrashBin from "@gravity-ui/icons/TrashBin"
 import Xmark from "@gravity-ui/icons/Xmark"
 import {
   Button,
+  buttonVariants,
   Dropdown,
   InputGroup,
   Label,
-  Link as HeroLink,
   SearchField,
   TextField,
   Tooltip
@@ -48,6 +49,7 @@ type SidebarProps = {
   /** Called when the active thread is archived or deleted. */
   onActiveRemoved: () => void
   onOpenMcpServers: () => void
+  onOpenSettings: () => void
 }
 
 export function ThreadListSidebar(props: SidebarProps) {
@@ -62,13 +64,13 @@ export function ThreadListSidebar(props: SidebarProps) {
             isIconOnly
             size="sm"
             variant="ghost"
-            aria-label="Collapse threads"
+            aria-label="Collapse chats"
             onPress={props.onCollapse}
             className="ms-auto -me-2"
           >
             <LayoutSideContentLeft />
           </Button>
-          <Tooltip.Content>Collapse threads</Tooltip.Content>
+          <Tooltip.Content>Collapse chats</Tooltip.Content>
         </Tooltip>
       </div>
 
@@ -80,21 +82,35 @@ export function ThreadListSidebar(props: SidebarProps) {
         <Button
           fullWidth
           variant="ghost"
-          className="justify-start px-2"
+          className="justify-start"
           onPress={props.onOpenMcpServers}
         >
-          <PlugConnection />
+          <PlugConnection className="text-muted" />
           MCP Servers
         </Button>
-        <HeroLink
+        <Button
+          fullWidth
+          variant="ghost"
+          className="justify-start"
+          onPress={props.onOpenSettings}
+        >
+          <Gear className="text-muted" />
+          Settings
+        </Button>
+        {/* The source on GitHub: a link styled as the ghost buttons above. */}
+        <a
           href="https://github.com/daveycodez/lofi-agent"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 px-2 py-1.5 text-sm"
+          className={buttonVariants({
+            variant: "ghost",
+            fullWidth: true,
+            className: "justify-start"
+          })}
         >
-          <LogoGithub className="size-4" />
-          View source
-        </HeroLink>
+          <LogoGithub className="text-muted" />
+          GitHub
+        </a>
       </div>
     </div>
   )
@@ -152,26 +168,26 @@ function ThreadList({
         }}
       >
         <Plus className="text-muted" />
-        New thread
+        New chat
       </Button>
 
       <SearchField
         fullWidth
-        aria-label="Search threads"
+        aria-label="Search chats"
         value={search}
         onChange={setSearch}
         className="mt-2 shrink-0"
       >
         <SearchField.Group>
           <SearchField.SearchIcon />
-          <SearchField.Input placeholder="Search threads" />
+          <SearchField.Input placeholder="Search chats" />
           <SearchField.ClearButton />
         </SearchField.Group>
       </SearchField>
 
-      <nav aria-label="Threads" className="mt-6 flex flex-col gap-0.5">
+      <nav aria-label="Chats" className="mt-6 flex flex-col gap-0.5">
         {query && filtered.length === 0 ? (
-          <p className="px-2 py-2 text-sm text-muted">No threads found</p>
+          <p className="px-2 py-2 text-sm text-muted">No chats found</p>
         ) : (
           groups.map((group, i) => (
             <Fragment key={group.label}>
@@ -234,7 +250,7 @@ function ThreadListItem({
     }
     // Same footprint as the row: the title becomes an input with save/cancel inside.
     return (
-      <TextField fullWidth aria-label="Rename thread">
+      <TextField fullWidth aria-label="Rename chat">
         <InputGroup
           fullWidth
           onBlur={(e) => {
@@ -298,7 +314,7 @@ function ThreadListItem({
           isIconOnly
           size="sm"
           variant="ghost"
-          aria-label="Thread actions"
+          aria-label="Chat actions"
           className="absolute end-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 group-data-active:opacity-100 aria-expanded:opacity-100 focus-visible:opacity-100"
         >
           <Ellipsis />

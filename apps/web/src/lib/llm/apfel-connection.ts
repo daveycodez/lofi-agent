@@ -2,6 +2,8 @@ import { EventType, convertMessagesToModelMessages } from "@tanstack/ai"
 import type { ModelMessage, StreamChunk, UIMessage } from "@tanstack/ai"
 import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
 
+import { currentSystemPrompt } from "#/lib/settings"
+
 /**
  * TanStack AI connection that talks to Apple's on-device Foundation Model
  * through apfel's OpenAI-compatible server (`apfel --serve --cors`).
@@ -17,7 +19,7 @@ type OpenAIToolCall = {
 }
 
 type OpenAIMessage =
-  | { role: "user"; content: string }
+  | { role: "system" | "user"; content: string }
   | {
       role: "assistant"
       content: string | null
@@ -45,8 +47,11 @@ function contentText(content: ModelMessage["content"]) {
 function toOpenAIMessages(
   messages: Array<UIMessage> | Array<ModelMessage>
 ): Array<OpenAIMessage> {
-  // No system prompt: just the conversation.
-  const out: Array<OpenAIMessage> = []
+  // The user's system prompt from Settings, if they wrote one.
+  const systemPrompt = currentSystemPrompt()
+  const out: Array<OpenAIMessage> = systemPrompt
+    ? [{ role: "system", content: systemPrompt }]
+    : []
   for (const m of convertMessagesToModelMessages(messages)) {
     const content = contentText(m.content)
     if (m.role === "tool") {

@@ -15,6 +15,7 @@ import {
   parseToolCalls
 } from "#/lib/llm/tool-calls"
 import type { ToolFormat } from "#/lib/llm/tool-calls"
+import { currentSystemPrompt } from "#/lib/settings"
 import { createStore } from "#/lib/store"
 import { createThinkingSplitter } from "#/lib/thinking"
 import type { ReplyPiece } from "#/lib/thinking"
@@ -157,8 +158,9 @@ function parseArguments(json: string): Record<string, unknown> {
 }
 
 /**
- * The conversation as chat-template turns. No system prompt, as the model
- * cards show. Past tool calls are written the way the model writes them.
+ * The conversation as chat-template turns (the system prompt, if any, is
+ * added by the caller). Past tool calls are written the way the model
+ * writes them.
  */
 function toChatTurns(
   messages: Array<UIMessage> | Array<ModelMessage>,
@@ -234,7 +236,14 @@ export function localModelConnection(options: {
         return
       }
 
-      const chat = toChatTurns(messages, toolFormat)
+      // The user's system prompt from Settings goes first, if they wrote one.
+      const systemPrompt = currentSystemPrompt()
+      const chat: Array<ChatTurn> = [
+        ...(systemPrompt
+          ? [{ role: "system" as const, content: systemPrompt }]
+          : []),
+        ...toChatTurns(messages, toolFormat)
+      ]
       // The tools useChat has (from MCP servers), as the template takes them.
       const toolNames = new Set<string>()
       const tools: Array<ToolSpec> = (runContext.clientTools ?? []).map(

@@ -4,6 +4,7 @@ import Display from "@gravity-ui/icons/Display"
 import Ellipsis from "@gravity-ui/icons/Ellipsis"
 import LayoutSideContentLeft from "@gravity-ui/icons/LayoutSideContentLeft"
 import Moon from "@gravity-ui/icons/Moon"
+import Plus from "@gravity-ui/icons/Plus"
 import Sun from "@gravity-ui/icons/Sun"
 import TrashBin from "@gravity-ui/icons/TrashBin"
 import { Button, Drawer, Dropdown, Header, Label, Tooltip } from "@heroui/react"
@@ -15,6 +16,7 @@ import { v7 as uuidv7 } from "uuid"
 import { Thread } from "#/components/chat/thread"
 import { ThreadListSidebar } from "#/components/chat/thread-list-sidebar"
 import { McpServersModal } from "#/components/mcp/mcp-servers-modal"
+import { SettingsModal } from "#/components/settings/settings-modal"
 import { createStore } from "#/lib/store"
 import { archiveThread, deleteThread, threadsStore } from "#/lib/threads"
 
@@ -42,6 +44,7 @@ function Assistant() {
   const sidebarOpen = sidebarOpenStore.use()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const meta = threadsStore.use().find((t) => t.id === threadId)
 
   const newThread = () => {
@@ -56,6 +59,10 @@ function Assistant() {
     onOpenMcpServers: () => {
       setDrawerOpen(false)
       setMcpOpen(true)
+    },
+    onOpenSettings: () => {
+      setDrawerOpen(false)
+      setSettingsOpen(true)
     }
   }
 
@@ -63,7 +70,7 @@ function Assistant() {
     <div className="flex h-dvh w-full bg-background">
       {/* Desktop: collapsible sidebar. */}
       <aside
-        aria-label="Threads"
+        aria-label="Chats"
         data-open={sidebarOpen || undefined}
         className="hidden w-0 shrink-0 overflow-hidden border-separator transition-[width] duration-200 ease-linear data-open:w-60 data-open:border-r md:block"
       >
@@ -79,7 +86,7 @@ function Assistant() {
       <Drawer.Backdrop isOpen={drawerOpen} onOpenChange={setDrawerOpen}>
         <Drawer.Content placement="left" className="w-60 max-w-[85vw] p-0">
           <Drawer.Dialog
-            aria-label="Threads"
+            aria-label="Chats"
             className="h-full bg-background p-0"
           >
             <ThreadListSidebar
@@ -92,6 +99,7 @@ function Assistant() {
       </Drawer.Backdrop>
 
       <McpServersModal isOpen={mcpOpen} onOpenChange={setMcpOpen} />
+      <SettingsModal isOpen={settingsOpen} onOpenChange={setSettingsOpen} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-separator px-4">
@@ -99,7 +107,7 @@ function Assistant() {
             <Button
               isIconOnly
               variant="ghost"
-              aria-label="Open threads"
+              aria-label="Open chats"
               onPress={() => {
                 if (isDesktop()) sidebarOpenStore.set(true)
                 else setDrawerOpen(true)
@@ -110,11 +118,23 @@ function Assistant() {
             >
               <LayoutSideContentLeft />
             </Button>
-            <Tooltip.Content placement="bottom">Open threads</Tooltip.Content>
+            <Tooltip.Content placement="bottom">Open chats</Tooltip.Content>
           </Tooltip>
           <h1 className="min-w-0 flex-1 truncate text-sm font-medium">
             {meta?.title ?? "New chat"}
           </h1>
+          <Tooltip delay={300}>
+            <Button
+              isIconOnly
+              variant="ghost"
+              size="sm"
+              aria-label="New chat"
+              onPress={newThread}
+            >
+              <Plus />
+            </Button>
+            <Tooltip.Content placement="bottom">New chat</Tooltip.Content>
+          </Tooltip>
           <HeaderMenu
             threadId={meta ? threadId : undefined}
             onRemoved={newThread}
@@ -205,18 +225,14 @@ function HeaderMenu({
             </Dropdown.Item>
           </Dropdown.Section>
           <Dropdown.Section>
-            <Header>Thread</Header>
-            <Dropdown.Item id="archive" textValue="Archive thread">
+            <Header>Chat</Header>
+            <Dropdown.Item id="archive" textValue="Archive chat">
               <Archive className="size-4" />
-              <Label>Archive thread</Label>
+              <Label>Archive chat</Label>
             </Dropdown.Item>
-            <Dropdown.Item
-              id="delete"
-              textValue="Delete thread"
-              variant="danger"
-            >
+            <Dropdown.Item id="delete" textValue="Delete chat" variant="danger">
               <TrashBin className="size-4 text-danger" />
-              <Label>Delete thread</Label>
+              <Label>Delete chat</Label>
             </Dropdown.Item>
           </Dropdown.Section>
         </Dropdown.Menu>
