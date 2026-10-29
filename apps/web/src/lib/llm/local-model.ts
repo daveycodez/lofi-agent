@@ -184,9 +184,6 @@ export function localModelConnection(options: {
       const onAbort = () => post({ type: "stop", id: runId })
       abortSignal?.addEventListener("abort", onAbort)
       const think = thinking()
-      // The chat template opens the <think> block in the prompt itself, so
-      // add it to the reply too: the thread then shows it as thinking.
-      if (think) queue.push("<think>")
       post({ type: "generate", id: runId, chat, thinking: think, sampling })
 
       yield {

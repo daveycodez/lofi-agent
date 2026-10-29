@@ -264,6 +264,11 @@ async function generate(
     tokenize: false,
     enable_thinking: thinking
   })
+  // Some templates open the <think> block in the prompt itself; start the
+  // reply with it too so the thread shows what follows as thinking.
+  if (prompt.trimEnd().endsWith("<think>")) {
+    ctx.postMessage({ type: "token", id, text: "<think>" })
+  }
   const inputs = tokenizer(prompt, { add_special_tokens: false })
   const stopping = new tf.InterruptableStoppingCriteria()
   running.set(id, stopping)

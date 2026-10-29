@@ -19,16 +19,33 @@ export type ModelId = "apple-fm" | "lfm3" | "lfm2.5"
 /** Whether models that can think should reason before answering. */
 export const thinkingStore = createStore<boolean>(false, "lofi-agent:thinking")
 
-/** Models with a thinking mode (LFM2.5 Instruct has none). */
-export const canThink = (id: ModelId) => id === "lfm3"
+/** Models that can think before answering. */
+export const canThink = (id: ModelId) => id === "lfm3" || id === "lfm2.5"
 
 /** Models that run in the browser, by Hugging Face id. */
 const LFM3_ID = "onnx-community/LFM3-1.7B-ONNX"
 const LFM2_5_ID = "LiquidAI/LFM2.5-1.2B-Instruct-ONNX"
+/** LFM2.5 has no thinking switch: thinking is a separate model. */
+const LFM2_5_THINKING_ID = "LiquidAI/LFM2.5-1.2B-Thinking-ONNX"
 const LOCAL_MODELS: Partial<Record<ModelId, string>> = {
   lfm3: LFM3_ID,
   "lfm2.5": LFM2_5_ID
 }
+
+// LFM2.5-1.2B-Instruct card.
+const lfm25 = localModelConnection({
+  modelId: LFM2_5_ID,
+  name: "LFM2.5",
+  sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.05 }
+})
+// LFM2.5-1.2B-Thinking card.
+const lfm25Thinking = localModelConnection({
+  modelId: LFM2_5_THINKING_ID,
+  name: "LFM2.5 Thinking",
+  sampling: { temperature: 0.05, top_k: 50, repetition_penalty: 1.05 },
+  // Always thinks: give it the longer thinking budget.
+  thinking: () => true
+})
 
 export const MODELS: Array<{
   id: ModelId
@@ -59,18 +76,21 @@ export const MODELS: Array<{
     id: "lfm2.5",
     name: "LFM2.5 1.2B",
     icon: "/icons/liquid.svg",
-    // LFM2.5-1.2B-Instruct card.
-    connection: localModelConnection({
-      modelId: LFM2_5_ID,
-      name: "LFM2.5",
-      sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.05 }
-    })
+    // The Think toggle picks the Thinking model when the message is sent.
+    connection: {
+      connect: (...args) =>
+        (thinkingStore.get() ? lfm25Thinking : lfm25).connect(...args)
+    }
   }
 ]
 
+/** The Hugging Face model to run for `id`, given the Think toggle. */
+const localModelFor = (id: ModelId, thinking: boolean) =>
+  id === "lfm2.5" && thinking ? LFM2_5_THINKING_ID : LOCAL_MODELS[id]
+
 /** Starts loading a local model (no-op for the Apple model). */
 export function loadModel(id: ModelId) {
-  const modelId = LOCAL_MODELS[id]
+  const modelId = localModelFor(id, thinkingStore.get())
   if (modelId) void loadLocalModel(modelId).catch(() => undefined)
 }
 
@@ -78,7 +98,7 @@ const IDLE = createStore<LocalModelStatus>({ state: "idle" })
 
 /** Loading status of a model; the Apple model is always idle here. */
 export const useModelStatus = (id: ModelId) => {
-  const modelId = LOCAL_MODELS[id]
+  const modelId = localModelFor(id, thinkingStore.use())
   return (modelId ? localModelStatus(modelId) : IDLE).use()
 }
 

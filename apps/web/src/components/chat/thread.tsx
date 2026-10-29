@@ -42,11 +42,13 @@ import { useDictation } from "#/lib/dictation"
 import { splitThinking } from "#/lib/thinking"
 import {
   canThink,
+  loadModel,
   routedConnection,
   thinkingStore,
   useCurrentModel,
   useModelStatus
 } from "#/lib/llm/models"
+import type { ModelId } from "#/lib/llm/models"
 import { chatPersistence, touchThread } from "#/lib/threads"
 
 const SUGGESTIONS = [
@@ -381,7 +383,7 @@ function Composer({
         />
         <InputGroup.Suffix className="flex w-full items-center gap-1.5 px-3 py-0">
           <ModelSelect />
-          {canThink(model) && <ThinkToggle />}
+          {canThink(model) && <ThinkToggle model={model} />}
           <div className="ms-auto flex items-center gap-1">
             {dictation.isSupported && (
               <Tooltip delay={300}>
@@ -553,7 +555,7 @@ function EditComposer({
 }
 
 /** Turns on reasoning before answering, for models that can think. */
-function ThinkToggle() {
+function ThinkToggle({ model }: { model: ModelId }) {
   const isThinking = thinkingStore.use()
   return (
     <Tooltip delay={300}>
@@ -561,7 +563,11 @@ function ThinkToggle() {
         size="sm"
         variant="ghost"
         isSelected={isThinking}
-        onChange={thinkingStore.set}
+        onChange={(on) => {
+          thinkingStore.set(on)
+          // LFM2.5 thinks with a separate model: start loading it now.
+          if (model === "lfm2.5") loadModel(model)
+        }}
         aria-label="Think before answering"
         className={isThinking ? undefined : "text-muted"}
       >
