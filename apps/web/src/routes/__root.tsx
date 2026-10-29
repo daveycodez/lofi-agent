@@ -11,6 +11,11 @@ export const Route = createRootRoute({
       {
         charSet: "utf-8"
       },
+      // Hugging Face rejects model downloads whose Referer is a *.workers.dev page.
+      {
+        name: "referrer",
+        content: "no-referrer"
+      },
       {
         name: "viewport",
         content: "width=device-width, initial-scale=1"

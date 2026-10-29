@@ -1,4 +1,5 @@
 import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
+import { useSyncExternalStore } from "react"
 
 import {
   APFEL_MODEL,
@@ -34,59 +35,64 @@ export const MODELS: Array<{
 export const modelInfo = (id: ModelId) =>
   MODELS.find((m) => m.id === id) ?? MODELS[0]
 
-/** Whether Apple's on-device model is reachable through apfel. */
-export const afmStatus = createStore<"checking" | "available" | "unavailable">(
-  "checking"
-)
+/** The model the user picked. LFM3 runs anywhere, so it's the default. */
+export const modelStore = createStore<ModelId>("lfm3", "lofi-agent:model")
 
-let afmCheck: Promise<void> | undefined
+/** Apple's model only exists on macOS and iOS (iPadOS reports itself as a Mac). */
+const isApplePlatform = () =>
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
 
-/** Asks apfel's /v1/models whether the Apple model is there. Runs once. */
-export function checkAfm() {
-  afmCheck ??= fetch(APFEL_URL.replace("/chat/completions", "/models"), {
-    signal: AbortSignal.timeout(2000)
-  })
-    .then((res) => (res.ok ? res.json() : null))
-    .then((body: { data?: Array<{ id: string }> } | null) => {
-      const found = body?.data?.some((m) => m.id === APFEL_MODEL) ?? false
-      afmStatus.set(found ? "available" : "unavailable")
-    })
-    .catch(() => afmStatus.set("unavailable"))
-  return afmCheck
-}
+const noopSubscribe = () => () => undefined
+const useIsApplePlatform = () =>
+  useSyncExternalStore(noopSubscribe, isApplePlatform, () => false)
 
-/** The model the user picked, if any. */
-export const modelStore = createStore<ModelId | null>(null, "lofi-agent:model")
-
-/**
- * The model in use: the user's pick if it's available, otherwise Apple's
- * model when present, otherwise LFM3. Null while availability is unknown.
- */
-function resolveModel(
-  picked: ModelId | null,
-  afm: ReturnType<typeof afmStatus.get>
-): ModelId | null {
-  if (afm === "checking") return null
-  if (picked === "lfm3") return "lfm3"
-  return afm === "available" ? "apple-fm" : "lfm3"
-}
+const onPlatform = (id: ModelId, isApple: boolean): ModelId =>
+  id === "apple-fm" && !isApple ? "lfm3" : id
 
 export const currentModel = () =>
-  resolveModel(modelStore.get(), afmStatus.get())
-
+  onPlatform(modelStore.get(), isApplePlatform())
 export const useCurrentModel = () =>
-  resolveModel(modelStore.use(), afmStatus.use())
+  onPlatform(modelStore.use(), useIsApplePlatform())
 
-/** Models to offer in the picker. */
-export const useAvailableModels = () => {
-  const afm = afmStatus.use()
-  return MODELS.filter((m) => m.id !== "apple-fm" || afm === "available")
+/** Models to offer in the picker on this device. */
+export const useModels = () => {
+  const isApple = useIsApplePlatform()
+  return MODELS.filter((m) => m.id !== "apple-fm" || isApple)
+}
+
+/** Result of the last Apple model check, shown next to the picker. */
+export const afmStatus = createStore<"idle" | "checking" | "unavailable">(
+  "idle"
+)
+
+/**
+ * Asks apfel's /v1/models whether Apple's model is there. Reaching localhost
+ * from a website makes Chrome ask for permission, so this only runs when the
+ * user picks the Apple model.
+ */
+export async function checkAfm() {
+  afmStatus.set("checking")
+  try {
+    const res = await fetch(APFEL_URL.replace("/chat/completions", "/models"), {
+      signal: AbortSignal.timeout(10_000)
+    })
+    const body = res.ok
+      ? ((await res.json()) as { data?: Array<{ id: string }> })
+      : null
+    const found = body?.data?.some((m) => m.id === APFEL_MODEL) ?? false
+    afmStatus.set(found ? "idle" : "unavailable")
+    return found
+  } catch {
+    afmStatus.set("unavailable")
+    return false
+  }
 }
 
 /** Sends each run to whichever model is selected when the user hits send. */
 export const routedConnection: ConnectConnectionAdapter = {
   connect(messages, data, abortSignal, runContext) {
-    return modelInfo(currentModel() ?? "lfm3").connection.connect(
+    return modelInfo(currentModel()).connection.connect(
       messages,
       data,
       abortSignal,

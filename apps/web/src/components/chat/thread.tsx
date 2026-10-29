@@ -314,11 +314,10 @@ function Composer({
   onStop: () => void
 }) {
   const textAreaRef = useAutoGrow(value, 192)
-  // Can't send until a model is chosen and done downloading.
+  // Can't send while the selected model is still downloading.
   const model = useCurrentModel()
   const lfm3 = lfm3Status.use()
-  const isModelLoading =
-    !model || (model === "lfm3" && lfm3.state === "loading")
+  const isModelLoading = model === "lfm3" && lfm3.state === "loading"
   const canSend = !!value.trim() && !isRunning && !isModelLoading
 
   // Dictation adds to whatever was already typed when it started.
