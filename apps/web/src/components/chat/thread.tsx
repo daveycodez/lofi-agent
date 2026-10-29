@@ -13,6 +13,7 @@ import Ellipsis from "@gravity-ui/icons/Ellipsis"
 import Microphone from "@gravity-ui/icons/Microphone"
 import Pencil from "@gravity-ui/icons/Pencil"
 import StopFill from "@gravity-ui/icons/StopFill"
+import TrashBin from "@gravity-ui/icons/TrashBin"
 import Volume from "@gravity-ui/icons/Volume"
 import VolumeXmark from "@gravity-ui/icons/VolumeXmark"
 import {
@@ -221,6 +222,9 @@ export function Thread({
                       setMessages(messages.slice(0, index))
                       send(text)
                     }}
+                    onDelete={() =>
+                      setMessages(messages.filter((m) => m.id !== message.id))
+                    }
                   />
                 )
               }
@@ -234,6 +238,9 @@ export function Thread({
                     seconds={timings[message.id]}
                     error={isLast && !isLoading ? error : undefined}
                     onReload={() => void reload()}
+                    onDelete={() =>
+                      setMessages(messages.filter((m) => m.id !== message.id))
+                    }
                   />
                 )
               }
@@ -433,11 +440,13 @@ function Composer({
 function UserMessage({
   text,
   isRunning,
-  onEdit
+  onEdit,
+  onDelete
 }: {
   text: string
   isRunning: boolean
   onEdit: (text: string) => void
+  onDelete: () => void
 }) {
   const [isEditing, setIsEditing] = useState(false)
 
@@ -449,6 +458,10 @@ function UserMessage({
         onUpdate={(next) => {
           setIsEditing(false)
           onEdit(next)
+        }}
+        onDelete={() => {
+          setIsEditing(false)
+          onDelete()
         }}
       />
     )
@@ -473,11 +486,13 @@ function UserMessage({
 function EditComposer({
   initial,
   onCancel,
-  onUpdate
+  onUpdate,
+  onDelete
 }: {
   initial: string
   onCancel: () => void
   onUpdate: (text: string) => void
+  onDelete: () => void
 }) {
   const [value, setValue] = useState(initial)
   const textAreaRef = useAutoGrow(value, 320)
@@ -502,8 +517,16 @@ function EditComposer({
           }}
           className="min-h-0 w-full flex-none resize-none px-3.5 py-0 text-base"
         />
-        <InputGroup.Suffix className="flex w-full items-center justify-end gap-1.5 px-3 py-0">
-          <Button size="sm" variant="ghost" onPress={onCancel}>
+        <InputGroup.Suffix className="flex w-full items-center gap-1.5 px-3 py-0">
+          <Button size="sm" variant="danger" onPress={onDelete}>
+            Delete
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onPress={onCancel}
+            className="ms-auto"
+          >
             Cancel
           </Button>
           <Button
@@ -525,7 +548,8 @@ function AssistantMessage({
   isRunning,
   seconds,
   error,
-  onReload
+  onReload,
+  onDelete
 }: {
   text: string
   isLast: boolean
@@ -533,6 +557,7 @@ function AssistantMessage({
   seconds?: number
   error?: Error
   onReload: () => void
+  onDelete?: () => void
 }) {
   return (
     <div className="group flex flex-col gap-2">
@@ -579,11 +604,20 @@ function AssistantMessage({
                 <Dropdown.Menu
                   onAction={(key) => {
                     if (key === "export") downloadMarkdown(text)
+                    if (key === "delete") onDelete?.()
                   }}
                 >
                   <Dropdown.Item id="export" textValue="Export as Markdown">
                     <ArrowDownToLine className="size-4" />
                     <Label>Export as Markdown</Label>
+                  </Dropdown.Item>
+                  <Dropdown.Item
+                    id="delete"
+                    textValue="Delete"
+                    variant="danger"
+                  >
+                    <TrashBin className="size-4 text-danger" />
+                    <Label>Delete</Label>
                   </Dropdown.Item>
                 </Dropdown.Menu>
               </Dropdown.Popover>

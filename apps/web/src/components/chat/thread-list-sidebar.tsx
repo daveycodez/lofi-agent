@@ -325,7 +325,7 @@ function ThreadListItem({
               <Label>Archive</Label>
             </Dropdown.Item>
             <Dropdown.Item id="delete" textValue="Delete" variant="danger">
-              <TrashBin className="size-4" />
+              <TrashBin className="size-4 text-danger" />
               <Label>Delete</Label>
             </Dropdown.Item>
           </Dropdown.Menu>

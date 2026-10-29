@@ -204,7 +204,7 @@ function HeaderMenu({
               textValue="Delete thread"
               variant="danger"
             >
-              <TrashBin className="size-4" />
+              <TrashBin className="size-4 text-danger" />
               <Label>Delete thread</Label>
             </Dropdown.Item>
           </Dropdown.Section>
