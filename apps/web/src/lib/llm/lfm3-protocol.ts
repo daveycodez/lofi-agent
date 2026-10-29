@@ -6,8 +6,11 @@ export type ChatTurn = {
   content: string
 }
 
+/** Experimental GPU upload strategies, picked with ?upload= (see lfm3.worker.ts). */
+export type UploadMode = "default" | "write" | "write-wait"
+
 export type WorkerRequest =
-  | { type: "load" }
+  | { type: "load"; upload: UploadMode }
   | { type: "generate"; id: string; chat: Array<ChatTurn> }
   | { type: "stop"; id: string }
 

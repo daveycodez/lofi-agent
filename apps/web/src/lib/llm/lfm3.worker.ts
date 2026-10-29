@@ -4,7 +4,12 @@
  * native Node dependencies never enter the app (or Cloudflare) build.
  */
 import { MODEL_ID } from "./lfm3-protocol"
-import type { ChatTurn, WorkerRequest, WorkerResponse } from "./lfm3-protocol"
+import type {
+  ChatTurn,
+  UploadMode,
+  WorkerRequest,
+  WorkerResponse
+} from "./lfm3-protocol"
 
 const TRANSFORMERS_URL =
   "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2"
@@ -145,13 +150,78 @@ async function dropOldCacheCopy() {
   }
 }
 
+/**
+ * Experiment for iPhone Safari, which kills the page past 2 GB while ONNX
+ * Runtime uploads the weights. ONNX Runtime uploads each tensor through a
+ * temporary mapped GPU buffer (MAP_WRITE | COPY_SRC, mappedAtCreation), then
+ * copyBufferToBuffer. "write" swaps that for queue.writeBuffer; "write-wait"
+ * also pauses after every 64 MB so Safari can flush what's queued.
+ */
+function patchUploads(mode: UploadMode) {
+  if (mode === "default") return () => undefined
+  // GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC
+  const STAGING = 2 | 4
+  type Staging = { staging: ArrayBuffer | null; device: GPUDevice }
+  const createBuffer = GPUDevice.prototype.createBuffer
+  GPUDevice.prototype.createBuffer = function (desc) {
+    if (!desc.mappedAtCreation || desc.usage !== STAGING) {
+      return createBuffer.call(this, desc)
+    }
+    const fake: Staging & Record<string, unknown> = {
+      staging: new ArrayBuffer(desc.size),
+      device: this,
+      size: desc.size,
+      usage: desc.usage,
+      getMappedRange: () => fake.staging,
+      unmap: () => undefined,
+      destroy: () => {
+        fake.staging = null
+      }
+    }
+    return fake as unknown as GPUBuffer
+  }
+  let sinceWait = 0
+  type Copy = (this: GPUCommandEncoder, ...args: Array<unknown>) => void
+  const encoder = GPUCommandEncoder.prototype as unknown as {
+    copyBufferToBuffer: Copy
+  }
+  const copy = encoder.copyBufferToBuffer
+  encoder.copyBufferToBuffer = function (...args) {
+    const [source, sourceOffset, destination, destinationOffset, size] =
+      args as [Staging, number, GPUBuffer, number, number]
+    if (!source.staging) return copy.apply(this, args)
+    source.device.queue.writeBuffer(
+      destination,
+      destinationOffset,
+      source.staging,
+      sourceOffset,
+      size
+    )
+    sinceWait += size
+    if (mode === "write-wait" && sinceWait >= 64 * 1024 * 1024) {
+      sinceWait = 0
+      // ONNX Runtime calls this synchronously, so pause by spinning.
+      const until = performance.now() + 250
+      while (performance.now() < until) {
+        // wait
+      }
+    }
+  }
+  // Only for the initial weight upload: during inference ONNX Runtime records
+  // copies behind other GPU work, which writeBuffer would jump ahead of.
+  return () => {
+    GPUDevice.prototype.createBuffer = createBuffer
+    encoder.copyBufferToBuffer = copy
+  }
+}
+
 let runtime: Promise<{
   tf: TransformersModule
   tokenizer: Tokenizer
   model: Model
 }> | null = null
 
-function load() {
+function load(upload: UploadMode = "default") {
   runtime ??= (async () => {
     if (!("gpu" in navigator)) {
       throw new Error("LFM3 needs WebGPU, which this browser doesn't support.")
@@ -178,6 +248,7 @@ function load() {
     // Hand ONNX Runtime the weights directly; Transformers.js would
     // otherwise download and cache them itself.
     const weights = await openWeights()
+    const restoreUploads = patchUploads(upload)
     const model = await tf.AutoModelForCausalLM.from_pretrained(MODEL_ID, {
       dtype: "q4f16",
       device: "webgpu",
@@ -185,7 +256,10 @@ function load() {
       session_options: {
         externalData: [{ path: WEIGHTS_NAME, data: weights.data }]
       }
-    }).finally(weights.close)
+    }).finally(() => {
+      restoreUploads()
+      weights.close()
+    })
     ctx.postMessage({ type: "ready" })
     return { tf, tokenizer, model }
   })().catch((error: unknown) => {
@@ -236,7 +310,7 @@ const errorMessage = (error: unknown) =>
 
 ctx.onmessage = ({ data }) => {
   if (data.type === "load") {
-    load().catch((error: unknown) =>
+    load(data.upload).catch((error: unknown) =>
       ctx.postMessage({ type: "load-error", message: errorMessage(error) })
     )
   } else if (data.type === "generate") {

@@ -5,6 +5,7 @@ import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
 import { MODEL_ID } from "#/lib/llm/lfm3-protocol"
 import type {
   ChatTurn,
+  UploadMode,
   WorkerRequest,
   WorkerResponse
 } from "#/lib/llm/lfm3-protocol"
@@ -78,6 +79,21 @@ function post(message: WorkerRequest) {
   worker.postMessage(message)
 }
 
+/**
+ * Experiment: ?upload=write or ?upload=write-wait picks how weights are sent
+ * to the GPU (remembered, since sending a message rewrites the URL).
+ */
+function uploadMode(): UploadMode {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get("upload")
+    if (fromUrl) localStorage.setItem("lofi-agent:upload", fromUrl)
+    const mode = fromUrl ?? localStorage.getItem("lofi-agent:upload")
+    return mode === "write" || mode === "write-wait" ? mode : "default"
+  } catch {
+    return "default"
+  }
+}
+
 /** Starts loading the model (downloading it the first time). */
 export function loadLfm3() {
   if (!load) {
@@ -90,7 +106,7 @@ export function loadLfm3() {
     load = { promise, resolve, reject }
     // The worker reports whether this is a download or a cached load.
     lfm3Status.set({ state: "loading", progress: 0, cached: true })
-    post({ type: "load" })
+    post({ type: "load", upload: uploadMode() })
   }
   return load.promise
 }
