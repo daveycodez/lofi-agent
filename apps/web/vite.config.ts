@@ -9,6 +9,8 @@ import { cloudflare } from "@cloudflare/vite-plugin"
 
 const config = defineConfig({
   resolve: { tsconfigPaths: true },
+  // Module workers, so the LFM3 worker can import Transformers.js from the CDN.
+  worker: { format: "es" },
   plugins: [
     devtools(),
     cloudflare({ viteEnvironment: { name: "ssr" } }),

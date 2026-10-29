@@ -1,5 +1,11 @@
 import ChevronDown from "@gravity-ui/icons/ChevronDown"
-import { Button, ListBox, Popover, ProgressCircle } from "@heroui/react"
+import {
+  Button,
+  ListBox,
+  Popover,
+  ProgressCircle,
+  Spinner
+} from "@heroui/react"
 import { useState } from "react"
 
 import { lfm3Status, loadLfm3 } from "#/lib/llm/lfm3-connection"
@@ -106,16 +112,16 @@ export function ModelSelect() {
         <span
           className={`flex items-center gap-1.5 text-xs tabular-nums ${status.isError ? "text-danger" : "text-muted"}`}
         >
-          {status.progress !== undefined && (
+          {status.progress === null && <Spinner size="sm" color="current" />}
+          {typeof status.progress === "number" && (
             <ProgressCircle
               aria-label={status.text}
               size="sm"
-              isIndeterminate={status.progress === null}
-              value={(status.progress ?? 0) * 100}
+              value={status.progress * 100}
             >
               <ProgressCircle.Track>
                 <ProgressCircle.TrackCircle />
-                <ProgressCircle.FillCircle />
+                <ProgressCircle.FillCircle className="stroke-current" />
               </ProgressCircle.Track>
             </ProgressCircle>
           )}
