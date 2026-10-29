@@ -85,13 +85,24 @@
   content: none;
 }
 
-.markdown.prose pre {
-  font-size: 0.8125em;
-  line-height: 1.6;
-  padding: 0.875em 1em;
+/*
+ * Code blocks (CodeBlock in markdown.tsx): a header bar, then the code.
+ * Token colors come from the GitHub themes (lib/highlight.ts); this rule
+ * replaces their block background and padding.
+ */
+.markdown .code-block pre.tm-code {
+  margin: 0;
+  padding: 0.125rem 0.875rem 0.875rem;
+  overflow-x: auto;
+  background: transparent;
+  color: var(--th-token);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8125rem;
+  line-height: 1.65;
 }
-.markdown pre {
-  border-radius: 1rem;
+.markdown .code-block code {
+  font-family: inherit;
+  white-space: pre;
 }
 
 /* Typography adds its own quote marks to blockquotes; models usually include them. */
@@ -114,17 +125,12 @@
   overflow-x: auto;
   overflow-y: hidden;
 }
+/* Equations one after another read as a group, closer together. */
+.markdown .math-block + .math-block > .katex-display {
+  margin-top: -0.25em;
+}
 .markdown .katex-display > .katex {
   font-size: 1.05em;
-}
-/* A display block alone in a paragraph shouldn't add the paragraph's gap too. */
-.markdown p:has(> .katex-display:only-child) {
-  margin-top: 0;
-  margin-bottom: 0;
-}
-/* Inline math and the punctuation right after it stay on one line. */
-.markdown .math-nowrap {
-  white-space: nowrap;
 }
 /* Boxed answers: a soft accent box with room around the value. */
 .markdown .katex .fbox {
@@ -133,51 +139,4 @@
 }
 .markdown .katex .boxpad {
   padding: 0 0.2em;
-}
-
-/*
- * Code highlighting (highlight.js classes from rehype-highlight), drawn with
- * HeroUI theme colors so it follows light and dark mode.
- */
-.markdown .hljs-comment,
-.markdown .hljs-quote {
-  color: var(--muted);
-  font-style: italic;
-}
-.markdown .hljs-keyword,
-.markdown .hljs-selector-tag,
-.markdown .hljs-built_in,
-.markdown .hljs-meta,
-.markdown .hljs-tag {
-  color: var(--accent);
-}
-.markdown .hljs-string,
-.markdown .hljs-regexp,
-.markdown .hljs-addition,
-.markdown .hljs-attribute {
-  color: var(--success);
-}
-.markdown .hljs-number,
-.markdown .hljs-literal,
-.markdown .hljs-symbol,
-.markdown .hljs-variable.language_ {
-  color: var(--warning);
-}
-.markdown .hljs-title,
-.markdown .hljs-title.function_,
-.markdown .hljs-section,
-.markdown .hljs-name,
-.markdown .hljs-selector-class,
-.markdown .hljs-selector-id {
-  color: var(--accent);
-  font-weight: 600;
-}
-.markdown .hljs-attr,
-.markdown .hljs-property,
-.markdown .hljs-type,
-.markdown .hljs-params {
-  color: var(--foreground);
-}
-.markdown .hljs-deletion {
-  color: var(--danger);
 }

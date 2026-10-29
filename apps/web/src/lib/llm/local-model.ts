@@ -9,6 +9,8 @@ import type {
   WorkerResponse
 } from "#/lib/llm/local-model-protocol"
 import { createStore } from "#/lib/store"
+import { createThinkingSplitter } from "#/lib/thinking"
+import type { ReplyPiece } from "#/lib/thinking"
 
 /**
  * Models that run in the browser with Transformers.js on WebGPU, inside a
@@ -191,20 +193,75 @@ export function localModelConnection(options: {
         messageId,
         role: "assistant"
       } as StreamChunk
+
+      // Thinking (a leading <think> block) streams as reasoning events, so
+      // the message gets a thinking part; the rest streams as its text.
+      const reasoningId = `reasoning_${runId}`
+      let reasoning: "none" | "open" | "closed" = "none"
+      const toEvents = (pieces: Array<ReplyPiece>) =>
+        pieces.flatMap((piece): Array<StreamChunk> => {
+          if (piece.kind === "thinking") {
+            const start: Array<StreamChunk> =
+              reasoning === "none"
+                ? [
+                    {
+                      type: EventType.REASONING_START,
+                      messageId: reasoningId
+                    } as StreamChunk,
+                    {
+                      type: EventType.REASONING_MESSAGE_START,
+                      messageId: reasoningId,
+                      role: "reasoning"
+                    } as StreamChunk
+                  ]
+                : []
+            reasoning = "open"
+            return [
+              ...start,
+              {
+                type: EventType.REASONING_MESSAGE_CONTENT,
+                messageId: reasoningId,
+                delta: piece.text
+              } as StreamChunk
+            ]
+          }
+          return [
+            ...endReasoning(),
+            {
+              type: EventType.TEXT_MESSAGE_CONTENT,
+              messageId,
+              delta: piece.text
+            } as StreamChunk
+          ]
+        })
+      const endReasoning = (): Array<StreamChunk> => {
+        if (reasoning !== "open") return []
+        reasoning = "closed"
+        return [
+          {
+            type: EventType.REASONING_MESSAGE_END,
+            messageId: reasoningId
+          } as StreamChunk,
+          {
+            type: EventType.REASONING_END,
+            messageId: reasoningId
+          } as StreamChunk
+        ]
+      }
+
+      const splitter = createThinkingSplitter()
       while (!finished || queue.length > 0) {
         const delta = queue.shift()
         if (delta !== undefined) {
-          yield {
-            type: EventType.TEXT_MESSAGE_CONTENT,
-            messageId,
-            delta
-          } as StreamChunk
+          yield* toEvents(splitter.push(delta))
           continue
         }
         await nextChunk()
         wake = null
       }
       abortSignal?.removeEventListener("abort", onAbort)
+      yield* toEvents(splitter.flush())
+      yield* endReasoning()
       yield { type: EventType.TEXT_MESSAGE_END, messageId } as StreamChunk
 
       if (failure) {

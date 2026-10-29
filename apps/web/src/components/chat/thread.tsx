@@ -80,6 +80,21 @@ function messageText(message: UIMessage) {
   return message.parts.map((p) => (p.type === "text" ? p.content : "")).join("")
 }
 
+/**
+ * A reply's thinking (its thinking parts) and its answer (its text). Replies
+ * saved by earlier versions kept the thinking as <think> tags in the text.
+ */
+function replyOf(message: UIMessage) {
+  const { thinking, answer } = splitThinking(messageText(message))
+  const thoughts = message.parts
+    .map((p) => (p.type === "thinking" ? p.content.trim() : ""))
+    .filter(Boolean)
+  return {
+    thinking: [...thoughts, thinking].filter(Boolean).join("\n\n"),
+    text: answer
+  }
+}
+
 /** Icon-only ghost button with a tooltip. */
 function IconAction({
   label,
@@ -244,7 +259,7 @@ export function Thread({
                 return (
                   <AssistantMessage
                     key={message.id}
-                    text={messageText(message)}
+                    {...replyOf(message)}
                     isLast={isLast}
                     isRunning={isLoading && isLast}
                     seconds={timings[message.id]}
@@ -615,7 +630,8 @@ function ThinkingBlock({
 }
 
 function AssistantMessage({
-  text: raw,
+  text,
+  thinking = "",
   isLast,
   isRunning,
   seconds,
@@ -624,6 +640,7 @@ function AssistantMessage({
   onDelete
 }: {
   text: string
+  thinking?: string
   isLast: boolean
   isRunning: boolean
   seconds?: number
@@ -631,14 +648,10 @@ function AssistantMessage({
   onReload: () => void
   onDelete?: () => void
 }) {
-  const { thinking, answer: text, isThinking } = splitThinking(raw)
   return (
     <div className="group flex flex-col gap-2">
       {thinking && (
-        <ThinkingBlock
-          thinking={thinking}
-          isThinking={isThinking && isRunning}
-        />
+        <ThinkingBlock thinking={thinking} isThinking={isRunning && !text} />
       )}
       {text ? (
         <div className="markdown prose max-w-none wrap-break-word">
