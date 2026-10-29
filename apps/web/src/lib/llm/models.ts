@@ -16,8 +16,12 @@ import { createStore } from "#/lib/store"
 
 export type ModelId = "apple-fm" | "lfm3" | "lfm3-web" | "lfm2.5"
 
-/** Whether models that can think should reason before answering. */
-export const thinkingStore = createStore<boolean>(false, "lofi-agent:thinking")
+/**
+ * Whether models that can think should reason before answering. On by
+ * default: LFM3 and LFM2.5 answer much better with it. (A new key, so the
+ * old default of off doesn't carry over.)
+ */
+export const thinkingStore = createStore<boolean>(true, "lofi-agent:think")
 
 /** Models that can think before answering. */
 export const canThink = (id: ModelId) =>
