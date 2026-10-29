@@ -30,7 +30,12 @@ type Model = {
 }
 type StoppingCriteria = { interrupt: () => void }
 type TransformersModule = {
-  AutoTokenizer: { from_pretrained: (id: string) => Promise<Tokenizer> }
+  AutoTokenizer: {
+    from_pretrained: (
+      id: string,
+      options?: Record<string, unknown>
+    ) => Promise<Tokenizer>
+  }
   AutoModelForCausalLM: {
     from_pretrained: (
       id: string,
@@ -60,10 +65,26 @@ const ctx = globalThis as unknown as {
  */
 const WEIGHTS = "model_q4f16.onnx_data"
 
+/**
+ * A model id is a Hugging Face repo, optionally pinned to a commit:
+ * "owner/repo@revision". Pinning makes browsers fetch that version's files
+ * instead of reusing cached ones from an older version.
+ */
+function parseModelId(modelId: string) {
+  const [repo, revision = "main"] = modelId.split("@")
+  return { repo, revision }
+}
+
+/**
+ * The weights file on disk is named by repo, not revision, so a new commit
+ * that keeps the same weights doesn't download them again. A commit that
+ * changes the weights needs a new repo (or a new name here).
+ */
 const weightsFiles = (modelId: string) => {
-  const file = `${modelId.replace(/[^\w.-]+/g, "_")}.${WEIGHTS}`
+  const { repo, revision } = parseModelId(modelId)
+  const file = `${repo.replace(/[^\w.-]+/g, "_")}.${WEIGHTS}`
   return {
-    url: `https://huggingface.co/${modelId}/resolve/main/onnx/${WEIGHTS}`,
+    url: `https://huggingface.co/${repo}/resolve/${revision}/onnx/${WEIGHTS}`,
     file,
     /** Written once the download is complete. */
     done: `${file}.done`
@@ -209,10 +230,12 @@ async function loadRuntime(modelId: string): Promise<Runtime> {
   const tf = (await import(
     /* @vite-ignore */ TRANSFORMERS_URL
   )) as TransformersModule
-  const tokenizer = await tf.AutoTokenizer.from_pretrained(modelId)
+  const { repo, revision } = parseModelId(modelId)
+  const tokenizer = await tf.AutoTokenizer.from_pretrained(repo, { revision })
   const weights = await openWeights(modelId)
   try {
-    const model = await tf.AutoModelForCausalLM.from_pretrained(modelId, {
+    const model = await tf.AutoModelForCausalLM.from_pretrained(repo, {
+      revision,
       dtype: "q4f16",
       device: "webgpu",
       // Weights come from disk (above), not Transformers.js's download.
