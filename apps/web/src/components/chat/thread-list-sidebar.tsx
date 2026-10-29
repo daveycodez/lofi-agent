@@ -18,6 +18,7 @@ import Plus from "@gravity-ui/icons/Plus"
 import TrashBin from "@gravity-ui/icons/TrashBin"
 import Xmark from "@gravity-ui/icons/Xmark"
 import {
+  AlertDialog,
   Button,
   buttonVariants,
   Dropdown,
@@ -32,6 +33,7 @@ import { Fragment, useEffect, useRef, useState } from "react"
 
 import {
   archiveThread,
+  deleteAllThreads,
   deleteThread,
   renameThread,
   threadsStore,
@@ -59,6 +61,7 @@ export function ThreadListSidebar(props: SidebarProps) {
       <div className="flex h-12 shrink-0 items-center gap-2 px-4">
         <Comments className="size-4" />
         <span className="text-sm font-semibold">lofi-agent</span>
+        <ChatsMenu onActiveRemoved={props.onActiveRemoved} />
         <Tooltip delay={300}>
           <Button
             isIconOnly
@@ -66,7 +69,7 @@ export function ThreadListSidebar(props: SidebarProps) {
             variant="ghost"
             aria-label="Collapse chats"
             onPress={props.onCollapse}
-            className="ms-auto -me-2"
+            className="-me-2"
           >
             <LayoutSideContentLeft />
           </Button>
@@ -113,6 +116,83 @@ export function ThreadListSidebar(props: SidebarProps) {
         </a>
       </div>
     </div>
+  )
+}
+
+/** Actions for all chats at once, in the header: deleting them all. */
+function ChatsMenu({ onActiveRemoved }: { onActiveRemoved: () => void }) {
+  const count = threadsStore.use().length
+  const [isConfirming, setIsConfirming] = useState(false)
+  return (
+    <>
+      <Dropdown>
+        <Button
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          aria-label="Chat options"
+          className="ms-auto"
+        >
+          <Ellipsis />
+        </Button>
+        <Dropdown.Popover placement="bottom end">
+          <Dropdown.Menu
+            disabledKeys={count === 0 ? ["delete-all"] : []}
+            onAction={(key) => {
+              if (key === "delete-all") setIsConfirming(true)
+            }}
+          >
+            <Dropdown.Item
+              id="delete-all"
+              textValue="Delete all chats"
+              variant="danger"
+            >
+              <TrashBin className="size-4 text-danger" />
+              <Label>Delete all chats</Label>
+            </Dropdown.Item>
+          </Dropdown.Menu>
+        </Dropdown.Popover>
+      </Dropdown>
+
+      <AlertDialog.Backdrop
+        isOpen={isConfirming}
+        onOpenChange={setIsConfirming}
+      >
+        <AlertDialog.Container>
+          <AlertDialog.Dialog className="sm:max-w-[400px]">
+            <AlertDialog.CloseTrigger />
+            <AlertDialog.Header>
+              <AlertDialog.Icon status="danger">
+                <TrashBin className="size-5" />
+              </AlertDialog.Icon>
+              <AlertDialog.Heading>Delete all chats?</AlertDialog.Heading>
+            </AlertDialog.Header>
+            <AlertDialog.Body>
+              <p>
+                This permanently deletes{" "}
+                {count === 1 ? "your chat" : `all ${count} chats`}, including
+                archived ones. This can't be undone.
+              </p>
+            </AlertDialog.Body>
+            <AlertDialog.Footer>
+              <Button slot="close" variant="tertiary">
+                Cancel
+              </Button>
+              <Button
+                slot="close"
+                variant="danger"
+                onPress={() => {
+                  void deleteAllThreads()
+                  onActiveRemoved()
+                }}
+              >
+                Delete All
+              </Button>
+            </AlertDialog.Footer>
+          </AlertDialog.Dialog>
+        </AlertDialog.Container>
+      </AlertDialog.Backdrop>
+    </>
   )
 }
 

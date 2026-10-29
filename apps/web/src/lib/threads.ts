@@ -77,3 +77,18 @@ export async function deleteThread(id: string) {
     // Storage unavailable: the metadata is gone, which is what the user sees.
   }
 }
+
+/** Deletes every chat, archived ones included, with their messages. */
+export async function deleteAllThreads() {
+  const ids = threadsStore.get().map((t) => t.id)
+  threadsStore.set([])
+  await Promise.all(
+    ids.map(async (id) => {
+      try {
+        await chatPersistence.removeItem(id)
+      } catch {
+        // Storage unavailable: the metadata is gone, which is what the user sees.
+      }
+    })
+  )
+}
