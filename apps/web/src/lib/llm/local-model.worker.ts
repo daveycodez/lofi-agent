@@ -323,7 +323,17 @@ async function loadRuntime(modelId: string): Promise<Runtime> {
       device: "webgpu",
       // Weights come from disk (above), not Transformers.js's download.
       use_external_data_format: 0,
-      session_options: { externalData: [{ path: WEIGHTS, data: weights.data }] }
+      session_options: {
+        externalData: [{ path: WEIGHTS, data: weights.data }],
+        // onnxruntime's default ("bucket") keeps a GPU buffer of every size
+        // it has used. While generating, attention buffers grow a token at a
+        // time, so that cache grows too: hundreds of MB over a long reply,
+        // past an iPhone's memory limit. lazyRelease frees buffers after
+        // each step instead.
+        executionProviders: [
+          { name: "webgpu", storageBufferCacheMode: "lazyRelease" }
+        ]
+      }
     })
     return { tf, tokenizer, model }
   } finally {
