@@ -1,7 +1,7 @@
 /**
- * The MCP servers modal: the built-in servers and the user's own. Add one by
- * URL, see whether the browser can reach it and which tools it offers, turn
- * it off, or remove it.
+ * The MCP servers modal: the user's own servers. Add one by URL, see whether
+ * the browser can reach it and which tools it offers, turn it off, or remove
+ * it.
  */
 import ArrowRotateRight from "@gravity-ui/icons/ArrowRotateRight"
 import TrashBin from "@gravity-ui/icons/TrashBin"
@@ -93,21 +93,18 @@ function McpServerRow({ server }: { server: McpServer }) {
           </p>
           <p className="truncate text-xs text-muted">{server.url}</p>
         </div>
-        {/* Built-in servers can be turned off, not removed. */}
-        {!server.builtIn && (
-          <Tooltip delay={300}>
-            <Button
-              isIconOnly
-              size="sm"
-              variant="ghost"
-              aria-label={`Remove ${server.name}`}
-              onPress={() => removeMcpServer(server.id)}
-            >
-              <TrashBin className="text-danger" />
-            </Button>
-            <Tooltip.Content>Remove server</Tooltip.Content>
-          </Tooltip>
-        )}
+        <Tooltip delay={300}>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label={`Remove ${server.name}`}
+            onPress={() => removeMcpServer(server.id)}
+          >
+            <TrashBin className="text-danger" />
+          </Button>
+          <Tooltip.Content>Remove server</Tooltip.Content>
+        </Tooltip>
         <Switch
           aria-label={`Use ${server.name}`}
           isSelected={server.enabled}

@@ -166,3 +166,19 @@ export function parseSources(text: string): Array<Source> {
     site: siteOf(m[3])
   }))
 }
+
+/**
+ * Small models have small context windows, so long tool results are cut to
+ * this many characters.
+ */
+const MAX_RESULT_CHARS = 6000
+
+/** Cuts a result to MAX_RESULT_CHARS, keeping a trailing Sources list whole. */
+export function shorten(text: string) {
+  if (text.length <= MAX_RESULT_CHARS) return text
+  const at = text.lastIndexOf("\n\nSources:\n")
+  const tail = at >= 0 ? text.slice(at) : ""
+  const head = at >= 0 ? text.slice(0, at) : text
+  const room = Math.max(0, MAX_RESULT_CHARS - tail.length)
+  return `${head.slice(0, room)}\n…(cut to ${MAX_RESULT_CHARS} characters)${tail}`
+}

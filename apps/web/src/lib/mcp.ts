@@ -1,9 +1,8 @@
 /**
- * MCP servers: the built-in ones, then those the user adds. The browser
- * connects to each one directly with TanStack AI's MCP client (Streamable
- * HTTP), so a server only works if it allows requests from this site
- * (CORS). The list, on/off choices and any tokens stay in this browser's
- * storage.
+ * MCP servers the user adds. The browser connects to each one directly with
+ * TanStack AI's MCP client (Streamable HTTP), so a server only works if it
+ * allows requests from this site (CORS). The list, on/off choices and any
+ * tokens stay in this browser's storage.
  */
 import { toolDefinition } from "@tanstack/ai"
 import type { JSONSchema } from "@tanstack/ai"
@@ -11,7 +10,7 @@ import type { MCPClient } from "@tanstack/ai-mcp"
 import { useMemo } from "react"
 import { v7 as uuidv7 } from "uuid"
 
-import { compactToolResult } from "#/lib/sources"
+import { compactToolResult, shorten } from "#/lib/sources"
 import { createStore } from "#/lib/store"
 
 export type McpServer = {
@@ -21,23 +20,6 @@ export type McpServer = {
   /** Sent as `Authorization: Bearer <token>` when set. */
   token?: string
   enabled: boolean
-  /**
-   * Comes with the app: always listed first, and can't be removed. Its tools
-   * are offered first too: small models tend to pick the first tool that
-   * might fit, so the general ones should lead.
-   */
-  builtIn?: boolean
-  /** Only these of the server's tools are used (all of them when unset). */
-  onlyTools?: Array<string>
-  /**
-   * Only these of each tool's arguments are offered to the model (all of
-   * them when unset).
-   */
-  onlyArgs?: Array<string>
-  /** Arguments sent with every call, on top of the model's. */
-  fixedArgs?: Record<string, unknown>
-  /** Offer only the first paragraph of each tool's description. */
-  shortDescription?: boolean
 }
 
 export type McpTool = {
@@ -51,34 +33,6 @@ export type McpServerStatus =
   | { state: "checking" }
   | { state: "connected"; tools: Array<McpTool> }
   | { state: "error"; message: string }
-
-/** Servers that come with the app. They're on unless the user turns them off. */
-const BUILT_IN_SERVERS: Array<Omit<McpServer, "enabled">> = [
-  {
-    // Web search. Works without a key (rate-limited per user).
-    id: "built-in:firecrawl",
-    name: "Firecrawl Web Search",
-    url: "https://mcp.firecrawl.dev/v2/mcp",
-    builtIn: true,
-    // Search only: small models scrape made-up page URLs, and the search
-    // results already carry the relevant text.
-    onlyTools: ["firecrawl_search"],
-    // The rest of the tool's description and arguments cover paid features
-    // (data providers, scraping every result, enterprise modes). Offered to a
-    // small model they make the prompt several times longer, and it fills
-    // them in.
-    onlyArgs: ["query", "objective"],
-    shortDescription: true,
-    // The app keeps 8 results at most; 5 keeps the prompt short.
-    fixedArgs: { limit: 5 }
-  }
-]
-
-/** On or off for each built-in server, by id. Missing means on. */
-const builtInEnabledStore = createStore<Record<string, boolean>>(
-  {},
-  "lofi-agent:mcp-built-in"
-)
 
 /** Servers the user added. */
 const customServersStore = createStore<Array<McpServer>>(
@@ -96,30 +50,9 @@ function sameUrl(url: string) {
   }
 }
 
-/** Built-in servers first, then the user's (minus copies of a built-in). */
-function allServers(
-  custom: Array<McpServer>,
-  builtInEnabled: Record<string, boolean>
-): Array<McpServer> {
-  const builtIns = BUILT_IN_SERVERS.map((s) => ({
-    ...s,
-    enabled: builtInEnabled[s.id] ?? true
-  }))
-  const urls = new Set(builtIns.map((s) => sameUrl(s.url)))
-  return [...builtIns, ...custom.filter((s) => !urls.has(sameUrl(s.url)))]
-}
+export const getMcpServers = () => customServersStore.get()
 
-export const getMcpServers = () =>
-  allServers(customServersStore.get(), builtInEnabledStore.get())
-
-export function useMcpServers() {
-  const custom = customServersStore.use()
-  const builtInEnabled = builtInEnabledStore.use()
-  return useMemo(
-    () => allServers(custom, builtInEnabled),
-    [custom, builtInEnabled]
-  )
-}
+export const useMcpServers = () => customServersStore.use()
 
 /** Whether a server with this URL is already in the list. */
 export const hasMcpServer = (url: string) =>
@@ -188,91 +121,19 @@ function disconnect(id: string) {
   void client?.then((c) => c.close()).catch(() => undefined)
 }
 
-/**
- * Removes every sentence that names one of `hidden` from a description, so a
- * model isn't told to use a tool it doesn't have.
- */
-function withoutMentions(text: string, hidden: Array<string>) {
-  if (hidden.length === 0) return text
-  return text
-    .split("\n")
-    .map((line) =>
-      line
-        .split(/(?<=[.!?])\s+/)
-        .filter((sentence) => !hidden.some((name) => sentence.includes(name)))
-        .join(" ")
-    )
-    .filter((line, i, lines) => line.trim() || lines[i - 1]?.trim())
-    .join("\n")
-    .trim()
-}
-
-/** The same, for every description inside a JSON Schema. */
-function schemaWithoutMentions(
-  schema: unknown,
-  hidden: Array<string>
-): unknown {
-  if (hidden.length === 0 || !schema || typeof schema !== "object") {
-    return schema
-  }
-  if (Array.isArray(schema)) {
-    return schema.map((item) => schemaWithoutMentions(item, hidden))
-  }
-  return Object.fromEntries(
-    Object.entries(schema).map(([key, value]) => [
-      key,
-      key === "description" && typeof value === "string"
-        ? withoutMentions(value, hidden)
-        : schemaWithoutMentions(value, hidden)
-    ])
-  )
-}
-
-/** A tool's argument schema with only the `keep` arguments. */
-function onlyArgs(schema: object, keep: Array<string> | undefined) {
-  const s = schema as {
-    properties?: Record<string, unknown>
-    required?: Array<string>
-  }
-  if (!keep || !s.properties) return schema
-  return {
-    ...s,
-    properties: Object.fromEntries(
-      Object.entries(s.properties).filter(([name]) => keep.includes(name))
-    ),
-    ...(s.required && {
-      required: s.required.filter((name) => keep.includes(name))
-    })
-  }
-}
-
 /** Connects to `server`, lists its tools, and records the result. */
 export async function checkMcpServer(server: McpServer) {
   disconnect(server.id)
   setStatus(server.id, { state: "checking" })
   try {
-    const all = await (await connect(server)).tools()
-    const keep = (name: string) =>
-      !server.onlyTools || server.onlyTools.includes(name)
-    // Tools left out, which the kept tools' descriptions mustn't mention.
-    const hidden = all.map((t) => t.name).filter((name) => !keep(name))
+    const tools = await (await connect(server)).tools()
     setStatus(server.id, {
       state: "connected",
-      tools: all
-        .filter((t) => keep(t.name))
-        .map((t) => ({
-          name: t.name,
-          description: withoutMentions(
-            server.shortDescription
-              ? t.description.trim().split(/\n\s*\n/)[0]
-              : t.description,
-            hidden
-          ),
-          inputSchema: schemaWithoutMentions(
-            onlyArgs(t.inputSchema ?? { type: "object" }, server.onlyArgs),
-            hidden
-          ) as JSONSchema
-        }))
+      tools: tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: (t.inputSchema ?? { type: "object" }) as JSONSchema
+      }))
     })
   } catch (error) {
     disconnect(server.id)
@@ -288,12 +149,6 @@ export function checkMcpServers() {
   }
 }
 
-/**
- * Small models have small context windows, so long tool results are cut to
- * this many characters.
- */
-const MAX_RESULT_CHARS = 6000
-
 type CallToolResult = {
   content?: Array<{ type: string; text?: string }>
   structuredContent?: unknown
@@ -303,10 +158,10 @@ type CallToolResult = {
 /** Runs one MCP tool and returns its result as text for the model. */
 async function runMcpTool(server: McpServer, name: string, input: unknown) {
   const client = await connect(server)
-  const result = (await client.callTool(name, {
-    ...(input as Record<string, unknown> | undefined),
-    ...server.fixedArgs
-  })) as CallToolResult
+  const result = (await client.callTool(
+    name,
+    (input ?? {}) as Record<string, unknown>
+  )) as CallToolResult
   const text =
     result.content
       ?.map((c) => (c.type === "text" ? (c.text ?? "") : `[${c.type}]`))
@@ -316,16 +171,6 @@ async function runMcpTool(server: McpServer, name: string, input: unknown) {
       : JSON.stringify(result.structuredContent))
   if (result.isError) throw new Error(text || "The tool failed.")
   return shorten(compactToolResult(text))
-}
-
-/** Cuts a result to MAX_RESULT_CHARS, keeping a trailing Sources list whole. */
-function shorten(text: string) {
-  if (text.length <= MAX_RESULT_CHARS) return text
-  const at = text.lastIndexOf("\n\nSources:\n")
-  const tail = at >= 0 ? text.slice(at) : ""
-  const head = at >= 0 ? text.slice(0, at) : text
-  const room = Math.max(0, MAX_RESULT_CHARS - tail.length)
-  return `${head.slice(0, room)}\n…(cut to ${MAX_RESULT_CHARS} characters)${tail}`
 }
 
 /**
@@ -338,7 +183,6 @@ export function useMcpTools() {
   const status = mcpStatusStore.use()
   return useMemo(() => {
     const seen = new Set<string>()
-    // Built-in servers come first in the list, so their tools lead.
     return servers.flatMap((server) => {
       const s = status[server.id]
       if (!server.enabled || s?.state !== "connected") return []
@@ -383,18 +227,12 @@ export function addMcpServer(input: {
 
 export function setMcpServerEnabled(id: string, enabled: boolean) {
   if (!enabled) disconnect(id)
-  if (BUILT_IN_SERVERS.some((s) => s.id === id)) {
-    builtInEnabledStore.set((all) => ({ ...all, [id]: enabled }))
-    return
-  }
   customServersStore.set((all) =>
     all.map((s) => (s.id === id ? { ...s, enabled } : s))
   )
 }
 
-/** Removes a server the user added (built-in ones stay). */
 export function removeMcpServer(id: string) {
-  if (BUILT_IN_SERVERS.some((s) => s.id === id)) return
   disconnect(id)
   customServersStore.set((all) => all.filter((s) => s.id !== id))
   mcpStatusStore.set(({ [id]: _removed, ...rest }) => rest)

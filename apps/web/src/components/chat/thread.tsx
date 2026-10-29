@@ -44,6 +44,7 @@ import { SourceList } from "#/components/chat/sources"
 import { useDictation } from "#/lib/dictation"
 import { checkMcpServers, useMcpTools } from "#/lib/mcp"
 import { parseSources } from "#/lib/sources"
+import { useWebSearchTools } from "#/lib/web-search"
 import type { Source } from "#/lib/sources"
 import { splitThinking } from "#/lib/thinking"
 import {
@@ -271,6 +272,14 @@ export function Thread({
   /** Called before each send (used to put the thread in the URL). */
   onSend: () => void
 }) {
+  // Built-in web search first: small models tend to pick the first tool that
+  // might fit. useChat runs these tools in the browser when called.
+  const webSearchTools = useWebSearchTools()
+  const mcpTools = useMcpTools()
+  const tools = useMemo(() => {
+    const names = new Set<string>(webSearchTools.map((t) => t.name))
+    return [...webSearchTools, ...mcpTools.filter((t) => !names.has(t.name))]
+  }, [webSearchTools, mcpTools])
   const {
     messages,
     sendMessage,
@@ -284,8 +293,7 @@ export function Thread({
     connection: routedConnection,
     threadId,
     persistence: chatPersistence,
-    // MCP server tools; useChat runs them in the browser when called.
-    tools: useMcpTools()
+    tools
   })
   // Connect to the user's MCP servers so their tools are ready.
   useEffect(checkMcpServers, [])
