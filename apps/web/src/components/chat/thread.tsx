@@ -564,7 +564,7 @@ function AssistantMessage({
   return (
     <div className="group flex flex-col gap-2">
       {text ? (
-        <div className="markdown leading-relaxed wrap-break-word">
+        <div className="markdown prose max-w-none wrap-break-word">
           {/* `role` is TextPart's message-sender prop, not an ARIA role. */}
           {/* eslint-disable-next-line jsx-a11y/aria-role */}
           <TextPart content={text} role="assistant" />
