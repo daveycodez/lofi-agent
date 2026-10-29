@@ -373,8 +373,13 @@ function load(modelId: string) {
 
 const running = new Map<string, StoppingCriteria>()
 
-/** Prompt tokens read per step when reading a long prompt. */
-const PREFILL_CHUNK = 256
+/**
+ * Prompt tokens read per step when reading a long prompt. iPhones get much
+ * smaller steps: their GPU drops the device ("device lost") partway through
+ * a 256-token step even though memory is far from full, while ~50-token
+ * prompts work, so each step is kept to the size that works.
+ */
+const PREFILL_CHUNK = /iPhone|iPad|iPod/.test(navigator.userAgent) ? 48 : 256
 
 /**
  * Reads all but the last token of a long prompt into the model's cache,
