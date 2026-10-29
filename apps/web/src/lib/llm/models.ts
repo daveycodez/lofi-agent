@@ -14,23 +14,41 @@ import {
 import type { LocalModelStatus } from "#/lib/llm/local-model"
 import { createStore } from "#/lib/store"
 
-export type ModelId = "apple-fm" | "lfm3" | "lfm2.5"
+export type ModelId = "apple-fm" | "lfm3" | "lfm3-web" | "lfm2.5"
 
 /** Whether models that can think should reason before answering. */
 export const thinkingStore = createStore<boolean>(false, "lofi-agent:thinking")
 
 /** Models that can think before answering. */
-export const canThink = (id: ModelId) => id === "lfm3" || id === "lfm2.5"
+export const canThink = (id: ModelId) =>
+  id === "lfm3" || id === "lfm3-web" || id === "lfm2.5"
 
 /** Models that run in the browser, by Hugging Face id. */
 const LFM3_ID = "onnx-community/LFM3-1.7B-ONNX"
+/**
+ * A smaller build of LFM3 (GPTQ 4-bit, 905 MB of weights instead of 1.09 GB)
+ * made to fit iPhone Safari's memory limit. Sequences are limited to 16,384
+ * tokens.
+ */
+const LFM3_WEB_ID = "daveycodez/LFM3-1.7B-Web"
 const LFM2_5_ID = "LiquidAI/LFM2.5-1.2B-Instruct-ONNX"
 /** LFM2.5 has no thinking switch: thinking is a separate model. */
 const LFM2_5_THINKING_ID = "LiquidAI/LFM2.5-1.2B-Thinking-ONNX"
 const LOCAL_MODELS: Partial<Record<ModelId, string>> = {
   lfm3: LFM3_ID,
+  "lfm3-web": LFM3_WEB_ID,
   "lfm2.5": LFM2_5_ID
 }
+
+/** LFM3 card, "General" (chat, tool use, agents, coding). */
+const lfm3Connection = (modelId: string, name: string) =>
+  localModelConnection({
+    modelId,
+    name,
+    sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.1 },
+    toolFormat: "lfm3",
+    thinking: () => thinkingStore.get()
+  })
 
 // LFM2.5-1.2B-Instruct card.
 const lfm25 = localModelConnection({
@@ -66,14 +84,13 @@ export const MODELS: Array<{
     id: "lfm3",
     name: "LFM3 1.7B",
     icon: "/icons/liquid.svg",
-    // LFM3 card, "General" (chat, tool use, agents, coding).
-    connection: localModelConnection({
-      modelId: LFM3_ID,
-      name: "LFM3",
-      sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.1 },
-      toolFormat: "lfm3",
-      thinking: () => thinkingStore.get()
-    })
+    connection: lfm3Connection(LFM3_ID, "LFM3")
+  },
+  {
+    id: "lfm3-web",
+    name: "LFM3 1.7B Web",
+    icon: "/icons/liquid.svg",
+    connection: lfm3Connection(LFM3_WEB_ID, "LFM3 Web")
   },
   {
     id: "lfm2.5",
