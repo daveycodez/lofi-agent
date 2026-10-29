@@ -64,6 +64,75 @@ const ctx = globalThis as unknown as {
 }
 
 /*
+ * GPU diagnostics, added to generation errors. Safari has no API for memory
+ * use, so this counts the WebGPU buffers created and destroyed (nearly all of
+ * the model's memory), and records why the device was lost and any GPU error
+ * it reported, if those happen.
+ */
+const gpu = {
+  liveBytes: 0,
+  peakBytes: 0,
+  lost: null as string | null,
+  error: null as string | null,
+  promptTokens: 0
+}
+
+function trackGpu() {
+  const scope = globalThis as unknown as {
+    GPUDevice?: { prototype: GPUDevice }
+    GPUBuffer?: { prototype: GPUBuffer }
+    GPUAdapter?: { prototype: GPUAdapter }
+  }
+  const device = scope.GPUDevice?.prototype
+  const buffer = scope.GPUBuffer?.prototype
+  const adapter = scope.GPUAdapter?.prototype
+  if (!device || !buffer || !adapter) return
+  const sizes = new WeakMap<GPUBuffer, number>()
+  const createBuffer = device.createBuffer
+  device.createBuffer = function (descriptor) {
+    const created = createBuffer.call(this, descriptor)
+    sizes.set(created, descriptor.size)
+    gpu.liveBytes += descriptor.size
+    gpu.peakBytes = Math.max(gpu.peakBytes, gpu.liveBytes)
+    return created
+  }
+  const destroy = buffer.destroy
+  buffer.destroy = function () {
+    const size = sizes.get(this)
+    if (size !== undefined) {
+      gpu.liveBytes -= size
+      sizes.delete(this)
+    }
+    return destroy.call(this)
+  }
+  const requestDevice = adapter.requestDevice
+  adapter.requestDevice = async function (descriptor) {
+    const requested = await requestDevice.call(this, descriptor)
+    void requested.lost.then((info) => {
+      gpu.lost = `${info.reason}${info.message ? `: ${info.message}` : ""}`
+    })
+    requested.addEventListener("uncapturederror", (event) => {
+      gpu.error = (event as GPUUncapturedErrorEvent).error.message
+    })
+    return requested
+  }
+}
+trackGpu()
+
+/** What the GPU looked like when something failed, for the error message. */
+function gpuReport() {
+  const mb = (bytes: number) => Math.round(bytes / 1e6)
+  return [
+    `GPU buffers: ${mb(gpu.liveBytes)} MB in use, ${mb(gpu.peakBytes)} MB peak`,
+    `prompt: ${gpu.promptTokens} tokens`,
+    gpu.lost && `device lost: ${gpu.lost}`,
+    gpu.error && `GPU error: ${gpu.error}`
+  ]
+    .filter(Boolean)
+    .join("; ")
+}
+
+/*
  * The weights file (`onnx/model_q4f16.onnx_data`, 0.76-1.09 GB) is cached in
  * the Origin Private File System instead of Transformers.js's Cache Storage:
  * Transformers.js 4.3 holds the whole download in memory and copies it again
@@ -366,6 +435,7 @@ async function generate(
     ctx.postMessage({ type: "token", id, text: "<think>" })
   }
   const inputs = tokenizer(prompt, { add_special_tokens: false })
+  gpu.promptTokens = inputs.input_ids.dims[1]
   const stopping = new tf.InterruptableStoppingCriteria()
   running.set(id, stopping)
   // With tools, keep special tokens: LFM2.5 marks its tool calls with them.
@@ -413,7 +483,7 @@ ctx.onmessage = ({ data }) => {
         ctx.postMessage({
           type: "error",
           id: data.id,
-          message: errorMessage(error)
+          message: `${errorMessage(error)} (${gpuReport()})`
         })
       )
   } else {
