@@ -1,5 +1,6 @@
 import Archive from "@gravity-ui/icons/Archive"
 import Check from "@gravity-ui/icons/Check"
+import Copy from "@gravity-ui/icons/Copy"
 import Display from "@gravity-ui/icons/Display"
 import Ellipsis from "@gravity-ui/icons/Ellipsis"
 import LayoutSideContentLeft from "@gravity-ui/icons/LayoutSideContentLeft"
@@ -10,15 +11,21 @@ import TrashBin from "@gravity-ui/icons/TrashBin"
 import { Button, Drawer, Dropdown, Header, Label, Tooltip } from "@heroui/react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useTheme } from "next-themes"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { v7 as uuidv7 } from "uuid"
 
 import { Thread } from "#/components/chat/thread"
 import { ThreadListSidebar } from "#/components/chat/thread-list-sidebar"
 import { McpServersModal } from "#/components/mcp/mcp-servers-modal"
 import { SettingsModal } from "#/components/settings/settings-modal"
+import { copyText, formatChatLog } from "#/lib/chat-log"
 import { createStore } from "#/lib/store"
-import { archiveThread, deleteThread, threadsStore } from "#/lib/threads"
+import {
+  archiveThread,
+  chatPersistence,
+  deleteThread,
+  threadsStore
+} from "#/lib/threads"
 
 type Search = { thread?: string }
 
@@ -163,6 +170,25 @@ function HeaderMenu({
   onRemoved: () => void
 }) {
   const { theme, setTheme } = useTheme()
+  // The ⋯ shows a check for a moment once the chat is on the clipboard.
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 1500)
+    return () => clearTimeout(timer)
+  }, [copied])
+
+  const copyChat = (id: string) => {
+    // Started inside the tap, before any await, for Safari (see copyText).
+    const log = Promise.resolve()
+      .then(() => chatPersistence.getItem(id))
+      .then((state) => formatChatLog(state?.messages ?? []))
+    copyText(log).then(
+      () => setCopied(true),
+      (error: unknown) => console.error("Couldn't copy the chat", error)
+    )
+  }
+
   return (
     <Dropdown>
       <Tooltip delay={300}>
@@ -173,18 +199,20 @@ function HeaderMenu({
           size="sm"
           className="-me-2"
         >
-          <Ellipsis />
+          {copied ? <Check /> : <Ellipsis />}
         </Button>
         <Tooltip.Content placement="bottom">More actions</Tooltip.Content>
       </Tooltip>
       <Dropdown.Popover placement="bottom end" className="min-w-48">
         <Dropdown.Menu
-          disabledKeys={threadId ? [] : ["archive", "delete"]}
+          disabledKeys={threadId ? [] : ["copy", "archive", "delete"]}
           selectionMode="single"
           selectedKeys={new Set([theme ?? "system"])}
           onAction={(key) => {
             if (!threadId) return
-            if (key === "archive") {
+            if (key === "copy") {
+              copyChat(threadId)
+            } else if (key === "archive") {
               archiveThread(threadId)
               onRemoved()
             } else if (key === "delete") {
@@ -226,6 +254,10 @@ function HeaderMenu({
           </Dropdown.Section>
           <Dropdown.Section>
             <Header>Chat</Header>
+            <Dropdown.Item id="copy" textValue="Copy chat">
+              <Copy className="size-4" />
+              <Label>Copy chat</Label>
+            </Dropdown.Item>
             <Dropdown.Item id="archive" textValue="Archive chat">
               <Archive className="size-4" />
               <Label>Archive chat</Label>
