@@ -1,5 +1,5 @@
 import ChevronDown from "@gravity-ui/icons/ChevronDown"
-import { Button, ListBox, Popover } from "@heroui/react"
+import { Button, ListBox, Popover, ProgressCircle } from "@heroui/react"
 import { useState } from "react"
 
 import { lfm3Status, loadLfm3 } from "#/lib/llm/lfm3-connection"
@@ -43,13 +43,23 @@ export function ModelSelect() {
     void loadLfm3().catch(() => undefined)
   }
 
-  const status: { text: string; isError?: boolean } | null =
+  // `progress` is 0-1 for a determinate download, null to just show activity.
+  const status: {
+    text: string
+    progress?: number | null
+    isError?: boolean
+  } | null =
     afm === "checking"
-      ? { text: "Connecting to Apple model…" }
+      ? { text: "Connecting to Apple model", progress: null }
       : afm === "unavailable"
         ? { text: "Apple model not available", isError: true }
         : model === "lfm3" && lfm3.state === "loading"
-          ? { text: `Downloading ${Math.round(lfm3.progress * 100)}%` }
+          ? !lfm3.cached && lfm3.progress < 1
+            ? {
+                text: `Downloading ${Math.round(lfm3.progress * 100)}%`,
+                progress: lfm3.progress
+              }
+            : { text: "Loading model", progress: null }
           : model === "lfm3" && lfm3.state === "error"
             ? { text: "Couldn't load", isError: true }
             : null
@@ -94,8 +104,21 @@ export function ModelSelect() {
       </Popover>
       {status && (
         <span
-          className={`text-xs tabular-nums ${status.isError ? "text-danger" : "text-muted"}`}
+          className={`flex items-center gap-1.5 text-xs tabular-nums ${status.isError ? "text-danger" : "text-muted"}`}
         >
+          {status.progress !== undefined && (
+            <ProgressCircle
+              aria-label={status.text}
+              size="sm"
+              isIndeterminate={status.progress === null}
+              value={(status.progress ?? 0) * 100}
+            >
+              <ProgressCircle.Track>
+                <ProgressCircle.TrackCircle />
+                <ProgressCircle.FillCircle />
+              </ProgressCircle.Track>
+            </ProgressCircle>
+          )}
           {status.text}
         </span>
       )}

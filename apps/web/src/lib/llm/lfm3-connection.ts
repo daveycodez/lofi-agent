@@ -17,7 +17,13 @@ const SYSTEM_PROMPT =
 
 export type Lfm3Status =
   | { state: "idle" }
-  | { state: "loading"; progress: number }
+  | {
+      state: "loading"
+      /** 0-1 across all model files. */
+      progress: number
+      /** True when the files come from the browser cache, not the network. */
+      cached: boolean
+    }
   | { state: "ready" }
   | { state: "error"; message: string }
 
@@ -56,12 +62,24 @@ let loading: Promise<{
   model: Model
 }> | null = null
 
+/** Whether Transformers.js already has the model weights in its browser cache. */
+async function isCached() {
+  try {
+    const cache = await caches.open("transformers-cache")
+    const weights = `https://huggingface.co/${MODEL_ID}/resolve/main/onnx/model_q4f16.onnx_data`
+    return (await cache.match(weights)) !== undefined
+  } catch {
+    return false
+  }
+}
+
 export function loadLfm3() {
   loading ??= (async () => {
     if (!("gpu" in navigator)) {
       throw new Error("LFM3 needs WebGPU, which this browser doesn't support.")
     }
-    lfm3Status.set({ state: "loading", progress: 0 })
+    const cached = await isCached()
+    lfm3Status.set({ state: "loading", progress: 0, cached })
     const tf = (await import(
       /* @vite-ignore */ TRANSFORMERS_URL
     )) as TransformersModule
@@ -82,7 +100,7 @@ export function loadLfm3() {
           (sum, [l, t]) => [sum[0] + l, sum[1] + t],
           [0, 0]
         )
-        lfm3Status.set({ state: "loading", progress: loaded / total })
+        lfm3Status.set({ state: "loading", progress: loaded / total, cached })
       }
     })
     lfm3Status.set({ state: "ready" })
