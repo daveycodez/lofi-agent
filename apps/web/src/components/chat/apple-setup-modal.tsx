@@ -15,14 +15,17 @@ const isIOS = () =>
 
 const noopSubscribe = () => () => undefined
 
+/** The command that starts apfel on localhost, which apfel allows by default. */
+const LOCAL_SERVE_COMMAND = "apfel --serve --cors"
+
 /** The command that starts apfel for this site. */
 function serveCommand() {
   const { origin, hostname } = window.location
   // apfel allows localhost pages by default; anything else is added by name.
   const isLocal = ["localhost", "127.0.0.1", "[::1]"].includes(hostname)
   return isLocal
-    ? "apfel --serve --cors"
-    : `apfel --serve --cors --allowed-origins ${origin}`
+    ? LOCAL_SERVE_COMMAND
+    : `${LOCAL_SERVE_COMMAND} --allowed-origins ${origin}`
 }
 
 /** A shell command in a code block, with the copy button code blocks have. */
@@ -47,6 +50,13 @@ export function AppleSetupModal({
   isChecking: boolean
 }) {
   const ios = useSyncExternalStore(noopSubscribe, isIOS, () => false)
+  // The site's address is only known in the browser, not when the server
+  // renders the page.
+  const command = useSyncExternalStore(
+    noopSubscribe,
+    serveCommand,
+    () => LOCAL_SERVE_COMMAND
+  )
   return (
     <Modal.Backdrop isOpen={isOpen} onOpenChange={onOpenChange}>
       <Modal.Container size="md" scroll="inside">
@@ -84,7 +94,7 @@ export function AppleSetupModal({
                 <p className="font-medium">
                   2. Start it, and leave the Terminal window open
                 </p>
-                <Command>{serveCommand()}</Command>
+                <Command>{command}</Command>
               </div>
               <p className="text-muted">
                 3. Click Try Again. If your browser asks to access devices on
