@@ -5,9 +5,22 @@ export type ChatTurn = {
   content: string
 }
 
+/** Sampling settings from each model's card. */
+export type Sampling = {
+  temperature: number
+  top_k: number
+  repetition_penalty: number
+}
+
 export type WorkerRequest =
   | { type: "load"; modelId: string }
-  | { type: "generate"; id: string; chat: Array<ChatTurn>; thinking: boolean }
+  | {
+      type: "generate"
+      id: string
+      chat: Array<ChatTurn>
+      thinking: boolean
+      sampling: Sampling
+    }
   | { type: "stop"; id: string }
 
 export type WorkerResponse =

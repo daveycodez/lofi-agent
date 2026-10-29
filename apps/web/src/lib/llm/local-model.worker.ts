@@ -6,6 +6,7 @@
  */
 import type {
   ChatTurn,
+  Sampling,
   WorkerRequest,
   WorkerResponse
 } from "./local-model-protocol"
@@ -249,7 +250,12 @@ function load(modelId: string) {
 
 const running = new Map<string, StoppingCriteria>()
 
-async function generate(id: string, chat: Array<ChatTurn>, thinking: boolean) {
+async function generate(
+  id: string,
+  chat: Array<ChatTurn>,
+  thinking: boolean,
+  sampling: Sampling
+) {
   if (!current) throw new Error("No model loaded.")
   const { tf, tokenizer, model } = await current.runtime
   // Models with a thinking mode reason in a <think> block before answering.
@@ -269,15 +275,12 @@ async function generate(id: string, chat: Array<ChatTurn>, thinking: boolean) {
     }
   })
   try {
-    // Liquid's recommended sampling for LFM models.
     await model.generate({
       ...inputs,
       // Thinking takes many more tokens before the answer starts.
       max_new_tokens: thinking ? 4096 : 1024,
       do_sample: true,
-      temperature: 0.1,
-      top_k: 50,
-      repetition_penalty: 1.05,
+      ...sampling,
       streamer,
       stopping_criteria: [stopping]
     })
@@ -293,7 +296,7 @@ ctx.onmessage = ({ data }) => {
   if (data.type === "load") {
     load(data.modelId).catch(() => undefined)
   } else if (data.type === "generate") {
-    generate(data.id, data.chat, data.thinking)
+    generate(data.id, data.chat, data.thinking, data.sampling)
       .then(() => ctx.postMessage({ type: "done", id: data.id }))
       .catch((error: unknown) =>
         ctx.postMessage({

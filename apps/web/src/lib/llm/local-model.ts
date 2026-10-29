@@ -4,6 +4,7 @@ import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
 
 import type {
   ChatTurn,
+  Sampling,
   WorkerRequest,
   WorkerResponse
 } from "#/lib/llm/local-model-protocol"
@@ -129,12 +130,15 @@ function textOf(message: UIMessage | ModelMessage) {
 }
 
 /** A TanStack AI connection that runs `modelId` locally. */
-export function localModelConnection(
-  modelId: string,
-  name: string,
+export function localModelConnection(options: {
+  modelId: string
+  name: string
+  /** The model card's recommended sampling. */
+  sampling: Sampling
   /** Whether to think before answering, read when each message is sent. */
-  thinking: () => boolean = () => false
-): ConnectConnectionAdapter {
+  thinking?: () => boolean
+}): ConnectConnectionAdapter {
+  const { modelId, name, sampling, thinking = () => false } = options
   return {
     async *connect(messages, _data, abortSignal, runContext) {
       const { threadId, runId } = runContext
@@ -185,7 +189,7 @@ export function localModelConnection(
       // The chat template opens the <think> block in the prompt itself, so
       // add it to the reply too: the thread then shows it as thinking.
       if (think) queue.push("<think>")
-      post({ type: "generate", id: runId, chat, thinking: think })
+      post({ type: "generate", id: runId, chat, thinking: think, sampling })
 
       yield {
         type: EventType.TEXT_MESSAGE_START,

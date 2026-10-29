@@ -47,13 +47,24 @@ export const MODELS: Array<{
     id: "lfm3",
     name: "LFM3 1.7B",
     icon: "/icons/liquid.svg",
-    connection: localModelConnection(LFM3_ID, "LFM3", () => thinkingStore.get())
+    // LFM3 card, "General" (chat, tool use, agents, coding).
+    connection: localModelConnection({
+      modelId: LFM3_ID,
+      name: "LFM3",
+      sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.1 },
+      thinking: () => thinkingStore.get()
+    })
   },
   {
     id: "lfm2.5",
     name: "LFM2.5 1.2B",
     icon: "/icons/liquid.svg",
-    connection: localModelConnection(LFM2_5_ID, "LFM2.5")
+    // LFM2.5-1.2B-Instruct card.
+    connection: localModelConnection({
+      modelId: LFM2_5_ID,
+      name: "LFM2.5",
+      sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.05 }
+    })
   }
 ]
 
