@@ -10,7 +10,11 @@ import {
 } from "@heroui/react"
 import { useState } from "react"
 
-import { systemPromptStore, webSearchEnabledStore } from "#/lib/settings"
+import {
+  mtgToolsEnabledStore,
+  systemPromptStore,
+  webSearchEnabledStore
+} from "#/lib/settings"
 
 export function SettingsModal({
   isOpen,
@@ -37,6 +41,7 @@ export function SettingsModal({
  */
 function SettingsForm({ onDone }: { onDone: () => void }) {
   const [webSearch, setWebSearch] = useState(webSearchEnabledStore.get)
+  const [mtgTools, setMtgTools] = useState(mtgToolsEnabledStore.get)
   const [systemPrompt, setSystemPrompt] = useState(systemPromptStore.get)
   return (
     <>
@@ -52,6 +57,20 @@ function SettingsForm({ onDone }: { onDone: () => void }) {
               <Description>
                 Lets models search the web when a question needs it. Tries Exa,
                 then Parallel, then Firecrawl.
+              </Description>
+            </div>
+            <Switch.Control>
+              <Switch.Thumb />
+            </Switch.Control>
+          </Switch.Content>
+        </Switch>
+        <Switch isSelected={mtgTools} onChange={setMtgTools}>
+          <Switch.Content className="w-full justify-between">
+            <div className="flex flex-col gap-0.5">
+              <Label>MTG Tools</Label>
+              <Description>
+                Lets models look up Magic: The Gathering cards on Scryfall, and
+                combos and Commander decks on EDHREC.
               </Description>
             </div>
             <Switch.Control>
@@ -83,6 +102,7 @@ function SettingsForm({ onDone }: { onDone: () => void }) {
         <Button
           onPress={() => {
             webSearchEnabledStore.set(webSearch)
+            mtgToolsEnabledStore.set(mtgTools)
             systemPromptStore.set(systemPrompt)
             onDone()
           }}

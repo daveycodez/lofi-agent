@@ -44,6 +44,7 @@ import { SourceList } from "#/components/chat/sources"
 import { useDictation } from "#/lib/dictation"
 import { checkMcpServers, useMcpTools } from "#/lib/mcp"
 import { parseSources } from "#/lib/sources"
+import { useMtgTools } from "#/lib/mtg-tools"
 import { useWebSearchTools } from "#/lib/web-search"
 import type { Source } from "#/lib/sources"
 import { splitThinking } from "#/lib/thinking"
@@ -273,11 +274,13 @@ export function Thread({
   // Built-in web search first: small models tend to pick the first tool that
   // might fit. useChat runs these tools in the browser when called.
   const webSearchTools = useWebSearchTools()
+  const mtgTools = useMtgTools()
   const mcpTools = useMcpTools()
   const tools = useMemo(() => {
-    const names = new Set<string>(webSearchTools.map((t) => t.name))
-    return [...webSearchTools, ...mcpTools.filter((t) => !names.has(t.name))]
-  }, [webSearchTools, mcpTools])
+    const builtIn = [...webSearchTools, ...mtgTools]
+    const names = new Set<string>(builtIn.map((t) => t.name))
+    return [...builtIn, ...mcpTools.filter((t) => !names.has(t.name))]
+  }, [webSearchTools, mtgTools, mcpTools])
   const {
     messages,
     sendMessage,

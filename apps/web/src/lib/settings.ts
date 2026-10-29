@@ -4,6 +4,9 @@ import { createStore } from "#/lib/store"
 /** Whether models get the built-in web search tool. On by default. */
 export const webSearchEnabledStore = createStore(true, "lofi-agent:web-search")
 
+/** Whether models get the Magic: The Gathering tools. On by default. */
+export const mtgToolsEnabledStore = createStore(true, "lofi-agent:mtg-tools")
+
 /**
  * A system prompt the user wrote, sent to every model at the start of each
  * conversation, after the current date and time. Empty means none.
