@@ -85,6 +85,11 @@
   content: none;
 }
 
+.markdown.prose pre {
+  font-size: 0.8125em;
+  line-height: 1.6;
+  padding: 0.875em 1em;
+}
 .markdown pre {
   border-radius: 1rem;
 }
@@ -101,7 +106,7 @@
  * Display math scrolls sideways instead of overflowing on narrow screens.
  */
 .markdown .katex {
-  font-size: 1.05em;
+  font-size: 1em;
 }
 .markdown .katex-display {
   margin: 0.75em 0;
@@ -110,7 +115,7 @@
   overflow-y: hidden;
 }
 .markdown .katex-display > .katex {
-  font-size: 1.15em;
+  font-size: 1.05em;
 }
 /* A display block alone in a paragraph shouldn't add the paragraph's gap too. */
 .markdown p:has(> .katex-display:only-child) {
