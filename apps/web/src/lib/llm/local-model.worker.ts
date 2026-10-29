@@ -254,19 +254,33 @@ async function openWeights(modelId: string) {
     await dir.getFileHandle(weightsFiles(modelId).file)
   )
   const size = handle.getSize()
+  // Every slice is read into the same buffer, grown to the largest tensor:
+  // ONNX Runtime copies a slice to the GPU (or its own memory) as soon as it
+  // gets it. New buffers per slice left the whole file's worth of them for
+  // the garbage collector, which iPhone Safari seemed to keep around,
+  // compressed, counting against the tab's memory limit.
+  let scratch = new ArrayBuffer(0)
   const view = new Uint8Array(0)
   Object.defineProperties(view, {
     byteLength: { get: () => size },
     length: { get: () => size },
     subarray: {
       value: (begin = 0, end = size) => {
-        const slice = new Uint8Array(end - begin)
+        const length = end - begin
+        if (scratch.byteLength < length) scratch = new ArrayBuffer(length)
+        const slice = new Uint8Array(scratch, 0, length)
         handle.read(slice, { at: begin })
         return slice
       }
     }
   })
-  return { data: view, close: () => handle.close() }
+  return {
+    data: view,
+    close: () => {
+      handle.close()
+      scratch = new ArrayBuffer(0)
+    }
+  }
 }
 
 /**
