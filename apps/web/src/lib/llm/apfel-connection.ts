@@ -111,24 +111,31 @@ type OpenAIChunk = {
   }>
 }
 
+/** How many times the model is told about calls to tools that don't exist. */
+const MAX_UNKNOWN_TOOL_RETRIES = 1
+
+type StreamedCall = { id: string; name: string; arguments: string }
+
 export const apfelConnection: ConnectConnectionAdapter = {
   async *connect(messages, _data, abortSignal, runContext) {
     const { threadId, runId } = runContext
     const messageId = `msg_${runId}`
     yield { type: EventType.RUN_STARTED, threadId, runId } as StreamChunk
 
-    let response: Response
-    try {
-      response = await fetch(APFEL_URL, {
+    const chat = toOpenAIMessages(messages)
+    // The tools useChat has (from MCP servers).
+    const clientTools = runContext.clientTools ?? []
+    const toolNames = new Set(clientTools.map((tool) => tool.name))
+    const request = () =>
+      fetch(APFEL_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: APFEL_MODEL,
           stream: true,
-          messages: toOpenAIMessages(messages),
-          // The tools useChat has (from MCP servers).
-          ...(runContext.clientTools?.length && {
-            tools: runContext.clientTools.map((tool) => ({
+          messages: chat,
+          ...(clientTools.length > 0 && {
+            tools: clientTools.map((tool) => ({
               type: "function",
               function: {
                 name: tool.name,
@@ -140,6 +147,10 @@ export const apfelConnection: ConnectConnectionAdapter = {
         }),
         signal: abortSignal
       })
+
+    let response: Response
+    try {
+      response = await request()
     } catch (error) {
       if (abortSignal?.aborted) throw error
       yield {
@@ -165,30 +176,70 @@ export const apfelConnection: ConnectConnectionAdapter = {
       role: "assistant"
     } as StreamChunk
 
+    // One completion, streamed into the reply. When the model's only tool
+    // calls are to tools that don't exist, it's told so and asked once more,
+    // so it answers with what it has instead of stopping there.
     let finishReason: FinishReason = null
-    // Tool calls stream in pieces, by index.
-    const calls: Array<{ id: string; name: string; arguments: string }> = []
-    for await (const data of sseData(response.body)) {
-      if (data === "[DONE]") break
-      const choice = (JSON.parse(data) as OpenAIChunk).choices?.[0]
-      const delta = choice?.delta?.content
-      if (delta) {
-        yield {
-          type: EventType.TEXT_MESSAGE_CONTENT,
-          messageId,
-          delta
-        } as StreamChunk
+    let calls: Array<StreamedCall> = []
+    for (let attempt = 0; ; attempt++) {
+      let text = ""
+      // Tool calls stream in pieces, by index.
+      const streamed: Array<StreamedCall> = []
+      for await (const data of sseData(response.body)) {
+        if (data === "[DONE]") break
+        const choice = (JSON.parse(data) as OpenAIChunk).choices?.[0]
+        const delta = choice?.delta?.content
+        if (delta) {
+          text += delta
+          yield {
+            type: EventType.TEXT_MESSAGE_CONTENT,
+            messageId,
+            delta
+          } as StreamChunk
+        }
+        for (const piece of choice?.delta?.tool_calls ?? []) {
+          const call = (streamed[piece.index] ??= {
+            id: piece.id ?? `call_${runId}_${attempt}_${piece.index}`,
+            name: "",
+            arguments: ""
+          })
+          call.name += piece.function?.name ?? ""
+          call.arguments += piece.function?.arguments ?? ""
+        }
+        if (choice?.finish_reason) finishReason = choice.finish_reason
       }
-      for (const piece of choice?.delta?.tool_calls ?? []) {
-        const call = (calls[piece.index] ??= {
-          id: piece.id ?? `call_${runId}_${piece.index}`,
-          name: "",
-          arguments: ""
+      calls = streamed.filter((c) => toolNames.has(c.name))
+      const unknown = streamed.filter((c) => !toolNames.has(c.name))
+      if (
+        calls.length > 0 ||
+        unknown.length === 0 ||
+        attempt >= MAX_UNKNOWN_TOOL_RETRIES ||
+        abortSignal?.aborted
+      ) {
+        break
+      }
+      chat.push({
+        role: "assistant",
+        content: text || null,
+        tool_calls: unknown.map((call) => ({
+          id: call.id,
+          type: "function",
+          function: { name: call.name, arguments: call.arguments }
+        }))
+      })
+      for (const call of unknown) {
+        chat.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: `Error: there is no tool named "${call.name}". Available tools: ${[...toolNames].join(", ")}. Answer with what you have.`
         })
-        call.name += piece.function?.name ?? ""
-        call.arguments += piece.function?.arguments ?? ""
       }
-      if (choice?.finish_reason) finishReason = choice.finish_reason
+      try {
+        response = await request()
+      } catch {
+        break
+      }
+      if (!response.ok || !response.body) break
     }
 
     for (const call of calls) {

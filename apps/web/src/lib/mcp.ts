@@ -27,6 +27,8 @@ export type McpServer = {
    * might fit, so the general ones should lead.
    */
   builtIn?: boolean
+  /** Only these of the server's tools are used (all of them when unset). */
+  onlyTools?: Array<string>
 }
 
 export type McpTool = {
@@ -48,7 +50,10 @@ const BUILT_IN_SERVERS: Array<Omit<McpServer, "enabled">> = [
     id: "built-in:exa",
     name: "Exa Web Search",
     url: "https://mcp.exa.ai/mcp",
-    builtIn: true
+    builtIn: true,
+    // Search only: small models fetch made-up page URLs, and the search
+    // results already carry the relevant text.
+    onlyTools: ["web_search_exa"]
   }
 ]
 
@@ -167,18 +172,68 @@ function disconnect(id: string) {
 }
 
 /** Connects to `server`, lists its tools, and records the result. */
+/**
+ * Removes every sentence that names one of `hidden` from a description, so a
+ * model isn't told to use a tool it doesn't have.
+ */
+function withoutMentions(text: string, hidden: Array<string>) {
+  if (hidden.length === 0) return text
+  return text
+    .split("\n")
+    .map((line) =>
+      line
+        .split(/(?<=[.!?])\s+/)
+        .filter((sentence) => !hidden.some((name) => sentence.includes(name)))
+        .join(" ")
+    )
+    .filter((line, i, lines) => line.trim() || lines[i - 1]?.trim())
+    .join("\n")
+    .trim()
+}
+
+/** The same, for every description inside a JSON Schema. */
+function schemaWithoutMentions(
+  schema: unknown,
+  hidden: Array<string>
+): unknown {
+  if (hidden.length === 0 || !schema || typeof schema !== "object") {
+    return schema
+  }
+  if (Array.isArray(schema)) {
+    return schema.map((item) => schemaWithoutMentions(item, hidden))
+  }
+  return Object.fromEntries(
+    Object.entries(schema).map(([key, value]) => [
+      key,
+      key === "description" && typeof value === "string"
+        ? withoutMentions(value, hidden)
+        : schemaWithoutMentions(value, hidden)
+    ])
+  )
+}
+
+/** Connects to `server`, lists its tools, and records the result. */
 export async function checkMcpServer(server: McpServer) {
   disconnect(server.id)
   setStatus(server.id, { state: "checking" })
   try {
-    const tools = await (await connect(server)).tools()
+    const all = await (await connect(server)).tools()
+    const keep = (name: string) =>
+      !server.onlyTools || server.onlyTools.includes(name)
+    // Tools left out, which the kept tools' descriptions mustn't mention.
+    const hidden = all.map((t) => t.name).filter((name) => !keep(name))
     setStatus(server.id, {
       state: "connected",
-      tools: tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        inputSchema: (t.inputSchema ?? { type: "object" }) as JSONSchema
-      }))
+      tools: all
+        .filter((t) => keep(t.name))
+        .map((t) => ({
+          name: t.name,
+          description: withoutMentions(t.description, hidden),
+          inputSchema: schemaWithoutMentions(
+            t.inputSchema ?? { type: "object" },
+            hidden
+          ) as JSONSchema
+        }))
     })
   } catch (error) {
     disconnect(server.id)

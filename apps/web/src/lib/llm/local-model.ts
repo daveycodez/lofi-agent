@@ -14,7 +14,7 @@ import {
   formatLfm2ToolCalls,
   parseToolCalls
 } from "#/lib/llm/tool-calls"
-import type { ToolFormat } from "#/lib/llm/tool-calls"
+import type { ParsedToolCall, ToolFormat } from "#/lib/llm/tool-calls"
 import { currentSystemPrompt } from "#/lib/settings"
 import { createStore } from "#/lib/store"
 import { createThinkingSplitter } from "#/lib/thinking"
@@ -179,26 +179,159 @@ function toChatTurns(
     }))
     if (m.role === "user" || calls.length === 0) {
       if (content) chat.push({ role: m.role, content })
-    } else if (format === "lfm2") {
-      chat.push({
-        role: "assistant",
-        content: content + formatLfm2ToolCalls(calls)
-      })
-    } else {
-      // Liquid's guide: keep the reasoning of the current tool-use turn.
-      const thinking = m.thinking?.map((t) => t.content).join("")
-      chat.push({
-        role: "assistant",
-        content,
-        ...(thinking && { thinking }),
-        tool_calls: calls.map((c) => ({
-          type: "function",
-          function: { name: c.name, arguments: c.args }
-        }))
-      })
+      continue
     }
+    const turn = assistantToolTurn(content, calls, format)
+    // Liquid's guide: keep the reasoning of the current tool-use turn.
+    const thinking = m.thinking?.map((t) => t.content).join("")
+    chat.push(format === "lfm3" && thinking ? { ...turn, thinking } : turn)
   }
   return chat
+}
+
+/** How many times a model is told about calls to tools that don't exist. */
+const MAX_UNKNOWN_TOOL_RETRIES = 1
+
+/** An assistant turn with tool calls, written the way the model writes them. */
+function assistantToolTurn(
+  content: string,
+  calls: Array<ParsedToolCall>,
+  format: ToolFormat
+): ChatTurn {
+  if (format === "lfm2") {
+    return { role: "assistant", content: content + formatLfm2ToolCalls(calls) }
+  }
+  return {
+    role: "assistant",
+    content,
+    tool_calls: calls.map((c) => ({
+      type: "function",
+      function: { name: c.name, arguments: c.args }
+    }))
+  }
+}
+
+/**
+ * Runs one generation in the worker and streams it as AG-UI events: a
+ * leading <think> block as reasoning, then the answer as text up to any tool
+ * call. Returns what's left: the last of the text, the tool-call markup (held
+ * back to parse), and the error if generation failed.
+ */
+async function* generateOnce(options: {
+  id: string
+  chat: Array<ChatTurn>
+  tools: Array<ToolSpec>
+  thinking: boolean
+  sampling: Sampling
+  messageId: string
+  abortSignal?: AbortSignal
+}): AsyncGenerator<
+  StreamChunk,
+  { text: string; markup: string | null; failure?: string }
+> {
+  const { id, messageId, abortSignal } = options
+
+  // Bridge the worker's messages to this async generator.
+  const queue: Array<string> = []
+  let wake: (() => void) | null = null
+  let finished = false
+  let failure: string | undefined
+  const nextChunk = () =>
+    new Promise<void>((resolve) => {
+      wake = resolve
+    })
+  generations.set(id, {
+    onToken: (text) => {
+      queue.push(text)
+      wake?.()
+    },
+    onEnd: (error) => {
+      failure = error
+      finished = true
+      wake?.()
+    }
+  })
+  const onAbort = () => post({ type: "stop", id })
+  abortSignal?.addEventListener("abort", onAbort)
+  post({
+    type: "generate",
+    id,
+    chat: options.chat,
+    tools: options.tools,
+    thinking: options.thinking,
+    sampling: options.sampling
+  })
+
+  // Thinking streams as reasoning events, so the message gets a thinking
+  // part; the answer streams as its text.
+  const reasoningId = `reasoning_${id}`
+  let reasoning: "none" | "open" | "closed" = "none"
+  const toolSplitter = createToolCallSplitter()
+  const textEvent = (delta: string): Array<StreamChunk> =>
+    delta
+      ? [
+          {
+            type: EventType.TEXT_MESSAGE_CONTENT,
+            messageId,
+            delta
+          } as StreamChunk
+        ]
+      : []
+  const endReasoning = (): Array<StreamChunk> => {
+    if (reasoning !== "open") return []
+    reasoning = "closed"
+    return [
+      {
+        type: EventType.REASONING_MESSAGE_END,
+        messageId: reasoningId
+      } as StreamChunk,
+      { type: EventType.REASONING_END, messageId: reasoningId } as StreamChunk
+    ]
+  }
+  const toEvents = (pieces: Array<ReplyPiece>) =>
+    pieces.flatMap((piece): Array<StreamChunk> => {
+      if (piece.kind === "thinking") {
+        const start: Array<StreamChunk> =
+          reasoning === "none"
+            ? [
+                {
+                  type: EventType.REASONING_START,
+                  messageId: reasoningId
+                } as StreamChunk,
+                {
+                  type: EventType.REASONING_MESSAGE_START,
+                  messageId: reasoningId,
+                  role: "reasoning"
+                } as StreamChunk
+              ]
+            : []
+        reasoning = "open"
+        return [
+          ...start,
+          {
+            type: EventType.REASONING_MESSAGE_CONTENT,
+            messageId: reasoningId,
+            delta: piece.text
+          } as StreamChunk
+        ]
+      }
+      return [...endReasoning(), ...textEvent(toolSplitter.push(piece.text))]
+    })
+
+  const splitter = createThinkingSplitter()
+  while (!finished || queue.length > 0) {
+    const delta = queue.shift()
+    if (delta !== undefined) {
+      yield* toEvents(splitter.push(delta))
+      continue
+    }
+    await nextChunk()
+    wake = null
+  }
+  abortSignal?.removeEventListener("abort", onAbort)
+  yield* toEvents(splitter.flush())
+  yield* endReasoning()
+  return { ...toolSplitter.flush(), failure }
 }
 
 /** A TanStack AI connection that runs `modelId` locally. */
@@ -260,50 +393,11 @@ export function localModelConnection(options: {
         }
       )
 
-      // Bridge the worker's messages to this async generator.
-      const queue: Array<string> = []
-      let wake: (() => void) | null = null
-      let finished = false
-      let failure: string | undefined
-      const nextChunk = () =>
-        new Promise<void>((resolve) => {
-          wake = resolve
-        })
-      generations.set(runId, {
-        onToken: (text) => {
-          queue.push(text)
-          wake?.()
-        },
-        onEnd: (error) => {
-          failure = error
-          finished = true
-          wake?.()
-        }
-      })
-      const onAbort = () => post({ type: "stop", id: runId })
-      abortSignal?.addEventListener("abort", onAbort)
-      const think = thinking()
-      post({
-        type: "generate",
-        id: runId,
-        chat,
-        tools,
-        thinking: think,
-        sampling
-      })
-
       yield {
         type: EventType.TEXT_MESSAGE_START,
         messageId,
         role: "assistant"
       } as StreamChunk
-
-      // Thinking (a leading <think> block) streams as reasoning events, so
-      // the message gets a thinking part; the answer streams as its text,
-      // up to any tool call, which is held back and parsed at the end.
-      const reasoningId = `reasoning_${runId}`
-      let reasoning: "none" | "open" | "closed" = "none"
-      const toolSplitter = createToolCallSplitter()
       const textEvent = (delta: string): Array<StreamChunk> =>
         delta
           ? [
@@ -314,75 +408,49 @@ export function localModelConnection(options: {
               } as StreamChunk
             ]
           : []
-      const endReasoning = (): Array<StreamChunk> => {
-        if (reasoning !== "open") return []
-        reasoning = "closed"
-        return [
-          {
-            type: EventType.REASONING_MESSAGE_END,
-            messageId: reasoningId
-          } as StreamChunk,
-          {
-            type: EventType.REASONING_END,
-            messageId: reasoningId
-          } as StreamChunk
-        ]
-      }
-      const toEvents = (pieces: Array<ReplyPiece>) =>
-        pieces.flatMap((piece): Array<StreamChunk> => {
-          if (piece.kind === "thinking") {
-            const start: Array<StreamChunk> =
-              reasoning === "none"
-                ? [
-                    {
-                      type: EventType.REASONING_START,
-                      messageId: reasoningId
-                    } as StreamChunk,
-                    {
-                      type: EventType.REASONING_MESSAGE_START,
-                      messageId: reasoningId,
-                      role: "reasoning"
-                    } as StreamChunk
-                  ]
-                : []
-            reasoning = "open"
-            return [
-              ...start,
-              {
-                type: EventType.REASONING_MESSAGE_CONTENT,
-                messageId: reasoningId,
-                delta: piece.text
-              } as StreamChunk
-            ]
-          }
-          return [
-            ...endReasoning(),
-            ...textEvent(toolSplitter.push(piece.text))
-          ]
+
+      // One generation, streamed into the reply. When the model's only tool
+      // calls are to tools that don't exist, it's told so and generates once
+      // more, so it answers with what it has instead of stopping there.
+      let calls: Array<ParsedToolCall> = []
+      let failure: string | undefined
+      for (let attempt = 0; ; attempt++) {
+        const result = yield* generateOnce({
+          id: attempt === 0 ? runId : `${runId}_${attempt}`,
+          chat,
+          tools,
+          thinking: thinking(),
+          sampling,
+          messageId,
+          abortSignal
         })
-
-      const splitter = createThinkingSplitter()
-      while (!finished || queue.length > 0) {
-        const delta = queue.shift()
-        if (delta !== undefined) {
-          yield* toEvents(splitter.push(delta))
-          continue
+        failure = result.failure
+        yield* textEvent(result.text)
+        const parsed = result.markup ? parseToolCalls(result.markup) : []
+        calls = parsed.filter((c) => toolNames.has(c.name))
+        const unknown = parsed.filter((c) => !toolNames.has(c.name))
+        if (
+          failure ||
+          calls.length > 0 ||
+          unknown.length === 0 ||
+          attempt >= MAX_UNKNOWN_TOOL_RETRIES ||
+          abortSignal?.aborted
+        ) {
+          // Markup that isn't any tool call is shown as the text it is.
+          if (result.markup && parsed.length === 0) {
+            yield* textEvent(result.markup)
+          }
+          break
         }
-        await nextChunk()
-        wake = null
+        chat.push(assistantToolTurn(result.text, unknown, toolFormat))
+        for (const call of unknown) {
+          chat.push({
+            role: "tool",
+            content: `Error: there is no tool named "${call.name}". Available tools: ${[...toolNames].join(", ")}. Answer with what you have.`
+          })
+        }
       }
-      abortSignal?.removeEventListener("abort", onAbort)
-      yield* toEvents(splitter.flush())
-      yield* endReasoning()
 
-      // Tool calls the model made, for tools that exist. Markup that isn't a
-      // usable call is shown as text instead.
-      const rest = toolSplitter.flush()
-      yield* textEvent(rest.text)
-      const calls = rest.markup
-        ? parseToolCalls(rest.markup).filter((c) => toolNames.has(c.name))
-        : []
-      if (rest.markup && calls.length === 0) yield* textEvent(rest.markup)
       const callIds = calls.map((_, i) => `call_${runId}_${i}`)
       for (const [i, call] of calls.entries()) {
         const toolCallId = callIds[i]
