@@ -5,6 +5,7 @@ import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
 import { MODEL_ID } from "#/lib/llm/lfm3-protocol"
 import type {
   ChatTurn,
+  LoadPause,
   UploadMode,
   WorkerRequest,
   WorkerResponse
@@ -94,6 +95,23 @@ function uploadMode(): UploadMode {
   }
 }
 
+/** Experiment: ?wait=1000&every=32 pauses 1 s after every 32 MB loaded. */
+function loadPause(): LoadPause {
+  try {
+    const params = new URLSearchParams(window.location.search)
+    for (const key of ["wait", "every"]) {
+      const value = params.get(key)
+      if (value !== null) localStorage.setItem(`lofi-agent:${key}`, value)
+    }
+    return {
+      ms: Number(localStorage.getItem("lofi-agent:wait")) || 0,
+      everyMb: Number(localStorage.getItem("lofi-agent:every")) || 64
+    }
+  } catch {
+    return { ms: 0, everyMb: 64 }
+  }
+}
+
 /** Starts loading the model (downloading it the first time). */
 export function loadLfm3() {
   if (!load) {
@@ -106,7 +124,7 @@ export function loadLfm3() {
     load = { promise, resolve, reject }
     // The worker reports whether this is a download or a cached load.
     lfm3Status.set({ state: "loading", progress: 0, cached: true })
-    post({ type: "load", upload: uploadMode() })
+    post({ type: "load", upload: uploadMode(), pause: loadPause() })
   }
   return load.promise
 }

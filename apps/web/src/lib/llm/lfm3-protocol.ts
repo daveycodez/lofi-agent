@@ -9,8 +9,11 @@ export type ChatTurn = {
 /** Experimental GPU upload strategies, picked with ?upload= (see lfm3.worker.ts). */
 export type UploadMode = "default" | "write" | "write-wait"
 
+/** Experiment: pause `ms` after every `everyMb` of weights read (0 = off). */
+export type LoadPause = { ms: number; everyMb: number }
+
 export type WorkerRequest =
-  | { type: "load"; upload: UploadMode }
+  | { type: "load"; upload: UploadMode; pause: LoadPause }
   | { type: "generate"; id: string; chat: Array<ChatTurn> }
   | { type: "stop"; id: string }
 

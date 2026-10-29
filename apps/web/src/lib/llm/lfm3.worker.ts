@@ -6,6 +6,7 @@
 import { MODEL_ID } from "./lfm3-protocol"
 import type {
   ChatTurn,
+  LoadPause,
   UploadMode,
   WorkerRequest,
   WorkerResponse
@@ -121,16 +122,27 @@ async function downloadWeights(onProgress: (progress: number) => void) {
  * memory: iPhone Safari kills the page past 2 GB, and a full copy plus the GPU
  * upload went over. Call close() once the model is created.
  */
-async function openWeights() {
+async function openWeights(pause: LoadPause) {
   const dir = await navigator.storage.getDirectory()
   const handle = await openSync(await dir.getFileHandle(OPFS_FILE))
   const size = handle.getSize()
+  let sincePause = 0
   const view = new Uint8Array(0)
   Object.defineProperties(view, {
     byteLength: { get: () => size },
     length: { get: () => size },
     subarray: {
       value: (begin = 0, end = size) => {
+        // Experiment: ONNX Runtime asks for slices synchronously, one tensor
+        // at a time after uploading the last, so pause here by spinning.
+        sincePause += end - begin
+        if (pause.ms > 0 && sincePause >= pause.everyMb * 1024 * 1024) {
+          sincePause = 0
+          const until = performance.now() + pause.ms
+          while (performance.now() < until) {
+            // wait
+          }
+        }
         const slice = new Uint8Array(end - begin)
         handle.read(slice, { at: begin })
         return slice
@@ -221,7 +233,10 @@ let runtime: Promise<{
   model: Model
 }> | null = null
 
-function load(upload: UploadMode = "default") {
+function load(
+  upload: UploadMode = "default",
+  pause: LoadPause = { ms: 0, everyMb: 64 }
+) {
   runtime ??= (async () => {
     if (!("gpu" in navigator)) {
       throw new Error("LFM3 needs WebGPU, which this browser doesn't support.")
@@ -247,7 +262,7 @@ function load(upload: UploadMode = "default") {
     const tokenizer = await tf.AutoTokenizer.from_pretrained(MODEL_ID)
     // Hand ONNX Runtime the weights directly; Transformers.js would
     // otherwise download and cache them itself.
-    const weights = await openWeights()
+    const weights = await openWeights(pause)
     const restoreUploads = patchUploads(upload)
     const model = await tf.AutoModelForCausalLM.from_pretrained(MODEL_ID, {
       dtype: "q4f16",
@@ -310,7 +325,7 @@ const errorMessage = (error: unknown) =>
 
 ctx.onmessage = ({ data }) => {
   if (data.type === "load") {
-    load(data.upload).catch((error: unknown) =>
+    load(data.upload, data.pause).catch((error: unknown) =>
       ctx.postMessage({ type: "load-error", message: errorMessage(error) })
     )
   } else if (data.type === "generate") {
