@@ -10,13 +10,14 @@ import { useMemo } from "react"
 import { webSearchEnabledStore } from "#/lib/settings"
 import { compactToolResult, parseSources, shorten } from "#/lib/sources"
 
-/** What the model asks for: the query, and what it wants from the results. */
+/** What the model asks for: what to search, and what it wants to find out. */
 type Search = { query: string; objective: string }
 
 type Provider = {
   name: string
   url: string
   tool: string
+  /** The provider's own arguments for a search. */
   args: (search: Search) => Record<string, unknown>
 }
 
@@ -104,15 +105,7 @@ async function search(provider: Provider, request: Search) {
 
 /** Searches with the first provider that answers. */
 async function webSearch(input: unknown) {
-  const { query, objective } = (input ?? {}) as Partial<Search>
-  if (typeof query !== "string" || !query.trim()) {
-    throw new Error("The search query is empty.")
-  }
-  const request = {
-    query,
-    objective:
-      typeof objective === "string" && objective.trim() ? objective : query
-  }
+  const request = input as Search
   const failures: Array<string> = []
   for (const provider of PROVIDERS) {
     if ((pausedUntil.get(provider.name) ?? 0) > Date.now()) {
@@ -135,41 +128,20 @@ async function webSearch(input: unknown) {
   )
 }
 
-/*
- * Exa's own search tool definition, as its MCP server lists it, so models
- * see what they did when Exa was an MCP server. Left out: the sentence about
- * its page-fetch tool, and its category:people / category:company search
- * syntax, which only Exa understands and which Apple's model wrote into its
- * arguments as invalid JSON.
- */
 const webSearchTool = toolDefinition({
   name: "web_search",
-  description:
-    'Search the web for any topic and get clean, ready-to-use content.\n\n      Best for: Finding current information, news, facts, people, companies, or answering questions about any topic.\n      Returns: Clean text content from top search results.\n\n      Query tips:\n      describe the ideal page, not keywords. "blog post comparing React and Vue performance" not "React vs Vue".',
+  description: "Search the web for current information.",
   inputSchema: {
     type: "object",
     properties: {
-      query: {
-        type: "string",
-        minLength: 1,
-        description:
-          "Natural language search query. Should be a semantically rich description of the ideal page, not just keywords."
-      },
-      numResults: {
-        type: "number",
-        description: "Number of search results to return (default: 10)."
-      },
+      query: { type: "string", description: "What to search for." },
       objective: {
         type: "string",
-        minLength: 1,
-        maxLength: 4096,
-        description:
-          "Goal for this search turn; say which documents should rank first, which should be excluded, and what specific facts or figures to pull from them."
+        description: "What you want to find out from the results."
       }
     },
     required: ["query", "objective"],
-    additionalProperties: false,
-    $schema: "http://json-schema.org/draft-07/schema#"
+    additionalProperties: false
   }
 }).client(webSearch)
 
