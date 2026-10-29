@@ -48,20 +48,127 @@ const ctx = globalThis as unknown as {
   onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null
 }
 
-/** Whether the model's weights are already in Transformers.js's cache. */
-async function isCached(modelId: string) {
+/*
+ * The weights file (`onnx/model_q4f16.onnx_data`, 0.76-1.09 GB) is cached in
+ * the Origin Private File System instead of Transformers.js's Cache Storage:
+ * Transformers.js 4.3 holds the whole download in memory and copies it again
+ * to cache it, which goes past iPhone Safari's 2 GB page limit. Downloading
+ * straight to disk and streaming it back in slice by slice avoids both.
+ * Transformers.js still fetches and caches the small files itself.
+ */
+const WEIGHTS = "model_q4f16.onnx_data"
+
+const weightsFiles = (modelId: string) => {
+  const file = `${modelId.replace(/[^\w.-]+/g, "_")}.${WEIGHTS}`
+  return {
+    url: `https://huggingface.co/${modelId}/resolve/main/onnx/${WEIGHTS}`,
+    file,
+    /** Written once the download is complete. */
+    done: `${file}.done`
+  }
+}
+
+/** OPFS sync access handles (worker-only, not in the DOM typings). */
+type SyncAccessHandle = {
+  read: (buffer: Uint8Array, options: { at: number }) => number
+  write: (buffer: Uint8Array, options: { at: number }) => number
+  truncate: (size: number) => void
+  getSize: () => number
+  flush: () => void
+  close: () => void
+}
+const openSync = (file: FileSystemFileHandle) =>
+  (
+    file as unknown as {
+      createSyncAccessHandle: () => Promise<SyncAccessHandle>
+    }
+  ).createSyncAccessHandle()
+
+async function hasFile(dir: FileSystemDirectoryHandle, name: string) {
   try {
-    const cache = await caches.open("transformers-cache")
-    const weights = `https://huggingface.co/${modelId}/resolve/main/onnx/model_q4f16.onnx_data`
-    return (await cache.match(weights)) !== undefined
+    await dir.getFileHandle(name)
+    return true
   } catch {
     return false
   }
 }
 
-/** Removes model files an earlier version of the app kept in OPFS. */
-async function removeOldOpfsFiles() {
+/** Whether the weights are already downloaded to disk. */
+async function isDownloaded(modelId: string) {
   try {
+    const dir = await navigator.storage.getDirectory()
+    return await hasFile(dir, weightsFiles(modelId).done)
+  } catch {
+    return false
+  }
+}
+
+/** Downloads the weights to disk, writing each network chunk as it arrives. */
+async function downloadWeights(
+  modelId: string,
+  onProgress: (progress: number) => void
+) {
+  const files = weightsFiles(modelId)
+  const dir = await navigator.storage.getDirectory()
+  if (await hasFile(dir, files.done)) return
+  // Hugging Face rejects downloads referred from *.workers.dev.
+  const res = await fetch(files.url, { referrerPolicy: "no-referrer" })
+  if (!res.ok || !res.body) {
+    throw new Error(`Couldn't download the model (HTTP ${res.status}).`)
+  }
+  const total = Number(res.headers.get("content-length")) || 0
+  const handle = await openSync(
+    await dir.getFileHandle(files.file, { create: true })
+  )
+  try {
+    handle.truncate(0)
+    let written = 0
+    const reader = res.body.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      written += handle.write(value, { at: written })
+      if (total) onProgress(written / total)
+    }
+    handle.flush()
+  } finally {
+    handle.close()
+  }
+  await dir.getFileHandle(files.done, { create: true })
+}
+
+/**
+ * Opens the weights on disk as a stand-in for the whole buffer. ONNX Runtime
+ * only asks it for its size and for one tensor's slice at a time, so each
+ * slice is read from disk when asked and the file never sits in memory.
+ * Call close() once the model is created.
+ */
+async function openWeights(modelId: string) {
+  const dir = await navigator.storage.getDirectory()
+  const handle = await openSync(
+    await dir.getFileHandle(weightsFiles(modelId).file)
+  )
+  const size = handle.getSize()
+  const view = new Uint8Array(0)
+  Object.defineProperties(view, {
+    byteLength: { get: () => size },
+    length: { get: () => size },
+    subarray: {
+      value: (begin = 0, end = size) => {
+        const slice = new Uint8Array(end - begin)
+        handle.read(slice, { at: begin })
+        return slice
+      }
+    }
+  })
+  return { data: view, close: () => handle.close() }
+}
+
+/** Removes weights earlier versions of the app stored elsewhere. */
+async function removeOldCopies(modelId: string) {
+  try {
+    const cache = await caches.open("transformers-cache")
+    await cache.delete(weightsFiles(modelId).url)
     const dir = await navigator.storage.getDirectory()
     for await (const name of (
       dir as unknown as { keys: () => AsyncIterable<string> }
@@ -81,42 +188,39 @@ async function loadRuntime(modelId: string): Promise<Runtime> {
       "This model needs WebGPU, which this browser doesn't support."
     )
   }
-  const cached = await isCached(modelId)
+  const cached = await isDownloaded(modelId)
   ctx.postMessage({ type: "progress", modelId, progress: 0, cached })
+  // Whole percents only; the download stream reports every chunk.
+  let lastPercent = -1
+  await downloadWeights(modelId, (progress) => {
+    const percent = Math.floor(progress * 100)
+    if (percent === lastPercent) return
+    lastPercent = percent
+    ctx.postMessage({
+      type: "progress",
+      modelId,
+      progress: percent / 100,
+      cached: false
+    })
+  })
+  ctx.postMessage({ type: "progress", modelId, progress: 0, cached: true })
   const tf = (await import(
     /* @vite-ignore */ TRANSFORMERS_URL
   )) as TransformersModule
   const tokenizer = await tf.AutoTokenizer.from_pretrained(modelId)
-  const files: Record<string, [number, number]> = {}
-  let lastPercent = -1
-  const model = await tf.AutoModelForCausalLM.from_pretrained(modelId, {
-    dtype: "q4f16",
-    device: "webgpu",
-    progress_callback: (p: {
-      status: string
-      file: string
-      loaded?: number
-      total?: number
-    }) => {
-      if (p.status !== "progress" || !p.total) return
-      files[p.file] = [p.loaded ?? 0, p.total]
-      const [loaded, total] = Object.values(files).reduce(
-        (sum, [l, t]) => [sum[0] + l, sum[1] + t],
-        [0, 0]
-      )
-      // Report whole percents only; Transformers.js reports every chunk.
-      const percent = Math.floor((loaded / total) * 100)
-      if (percent === lastPercent) return
-      lastPercent = percent
-      ctx.postMessage({
-        type: "progress",
-        modelId,
-        progress: percent / 100,
-        cached
-      })
-    }
-  })
-  return { tf, tokenizer, model }
+  const weights = await openWeights(modelId)
+  try {
+    const model = await tf.AutoModelForCausalLM.from_pretrained(modelId, {
+      dtype: "q4f16",
+      device: "webgpu",
+      // Weights come from disk (above), not Transformers.js's download.
+      use_external_data_format: 0,
+      session_options: { externalData: [{ path: WEIGHTS, data: weights.data }] }
+    })
+    return { tf, tokenizer, model }
+  } finally {
+    weights.close()
+  }
 }
 
 /** Loads `modelId`, freeing whichever model was loaded before. */
@@ -125,7 +229,7 @@ function load(modelId: string) {
   const previous = current?.runtime
   const runtime = (async () => {
     await previous?.then((r) => r.model.dispose()).catch(() => undefined)
-    void removeOldOpfsFiles()
+    void removeOldCopies(modelId)
     return loadRuntime(modelId)
   })()
   current = { modelId, runtime }
