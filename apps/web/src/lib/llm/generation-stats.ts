@@ -1,8 +1,11 @@
 /**
  * Token counts and timings of each run of the model, by chat, for the stats
  * line under the composer. Connections record a run each time the model reads
- * a prompt and generates; a reply that calls tools runs it more than once.
+ * a prompt and generates, as it goes and when it ends; a reply that calls
+ * tools runs it more than once. Each chat's latest reply's stats are kept in
+ * localStorage, by thread id, until the chat is deleted.
  */
+import { createStore } from "#/lib/store"
 
 /** One run of the model. Counts the source doesn't report are left out. */
 export type GenerationStats = {
@@ -22,25 +25,101 @@ export type GenerationStats = {
   subAgent?: boolean
 }
 
-const runs = new Map<string, Array<GenerationStats>>()
+/** The current reply's runs in each chat, by key, in the order they started. */
+const runs = new Map<string, Map<string, GenerationStats>>()
 
-export function recordGeneration(threadId: string, stats: GenerationStats) {
-  const list = runs.get(threadId)
-  if (list) list.push(stats)
-  else runs.set(threadId, [stats])
+/** Pseudo-chats whose runs count as sub-agent runs of a chat's reply. */
+const subAgentOf = new Map<string, string>()
+
+/** Each chat's current reply's stats as they come in (this session). */
+const live = createStore<Record<string, ReplyStats | null>>({})
+
+/** Each chat's latest reply's stats, kept across reloads. */
+const saved = createStore<Record<string, ReplyStats>>(
+  {},
+  "lofi-agent:reply-stats"
+)
+
+const without = <T>(record: Record<string, T>, ids: Array<string>) =>
+  Object.fromEntries(Object.entries(record).filter(([id]) => !ids.includes(id)))
+
+/**
+ * Starts a new reply in a chat: its stats line empties until the model
+ * reports on its first run. Runs after tool calls are part of the same reply.
+ */
+export function startReply(threadId: string) {
+  if (subAgentOf.has(threadId)) return
+  runs.set(threadId, new Map())
+  live.set((all) => ({ ...all, [threadId]: null }))
+  if (threadId in saved.get()) saved.set((all) => without(all, [threadId]))
 }
 
-/** Removes and returns a chat's recorded runs. */
-export function takeGenerations(threadId: string) {
-  const list = runs.get(threadId) ?? []
-  runs.delete(threadId)
-  return list
+/**
+ * Records a run of the model in a chat's reply. A run reports under the same
+ * key as it goes (`done` false), then once more when it ends; the reply's
+ * stats are saved when one of its runs ends.
+ */
+export function recordGeneration(
+  threadId: string,
+  key: string,
+  stats: GenerationStats,
+  done = true
+) {
+  const parent = subAgentOf.get(threadId)
+  if (parent) {
+    recordGeneration(parent, key, { ...stats, subAgent: true }, done)
+    return
+  }
+  let list = runs.get(threadId)
+  if (!list) {
+    list = new Map()
+    runs.set(threadId, list)
+  }
+  list.set(key, stats)
+  const reply = replyStats([...list.values()])
+  live.set((all) => ({ ...all, [threadId]: reply }))
+  if (done && reply) saved.set((all) => ({ ...all, [threadId]: reply }))
 }
 
-/** The runs recorded for a chat since it was last cleared. */
-export const generationsOf = (threadId: string) => runs.get(threadId) ?? []
+/**
+ * Counts the runs recorded under `runId` (a sub-agent's own pseudo-chat) as
+ * sub-agent runs of `threadId`'s reply, until the returned function is called.
+ */
+export function countAsSubAgent(runId: string, threadId: string) {
+  subAgentOf.set(runId, threadId)
+  return () => {
+    subAgentOf.delete(runId)
+  }
+}
 
-export const clearGenerations = (threadId: string) => runs.delete(threadId)
+/** Forgets deleted chats' stats. */
+export function forgetReplyStats(threadIds: Array<string>) {
+  for (const id of threadIds) runs.delete(id)
+  if (threadIds.some((id) => id in live.get())) {
+    live.set((all) => without(all, threadIds))
+  }
+  if (threadIds.some((id) => id in saved.get())) {
+    saved.set((all) => without(all, threadIds))
+  }
+}
+
+/** A chat's current or latest reply's stats, or null if it has none. */
+export function latestReplyStats(threadId: string) {
+  const current = live.get()
+  return threadId in current
+    ? current[threadId]
+    : (saved.get()[threadId] ?? null)
+}
+
+/** Calls `listener` whenever any chat's stats change. */
+export function subscribeReplyStats(listener: () => void) {
+  const stopLive = live.subscribe(listener)
+  const stopSaved = saved.subscribe(listener)
+  return () => {
+    stopLive()
+    stopSaved()
+  }
+}
 
 /** What the stats line shows for a reply. */
 export type ReplyStats = {
@@ -96,20 +175,24 @@ const oneDecimal = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1
 })
 
-/** "Input 868 · Cached 512 · Output 214 · Total 1,082 · 18.4 tok/s · TTFT 2.1s" */
-export function formatReplyStats(stats: ReplyStats) {
+/** ["In 868", "Cached 512", "Out 214", "Total 1,082", "18.4 tok/s", "TTFT 2.1s"] */
+export function replyStatsItems(stats: ReplyStats) {
   const n = (value: number | undefined, label: string) =>
     value !== undefined ? `${label} ${count.format(value)}` : null
   return [
-    n(stats.inputTokens, "Input"),
+    n(stats.inputTokens, "In"),
     n(stats.cachedTokens, "Cached"),
-    n(stats.outputTokens, "Output"),
+    n(stats.outputTokens, "Out"),
     n(stats.totalTokens, "Total"),
-    stats.tokensPerSecond !== undefined &&
-      `${oneDecimal.format(stats.tokensPerSecond)} tok/s`,
-    stats.firstTokenSeconds !== undefined &&
-      `TTFT ${oneDecimal.format(stats.firstTokenSeconds)}s`
-  ]
-    .filter(Boolean)
-    .join(" · ")
+    stats.tokensPerSecond !== undefined
+      ? `${oneDecimal.format(stats.tokensPerSecond)} tok/s`
+      : null,
+    stats.firstTokenSeconds !== undefined
+      ? `TTFT ${oneDecimal.format(stats.firstTokenSeconds)}s`
+      : null
+  ].filter((item) => item !== null)
 }
+
+/** "In 868 · Cached 512 · Out 214 · Total 1,082 · 18.4 tok/s · TTFT 2.1s" */
+export const formatReplyStats = (stats: ReplyStats) =>
+  replyStatsItems(stats).join(" · ")

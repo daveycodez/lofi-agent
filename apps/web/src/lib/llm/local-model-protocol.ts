@@ -54,5 +54,9 @@ export type WorkerResponse =
   | { type: "ready"; modelId: string }
   | { type: "load-error"; modelId: string; message: string }
   | { type: "token"; id: string; text: string }
+  /** The run's counts so far: once the prompt is tokenized, then as it replies. */
+  | { type: "stats"; id: string; stats: RunTimings }
   | { type: "done"; id: string; stats: RunTimings }
   | { type: "error"; id: string; message: string }
+  /** A diagnostic line for the page's console (dev only). */
+  | { type: "log"; text: string }

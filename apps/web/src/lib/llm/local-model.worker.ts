@@ -115,12 +115,87 @@ const ctx = globalThis as unknown as {
  * the model's memory), and records why the device was lost and any GPU error
  * it reported, if those happen.
  */
+/** Every live buffer and its size (dev only), for the memory log's breakdown. */
+const liveBuffers = new Map<GPUBuffer, number>()
+
+/** Live buffer memory by size, largest totals first: "12x8.4MB=101MB". */
+function liveBreakdown() {
+  const totals = new Map<number, { count: number; bytes: number }>()
+  for (const size of liveBuffers.values()) {
+    const entry = totals.get(size) ?? { count: 0, bytes: 0 }
+    entry.count++
+    entry.bytes += size
+    totals.set(size, entry)
+  }
+  return [...totals]
+    .sort((a, b) => b[1].bytes - a[1].bytes)
+    .slice(0, 8)
+    .map(
+      ([size, t]) =>
+        `${t.count}x${(size / 1e6).toFixed(2)}MB=${Math.round(t.bytes / 1e6)}MB`
+    )
+    .join(" ")
+}
+
+/** Sizes and usages of large buffers created since the last memory log. */
+let createdSizes: Array<string> = []
+
 const gpu = {
   liveBytes: 0,
   peakBytes: 0,
   lost: null as string | null,
   error: null as string | null,
-  promptTokens: 0
+  promptTokens: 0,
+  /** Running totals of GPU work, for the dev memory log. */
+  churn: {
+    buffers: 0,
+    bufferBytes: 0,
+    /** Buffer requests served from the pool. */
+    reused: 0,
+    bindGroups: 0,
+    /** Bind groups the garbage collector has freed. */
+    bindGroupsFreed: 0,
+    encoders: 0,
+    submits: 0,
+    maps: 0,
+    uploadBytes: 0
+  }
+}
+
+/*
+ * Every generated token, ONNX Runtime allocates two 4.2 MB storage buffers
+ * for LFM3's outputs (at a ~3,000-token prompt) and destroys them a step
+ * later: its bucket cache keeps only a few spares per size (20 at 4 MiB, 10
+ * at 8 MiB) and destroys the rest. iPhone Safari didn't reclaim the
+ * destroyed memory fast enough: 8.4 MB per token, and the page passed its
+ * 2 GB limit ~350 tokens into a reply. Destroyed buffers of 1 MB or more are
+ * kept and handed back for the next request of the same size and usage
+ * instead. (microsoft/onnxruntime#33751)
+ */
+const POOL_MIN_BYTES = 1 << 20
+/**
+ * Spares of a size are destroyed once that many pooled requests have gone by
+ * without one for it: past 4,096 tokens the 4 MB buffers give way to 8 MB
+ * ones, and their spares would otherwise sit in memory for good.
+ */
+const POOL_STALE_REQUESTS = 512
+
+/** GPUBufferUsage.MAP_READ | GPUBufferUsage.MAP_WRITE. */
+const MAP_READ_OR_WRITE = 0x1 | 0x2
+/** Free buffers kept per size and usage. */
+const POOL_PER_SIZE = 12
+
+/** The pool a buffer request can be served from, or null. */
+function poolKey(descriptor: GPUBufferDescriptor) {
+  const mappable = descriptor.usage & MAP_READ_OR_WRITE
+  if (
+    descriptor.size < POOL_MIN_BYTES ||
+    mappable ||
+    descriptor.mappedAtCreation
+  ) {
+    return null
+  }
+  return `${descriptor.size}/${descriptor.usage}`
 }
 
 function trackGpu() {
@@ -134,23 +209,79 @@ function trackGpu() {
   const adapter = scope.GPUAdapter?.prototype
   if (!device || !buffer || !adapter) return
   const sizes = new WeakMap<GPUBuffer, number>()
+  const owners = new WeakMap<GPUBuffer, { device: GPUDevice; key: string }>()
+  const pools = new WeakMap<GPUDevice, Map<string, Array<GPUBuffer>>>()
+  const poolFor = (owner: GPUDevice) => {
+    let pool = pools.get(owner)
+    if (!pool) pools.set(owner, (pool = new Map()))
+    return pool
+  }
+  // Pooled requests so far, and the last one for each size.
+  let requests = 0
+  const lastRequested = new Map<string, number>()
   const createBuffer = device.createBuffer
   device.createBuffer = function (descriptor) {
+    const key = poolKey(descriptor)
+    if (key) {
+      lastRequested.set(key, ++requests)
+      if (requests % 64 === 0) dropStaleSpares(poolFor(this))
+    }
+    const reused = key ? poolFor(this).get(key)?.pop() : undefined
+    if (reused) {
+      gpu.churn.reused++
+      return reused
+    }
     const created = createBuffer.call(this, descriptor)
+    if (key) owners.set(created, { device: this, key })
+    gpu.churn.buffers++
+    gpu.churn.bufferBytes += descriptor.size
+    if (descriptor.size >= 256 * 1024) {
+      createdSizes.push(
+        `${(descriptor.size / 1e6).toFixed(1)}MB/u${descriptor.usage}`
+      )
+    }
     sizes.set(created, descriptor.size)
+    if (import.meta.env.DEV) liveBuffers.set(created, descriptor.size)
     gpu.liveBytes += descriptor.size
     gpu.peakBytes = Math.max(gpu.peakBytes, gpu.liveBytes)
     return created
   }
   const destroy = buffer.destroy
-  buffer.destroy = function () {
-    const size = sizes.get(this)
+  /** Destroys a buffer for real. */
+  const release = (target: GPUBuffer) => {
+    owners.delete(target)
+    const size = sizes.get(target)
     if (size !== undefined) {
       gpu.liveBytes -= size
-      sizes.delete(this)
+      sizes.delete(target)
+      liveBuffers.delete(target)
     }
-    return destroy.call(this)
+    destroy.call(target)
   }
+  /** Destroys the spares of sizes nothing has asked for in a while. */
+  const dropStaleSpares = (pool: Map<string, Array<GPUBuffer>>) => {
+    for (const [key, free] of pool) {
+      if (requests - (lastRequested.get(key) ?? 0) < POOL_STALE_REQUESTS)
+        continue
+      for (const spare of free) release(spare)
+      pool.delete(key)
+    }
+  }
+  buffer.destroy = function () {
+    // A large buffer is kept for the next request of its size, not destroyed.
+    const owner = owners.get(this)
+    if (owner) {
+      const pool = poolFor(owner.device)
+      const free = pool.get(owner.key) ?? []
+      if (free.length < POOL_PER_SIZE && !free.includes(this)) {
+        free.push(this)
+        pool.set(owner.key, free)
+        return
+      }
+    }
+    release(this)
+  }
+  if (import.meta.env.DEV) countGpuWork()
   const requestDevice = adapter.requestDevice
   adapter.requestDevice = async function (descriptor) {
     const requested = await requestDevice.call(this, descriptor)
@@ -165,6 +296,115 @@ function trackGpu() {
   }
 }
 trackGpu()
+
+/*
+ * Dev-only memory logging. iPhone Safari kills the page at 2 GB, and it has
+ * no memory API, so this counts what it can: ONNX Runtime's WebAssembly
+ * memory (the WebAssembly memories created here) and the WebGPU buffers.
+ */
+const wasmMemories = new Set<WebAssembly.Memory>()
+
+function trackWasm() {
+  const wasm = WebAssembly as unknown as Record<string, unknown>
+  const Memory = WebAssembly.Memory
+  wasm.Memory = new Proxy(Memory, {
+    construct(target, args: [WebAssembly.MemoryDescriptor]) {
+      const memory = Reflect.construct(target, args) as WebAssembly.Memory
+      wasmMemories.add(memory)
+      return memory
+    }
+  })
+  for (const name of ["instantiate", "instantiateStreaming"]) {
+    const original = wasm[name] as
+      ((...args: Array<unknown>) => Promise<unknown>) | undefined
+    if (!original) continue
+    wasm[name] = async function (this: unknown, ...args: Array<unknown>) {
+      const result = (await original.apply(this, args)) as {
+        instance?: WebAssembly.Instance
+        exports?: WebAssembly.Exports
+      }
+      const exports = result.instance?.exports ?? result.exports ?? {}
+      for (const value of Object.values(exports)) {
+        if (value instanceof Memory) wasmMemories.add(value)
+      }
+      return result
+    }
+  }
+}
+if (import.meta.env.DEV) trackWasm()
+
+/** Counts WebGPU objects made and work sent, which buffer sizes don't show. */
+function countGpuWork() {
+  const scope = globalThis as unknown as {
+    GPUDevice?: { prototype: GPUDevice }
+    GPUQueue?: { prototype: GPUQueue }
+    GPUBuffer?: { prototype: GPUBuffer }
+  }
+  const device = scope.GPUDevice?.prototype
+  const queue = scope.GPUQueue?.prototype
+  const buffer = scope.GPUBuffer?.prototype
+  if (!device || !queue || !buffer) return
+  const count = <T extends object, K extends keyof T>(
+    target: T,
+    name: K,
+    onCall: (args: Array<unknown>) => void
+  ) => {
+    const original = target[name] as unknown as (
+      ...args: Array<unknown>
+    ) => unknown
+    ;(target as Record<K, unknown>)[name] = function (
+      this: unknown,
+      ...args: Array<unknown>
+    ) {
+      onCall(args)
+      return original.apply(this, args)
+    }
+  }
+  // Bind groups have no destroy(): their memory goes when they're collected.
+  const collected = new FinalizationRegistry(() => gpu.churn.bindGroupsFreed++)
+  const createBindGroup = device.createBindGroup
+  device.createBindGroup = function (descriptor) {
+    const bindGroup = createBindGroup.call(this, descriptor)
+    gpu.churn.bindGroups++
+    collected.register(bindGroup, null)
+    return bindGroup
+  }
+  count(device, "createCommandEncoder", () => gpu.churn.encoders++)
+  count(queue, "submit", () => gpu.churn.submits++)
+  count(buffer, "mapAsync", () => gpu.churn.maps++)
+  count(queue, "writeBuffer", (args) => {
+    const data = args[2] as ArrayBufferView | ArrayBuffer | undefined
+    gpu.churn.uploadBytes += data?.byteLength ?? 0
+  })
+}
+
+let lastChurn = { ...gpu.churn }
+
+/** Logs memory use to the page's console, in dev only. */
+function logMemory(step: string) {
+  if (!import.meta.env.DEV) return
+  const mb = (bytes: number) => Math.round(bytes / 1e6)
+  let wasmBytes = 0
+  for (const memory of wasmMemories) wasmBytes += memory.buffer.byteLength
+  // What was made and sent since the last line.
+  const c = gpu.churn
+  const d = (key: keyof typeof c) => c[key] - lastChurn[key]
+  const sizes = new Map<string, number>()
+  for (const size of createdSizes) sizes.set(size, (sizes.get(size) ?? 0) + 1)
+  createdSizes = []
+  const largest = [...sizes]
+    .sort((a, b) => parseFloat(b[0]) - parseFloat(a[0]))
+    .slice(0, 6)
+    .map(([size, n]) => `${n}x${size}`)
+    .join(" ")
+  const since = `+${d("buffers")} buffers (${mb(d("bufferBytes"))} MB), ${d("reused")} reused, +${d("bindGroups")} bind groups, +${d("encoders")} encoders, +${d("submits")} submits, +${d("maps")} reads, ${mb(d("uploadBytes"))} MB uploaded; large: ${largest || "none"}`
+  lastChurn = { ...c }
+  const alive = c.bindGroups - c.bindGroupsFreed
+  ctx.postMessage({
+    type: "log",
+    text: `[memory] ${step}: wasm ${mb(wasmBytes)} MB, GPU buffers ${mb(gpu.liveBytes)} MB (peak ${mb(gpu.peakBytes)} MB), ${alive} bind groups not yet collected; since last: ${since}`
+  })
+}
 
 /** Called when the GPU device is lost. */
 const lostWaiters = new Set<() => void>()
@@ -190,6 +430,20 @@ async function unlessGpuLost<T>(work: Promise<T>): Promise<T> {
   } finally {
     lostWaiters.delete(notify)
   }
+}
+
+/**
+ * WebKit frees a WebGPU bind group's memory only when its JavaScript object
+ * is garbage-collected (there is no destroy()), and until late 2026 a bind
+ * group also kept destroyed buffers it pointed at. ONNX Runtime makes ~300
+ * bind groups per generated token while the worker's own heap barely grows,
+ * so collections rarely ran: iPhone Safari's page grew with every token of a
+ * long reply until it passed its 2 GB limit. Allocating throwaway memory
+ * makes the engine collect.
+ */
+function nudgeGarbageCollector() {
+  const junk = Array.from({ length: 32 }, () => new ArrayBuffer(1 << 20))
+  return junk.length
 }
 
 /** What the GPU looked like when something failed, for the error message. */
@@ -447,7 +701,10 @@ function load(modelId: string) {
   })()
   current = { modelId, runtime }
   runtime.then(
-    () => ctx.postMessage({ type: "ready", modelId }),
+    () => {
+      logMemory(`loaded ${modelId}`)
+      ctx.postMessage({ type: "ready", modelId })
+    },
     (error: unknown) => {
       if (current?.runtime === runtime) current = null
       ctx.postMessage({
@@ -464,6 +721,19 @@ const running = new Map<string, StoppingCriteria>()
 
 /** End-of-turn tokens, dropped when special tokens are kept. */
 const END_TOKENS = /<\|im_end\|>|<\|endoftext\|>|<\|im_start\|>/g
+
+/**
+ * The most tokens a chat can hold, prompt and reply together: the same as
+ * Apple's on-device model. Past 4,096 tokens ONNX Runtime's buffer cache
+ * moves LFM3's attention memory to 8 MiB buffers, which hold exactly 8,192;
+ * one more token would move it to 12 MiB, past what iPhone Safari allows.
+ */
+const CONTEXT_LIMIT = 8192
+/** Below this much room for a reply, the chat is too long to answer. */
+const MIN_REPLY_TOKENS = 32
+
+/** A chat past the context limit: shown as is, without GPU diagnostics. */
+class ContextLimitError extends Error {}
 
 /**
  * Prompt tokens read per step. iPhone Safari's GPU process crashed reading
@@ -515,6 +785,8 @@ async function readPrompt(
       }
       if (cache) cache.update(entries)
       else cache = new tf.DynamicCache(entries)
+      nudgeGarbageCollector()
+      logMemory(`prompt read ${stop} of ${length} tokens`)
     }
     return cache
   } catch (error) {
@@ -522,6 +794,9 @@ async function readPrompt(
     throw error
   }
 }
+
+/** How often a reply's counts go to the page while it generates. */
+const STATS_INTERVAL_MS = 250
 
 async function generate(
   id: string,
@@ -549,6 +824,16 @@ async function generate(
   }
   const inputs = tokenizer(prompt, { add_special_tokens: false })
   gpu.promptTokens = inputs.input_ids.dims[1]
+  // The reply gets what's left of the context limit.
+  const room = CONTEXT_LIMIT - gpu.promptTokens
+  if (room < MIN_REPLY_TOKENS) {
+    throw new ContextLimitError(
+      `This chat is too long for the model: ${gpu.promptTokens.toLocaleString("en-US")} tokens, and it can read ${CONTEXT_LIMIT.toLocaleString("en-US")} at most, reply included. Start a new chat to keep going.`
+    )
+  }
+  // Thinking takes many more tokens before the answer starts.
+  const wanted = thinking ? 4096 : 1024
+  const maxNewTokens = Math.min(wanted, room)
   const stopping = new tf.InterruptableStoppingCriteria()
   running.set(id, stopping)
   // With tools, keep special tokens: LFM2.5 marks its tool calls with them.
@@ -566,6 +851,14 @@ async function generate(
     firstTokenMs: firstToken === null ? null : firstToken - requested,
     decodeMs: firstToken === null ? 0 : lastToken - firstToken
   })
+  // Counts so far for the stats line: the prompt's now, then the reply's at
+  // its first token and every STATS_INTERVAL_MS after.
+  let reported = 0
+  const report = () => {
+    reported = performance.now()
+    ctx.postMessage({ type: "stats", id, stats: timings() })
+  }
+  report()
   const streamer = new tf.TextStreamer(tokenizer, {
     skip_prompt: true,
     skip_special_tokens: !keepSpecial,
@@ -573,6 +866,16 @@ async function generate(
       lastToken = performance.now()
       firstToken ??= lastToken
       outputTokens += tokens.length
+      if (
+        firstToken === lastToken ||
+        lastToken - reported >= STATS_INTERVAL_MS
+      ) {
+        report()
+      }
+      if (outputTokens % 16 === 0) nudgeGarbageCollector()
+      if (outputTokens % 32 === 0) {
+        logMemory(`reply ${outputTokens} tokens (prompt ${gpu.promptTokens})`)
+      }
     },
     callback_function: (raw: string) => {
       const text = keepSpecial ? raw.replace(END_TOKENS, "") : raw
@@ -592,8 +895,7 @@ async function generate(
           past_key_values: cache,
           attention_mask: tf.ones(inputs.input_ids.dims)
         }),
-        // Thinking takes many more tokens before the answer starts.
-        max_new_tokens: thinking ? 4096 : 1024,
+        max_new_tokens: maxNewTokens,
         do_sample: true,
         ...sampling,
         streamer,
@@ -608,6 +910,24 @@ async function generate(
     running.delete(id)
     // generate() keeps a cache it was given; this one is done.
     await cache?.dispose().catch(() => undefined)
+    logMemory(`reply finished, ${outputTokens} tokens`)
+    if (import.meta.env.DEV) {
+      ctx.postMessage({
+        type: "log",
+        text: `[memory] live buffers: ${liveBreakdown()}`
+      })
+    }
+  }
+  // Cut off by the context limit, not by the reply's own length limit.
+  if (
+    maxNewTokens < wanted &&
+    outputTokens >= maxNewTokens &&
+    !stopping.interrupted
+  ) {
+    report()
+    throw new ContextLimitError(
+      `The reply stopped at the model's limit of ${CONTEXT_LIMIT.toLocaleString("en-US")} tokens for a chat. Start a new chat to keep going.`
+    )
   }
   return timings()
 }
@@ -625,7 +945,10 @@ ctx.onmessage = ({ data }) => {
         ctx.postMessage({
           type: "error",
           id: data.id,
-          message: `${errorMessage(error)} (${gpuReport()})`
+          message:
+            error instanceof ContextLimitError
+              ? error.message
+              : `${errorMessage(error)} (${gpuReport()})`
         })
       )
   } else {

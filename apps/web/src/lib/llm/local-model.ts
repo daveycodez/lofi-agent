@@ -3,6 +3,7 @@ import type { ModelMessage, StreamChunk, UIMessage } from "@tanstack/ai"
 import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
 
 import { recordGeneration } from "#/lib/llm/generation-stats"
+import type { GenerationStats } from "#/lib/llm/generation-stats"
 import type {
   ChatTurn,
   RunTimings,
@@ -55,6 +56,8 @@ export function localModelStatus(modelId: string) {
 /** Listeners for each running generation, by request id. */
 type Generation = {
   onToken: (text: string) => void
+  /** The run's counts so far, a few times a second while it runs. */
+  onStats: (stats: RunTimings) => void
   onEnd: (error?: string, stats?: RunTimings) => void
 }
 const generations = new Map<string, Generation>()
@@ -90,6 +93,11 @@ function handleMessage({ data }: MessageEvent<WorkerResponse>) {
     }
   } else if (data.type === "token") {
     generations.get(data.id)?.onToken(data.text)
+  } else if (data.type === "stats") {
+    generations.get(data.id)?.onStats(data.stats)
+  } else if (data.type === "log") {
+    // Workers' own console output doesn't reach the dev server's terminal.
+    console.info(data.text)
   } else {
     const generation = generations.get(data.id)
     generations.delete(data.id)
@@ -235,6 +243,8 @@ async function* generateOnce(options: {
   sampling: Sampling
   messageId: string
   abortSignal?: AbortSignal
+  /** The run's counts so far, while it runs. */
+  onStats: (stats: RunTimings) => void
 }): AsyncGenerator<
   StreamChunk,
   {
@@ -261,6 +271,7 @@ async function* generateOnce(options: {
       queue.push(text)
       wake?.()
     },
+    onStats: options.onStats,
     onEnd: (error, timings) => {
       failure = error
       stats = timings
@@ -351,6 +362,24 @@ async function* generateOnce(options: {
   return { ...toolSplitter.flush(), failure, stats }
 }
 
+/** A run's counts and timings, as the stats line takes them. */
+function generationStats({
+  inputTokens,
+  outputTokens,
+  firstTokenMs,
+  decodeMs
+}: RunTimings): GenerationStats {
+  return {
+    inputTokens,
+    outputTokens,
+    ...(firstTokenMs !== null && {
+      firstTokenMs,
+      decodeTokens: Math.max(outputTokens - 1, 0),
+      decodeMs
+    })
+  }
+}
+
 /** A TanStack AI connection that runs `modelId` locally. */
 export function localModelConnection(options: {
   modelId: string
@@ -429,28 +458,21 @@ export function localModelConnection(options: {
       let calls: Array<ParsedToolCall> = []
       let failure: string | undefined
       for (let attempt = 0; ; attempt++) {
+        const id = attempt === 0 ? runId : `${runId}_${attempt}`
         const result = yield* generateOnce({
-          id: attempt === 0 ? runId : `${runId}_${attempt}`,
+          id,
           chat,
           tools,
           thinking: thinking(),
           sampling,
           messageId,
-          abortSignal
+          abortSignal,
+          onStats: (stats) =>
+            recordGeneration(threadId, id, generationStats(stats), false)
         })
         failure = result.failure
         if (result.stats) {
-          const { inputTokens, outputTokens, firstTokenMs, decodeMs } =
-            result.stats
-          recordGeneration(threadId, {
-            inputTokens,
-            outputTokens,
-            ...(firstTokenMs !== null && {
-              firstTokenMs,
-              decodeTokens: Math.max(outputTokens - 1, 0),
-              decodeMs
-            })
-          })
+          recordGeneration(threadId, id, generationStats(result.stats))
         }
         yield* textEvent(result.text)
         const parsed = result.markup ? parseToolCalls(result.markup) : []

@@ -6,6 +6,7 @@ import {
   APFEL_URL,
   apfelConnection
 } from "#/lib/llm/apfel-connection"
+import { startReply } from "#/lib/llm/generation-stats"
 import { localModelConnection, localModelStatus } from "#/lib/llm/local-model"
 import type { LocalModelStatus } from "#/lib/llm/local-model"
 import { createStore } from "#/lib/store"
@@ -210,6 +211,9 @@ export async function checkAfm() {
 /** Sends each run to whichever model is selected when the user hits send. */
 export const routedConnection: ConnectConnectionAdapter = {
   connect(messages, data, abortSignal, runContext) {
+    // A run after the user's message starts a reply; runs after tool calls
+    // go on with it.
+    if (messages.at(-1)?.role === "user") startReply(runContext.threadId)
     return modelInfo(currentModel()).connection.connect(
       messages,
       data,

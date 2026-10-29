@@ -15,7 +15,14 @@ import { AppleSetupModal } from "#/components/chat/apple-setup-modal"
 
 /** Provider logo. The SVGs are drawn in black, so invert them in dark mode. */
 function ModelLogo({ src }: { src: string }) {
-  return <img src={src} alt="" aria-hidden className="size-3.5 dark:invert" />
+  return (
+    <img
+      src={src}
+      alt=""
+      aria-hidden
+      className="size-3.5 shrink-0 dark:invert"
+    />
+  )
 }
 
 /**
@@ -67,7 +74,9 @@ export function ModelSelect() {
         : null
 
   return (
-    <div className="flex items-center gap-2">
+    // min-w-0: a long model name truncates instead of pushing the composer's
+    // other buttons out.
+    <div className="flex min-w-0 items-center gap-1">
       <AppleSetupModal
         isOpen={setupOpen}
         onOpenChange={setSetupOpen}
@@ -79,12 +88,12 @@ export function ModelSelect() {
           size="sm"
           variant="ghost"
           aria-label={`Model: ${current.name}`}
-          className="text-muted"
+          className="min-w-0 text-muted"
         >
           <ModelLogo src={current.icon} />
-          {current.name}
+          <span className="min-w-0 truncate">{current.name}</span>
           {/* Buttons pull icons in by 2px; keep the caret 8px from the label. */}
-          <ChevronDown className="ms-0" />
+          <ChevronDown className="ms-0 shrink-0" />
         </Button>
         <Popover.Content placement="bottom start">
           <Popover.Dialog aria-label="Model" className="p-1">
@@ -113,10 +122,12 @@ export function ModelSelect() {
       </Popover>
       {status && (
         <span
-          className={`flex items-center gap-1.5 text-xs whitespace-nowrap tabular-nums ${status.isError ? "text-danger" : "text-muted"}`}
+          className={`flex min-w-0 items-center gap-1.5 text-xs whitespace-nowrap tabular-nums ${status.isError ? "text-danger" : "text-muted"}`}
         >
-          {!status.isError && <Spinner size="sm" color="current" />}
-          {status.text}
+          {!status.isError && (
+            <Spinner size="sm" color="current" className="shrink-0" />
+          )}
+          <span className="min-w-0 truncate">{status.text}</span>
         </span>
       )}
     </div>

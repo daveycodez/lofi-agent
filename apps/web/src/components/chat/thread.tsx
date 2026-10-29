@@ -40,7 +40,7 @@ import type { ComponentProps, ReactNode } from "react"
 
 import { Markdown } from "#/components/chat/markdown"
 import { ModelSelect } from "#/components/chat/model-select"
-import { ReplyStatsLine, useReplyStats } from "#/components/chat/reply-stats"
+import { ReplyStatsLine } from "#/components/chat/reply-stats"
 import { SourceList } from "#/components/chat/sources"
 import { useDictation } from "#/lib/dictation"
 import { checkMcpServers, useMcpTools } from "#/lib/mcp"
@@ -325,8 +325,6 @@ export function Thread({
     }
     wasLoading.current = isLoading
   }, [isLoading, messages])
-  // Token counts and speed of the latest reply, under the composer.
-  const replyStats = useReplyStats(threadId, isLoading, messages)
 
   const viewportRef = useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = useState(true)
@@ -471,7 +469,8 @@ export function Thread({
             </IconAction>
           </div>
           {composer}
-          <ReplyStatsLine stats={replyStats} />
+          {/* Token counts and speed of the latest reply. */}
+          <ReplyStatsLine threadId={threadId} />
         </div>
       </div>
     </div>
@@ -565,10 +564,10 @@ function Composer({
           }}
           className="min-h-0 w-full flex-none resize-none px-3.5 py-0 text-base"
         />
-        <InputGroup.Suffix className="flex w-full items-center gap-1.5 px-3 py-0">
+        <InputGroup.Suffix className="flex w-full items-center gap-1 px-3 py-0">
           <ModelSelect />
           {canThink(model) && <ThinkToggle />}
-          <div className="ms-auto flex items-center gap-1">
+          <div className="ms-auto flex shrink-0 items-center gap-1">
             {dictation.isSupported && (
               <Tooltip delay={300}>
                 <Button
@@ -664,9 +663,9 @@ function UserMessage({
   }
 
   return (
-    <div className="group flex items-center justify-end gap-2">
+    <div className="group flex items-end justify-end gap-2">
       {!isRunning && (
-        <div className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
+        <div>
           <IconAction label="Edit message" onPress={() => setIsEditing(true)}>
             <Pencil />
           </IconAction>
@@ -713,7 +712,7 @@ function EditComposer({
           }}
           className="min-h-0 w-full flex-none resize-none px-3.5 py-0 text-base"
         />
-        <InputGroup.Suffix className="flex w-full items-center gap-1.5 px-3 py-0">
+        <InputGroup.Suffix className="flex w-full items-center gap-1 px-3 py-0">
           <Button size="sm" variant="danger" onPress={onDelete}>
             Delete
           </Button>
@@ -744,6 +743,7 @@ function ThinkToggle() {
   return (
     <Tooltip delay={300}>
       <ToggleButton
+        isIconOnly
         size="sm"
         variant="ghost"
         isSelected={isThinking}
@@ -751,10 +751,9 @@ function ThinkToggle() {
           thinkingStore.set(on)
         }}
         aria-label="Think before answering"
-        className={isThinking ? undefined : "text-muted"}
+        className={isThinking ? "shrink-0" : "shrink-0 text-muted"}
       >
         <Bulb />
-        Think
       </ToggleButton>
       <Tooltip.Content>
         {isThinking
@@ -869,9 +868,7 @@ function AssistantMessage({
       )}
       {!isRunning && (text || error) && (
         // Hidden until hover, except on the last reply.
-        <div
-          className={`flex items-center gap-1 ${isLast ? "" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100"}`}
-        >
+        <div className="flex items-center gap-1">
           {text && <CopyAction text={text} />}
           {text && <ReadAloudAction text={text} />}
           {isLast && (

@@ -239,6 +239,13 @@ export const apfelConnection: ConnectConnectionAdapter = {
           if (!timing.first) {
             timing.first = timing.last
             timing.firstChars = chars
+            // Token counts come only with the usage at the end.
+            recordGeneration(
+              threadId,
+              `${runId}_${attempt}`,
+              { firstTokenMs: timing.first - sentAt },
+              false
+            )
           }
           timing.chars += chars
         }
@@ -266,7 +273,7 @@ export const apfelConnection: ConnectConnectionAdapter = {
         if (choice?.finish_reason) finishReason = choice.finish_reason
       }
       const outputTokens = usage?.completion_tokens
-      recordGeneration(threadId, {
+      recordGeneration(threadId, `${runId}_${attempt}`, {
         inputTokens: usage?.prompt_tokens,
         cachedTokens: usage?.prompt_tokens_details?.cached_tokens,
         outputTokens,

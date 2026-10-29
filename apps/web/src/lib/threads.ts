@@ -1,5 +1,6 @@
 import { indexedDBPersistence } from "@tanstack/ai-react"
 
+import { forgetReplyStats } from "#/lib/llm/generation-stats"
 import { createStore } from "#/lib/store"
 
 /** Messages for each thread live in IndexedDB, keyed by thread id. */
@@ -71,6 +72,7 @@ export function archiveThread(id: string) {
 
 export async function deleteThread(id: string) {
   threadsStore.set((threads) => threads.filter((t) => t.id !== id))
+  forgetReplyStats([id])
   try {
     await chatPersistence.removeItem(id)
   } catch {
@@ -82,6 +84,7 @@ export async function deleteThread(id: string) {
 export async function deleteAllThreads() {
   const ids = threadsStore.get().map((t) => t.id)
   threadsStore.set([])
+  forgetReplyStats(ids)
   await Promise.all(
     ids.map(async (id) => {
       try {
