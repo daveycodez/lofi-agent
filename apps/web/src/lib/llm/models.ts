@@ -28,12 +28,13 @@ const LFM3_ID = "onnx-community/LFM3-1.7B-ONNX"
 /**
  * A build of LFM3 made for iPhone Safari: GPTQ 4-bit with block size 32 (so
  * onnxruntime-web's fast prompt kernel and fused kernels apply), a 48k
- * vocabulary, and no embedding copy at load (900 MB of weights instead of
- * 1.09 GB). Sequences are limited to 16,384 tokens. Pinned to a commit, so
- * browsers download this version's files.
+ * vocabulary, no embedding copy at load (900 MB of weights instead of
+ * 1.09 GB), and flash attention in the sliding-window layers (no buffer that
+ * grows with the square of the prompt). Sequences are limited to 16,384
+ * tokens. Pinned to a commit, so browsers download this version's files.
  */
 const LFM3_WEB_ID =
-  "daveycodez/LFM3-1.7B-Web@2395323014f17d483d5c728a4fb9e813a23e6492"
+  "daveycodez/LFM3-1.7B-Web@3c75909fbf17af6f734263e9cee75625bcfd7523"
 const LFM2_5_ID = "LiquidAI/LFM2.5-1.2B-Instruct-ONNX"
 /** LFM2.5 has no thinking switch: thinking is a separate model. */
 const LFM2_5_THINKING_ID = "LiquidAI/LFM2.5-1.2B-Thinking-ONNX"

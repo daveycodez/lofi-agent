@@ -47,7 +47,35 @@ type TransformersModule = {
     options: Record<string, unknown>
   ) => unknown
   InterruptableStoppingCriteria: new () => StoppingCriteria
-  env: { fetch: typeof fetch }
+  env: {
+    fetch: typeof fetch
+    backends: {
+      onnx: {
+        versions: { web: string }
+        wasm: { wasmPaths?: string | { mjs: string; wasm: string } }
+      }
+    }
+  }
+}
+
+/*
+ * ONNX Runtime ships its WebGPU build twice: with Asyncify (the default) and
+ * with JSPI. Asyncify rewrites the WebAssembly so it can pause for the GPU,
+ * which leaves functions of over 1 MB; Safari's optimizing compiler spent
+ * seconds and hundreds of MB on each of them while a reply was generated
+ * (on a Mac, the tab peaked at 2,273 MB during a follow-up after a web
+ * search, against 1,543 MB with JSPI, and generated ~15% slower). The JSPI
+ * build is 16.8 MB instead of 26.9 MB and runs the same code, so it is used
+ * wherever the browser has JSPI (Safari 27 and recent Chrome).
+ */
+function pickJspiBuild(tf: TransformersModule) {
+  if (!("Suspending" in WebAssembly)) return
+  const onnx = tf.env.backends.onnx
+  const dist = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnx.versions.web}/dist/`
+  onnx.wasm.wasmPaths = {
+    mjs: `${dist}ort-wasm-simd-threaded.jspi.mjs`,
+    wasm: `${dist}ort-wasm-simd-threaded.jspi.wasm`
+  }
 }
 
 /*
@@ -338,6 +366,7 @@ async function loadRuntime(modelId: string): Promise<Runtime> {
     /* @vite-ignore */ TRANSFORMERS_URL
   )) as TransformersModule
   tf.env.fetch = fetchWithoutReferrer
+  pickJspiBuild(tf)
   const { repo, revision } = parseModelId(modelId)
   const tokenizer = await tf.AutoTokenizer.from_pretrained(repo, { revision })
   const weights = await openWeights(modelId)
