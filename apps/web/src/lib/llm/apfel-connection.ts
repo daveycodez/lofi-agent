@@ -47,11 +47,10 @@ function contentText(content: ModelMessage["content"]) {
 function toOpenAIMessages(
   messages: Array<UIMessage> | Array<ModelMessage>
 ): Array<OpenAIMessage> {
-  // The user's system prompt from Settings, if they wrote one.
-  const systemPrompt = currentSystemPrompt()
-  const out: Array<OpenAIMessage> = systemPrompt
-    ? [{ role: "system", content: systemPrompt }]
-    : []
+  // The date and time, and the user's system prompt from Settings.
+  const out: Array<OpenAIMessage> = [
+    { role: "system", content: currentSystemPrompt() }
+  ]
   for (const m of convertMessagesToModelMessages(messages)) {
     const content = contentText(m.content)
     if (m.role === "tool") {

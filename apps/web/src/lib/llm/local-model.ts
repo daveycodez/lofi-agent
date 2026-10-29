@@ -369,12 +369,9 @@ export function localModelConnection(options: {
         return
       }
 
-      // The user's system prompt from Settings goes first, if they wrote one.
-      const systemPrompt = currentSystemPrompt()
+      // The date and time, and the user's system prompt from Settings.
       const chat: Array<ChatTurn> = [
-        ...(systemPrompt
-          ? [{ role: "system" as const, content: systemPrompt }]
-          : []),
+        { role: "system", content: currentSystemPrompt() },
         ...toChatTurns(messages, toolFormat)
       ]
       // The tools useChat has (from MCP servers), as the template takes them.
