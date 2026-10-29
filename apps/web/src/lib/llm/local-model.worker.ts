@@ -76,13 +76,16 @@ function parseModelId(modelId: string) {
 }
 
 /**
- * The weights file on disk is named by repo, not revision, so a new commit
- * that keeps the same weights doesn't download them again. A commit that
- * changes the weights needs a new repo (or a new name here).
+ * The weights file on disk is named by repo and, for a pinned model, by
+ * revision, so a new version is downloaded fresh rather than reusing what an
+ * older one saved.
  */
+const repoFilePrefix = (repo: string) => `${repo.replace(/[^\w.-]+/g, "_")}.`
+
 const weightsFiles = (modelId: string) => {
   const { repo, revision } = parseModelId(modelId)
-  const file = `${repo.replace(/[^\w.-]+/g, "_")}.${WEIGHTS}`
+  const version = revision === "main" ? "" : `${revision.slice(0, 12)}.`
+  const file = `${repoFilePrefix(repo)}${version}${WEIGHTS}`
   return {
     url: `https://huggingface.co/${repo}/resolve/${revision}/onnx/${WEIGHTS}`,
     file,
@@ -187,16 +190,27 @@ async function openWeights(modelId: string) {
   return { data: view, close: () => handle.close() }
 }
 
-/** Removes weights earlier versions of the app stored elsewhere. */
+/**
+ * Removes weights earlier versions of the app stored elsewhere, and saved
+ * weights of other versions of this model.
+ */
 async function removeOldCopies(modelId: string) {
   try {
     const cache = await caches.open("transformers-cache")
     await cache.delete(weightsFiles(modelId).url)
+    const { repo } = parseModelId(modelId)
+    const current = weightsFiles(modelId)
     const dir = await navigator.storage.getDirectory()
     for await (const name of (
       dir as unknown as { keys: () => AsyncIterable<string> }
     ).keys()) {
-      if (name.startsWith("lfm3-1.7b-")) await dir.removeEntry(name)
+      const otherVersion =
+        name.startsWith(repoFilePrefix(repo)) &&
+        name !== current.file &&
+        name !== current.done
+      if (name.startsWith("lfm3-1.7b-") || otherVersion) {
+        await dir.removeEntry(name)
+      }
     }
   } catch {
     // Nothing to clean up.
