@@ -6,6 +6,7 @@
  */
 import type {
   ChatTurn,
+  RunTimings,
   Sampling,
   ToolSpec,
   WorkerRequest,
@@ -16,7 +17,17 @@ const TRANSFORMERS_URL =
   "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2"
 
 /* Minimal shapes of the Transformers.js APIs used here. */
-type Tensor = { dims: Array<number> }
+type Tensor = {
+  dims: Array<number>
+  location?: string
+  slice: (...ranges: Array<null | [number, number]>) => Tensor
+  dispose: () => void
+}
+/** The model's memory of the text so far: attention keys/values and conv states. */
+type Cache = {
+  update: (entries: Record<string, Tensor>) => void
+  dispose: () => Promise<void>
+}
 type Tokenizer = {
   apply_chat_template: (
     messages: Array<ChatTurn>,
@@ -26,9 +37,10 @@ type Tokenizer = {
 }
 type Model = {
   generate: (options: Record<string, unknown>) => Promise<unknown>
+  forward: (inputs: Record<string, unknown>) => Promise<Record<string, Tensor>>
   dispose: () => Promise<unknown>
 }
-type StoppingCriteria = { interrupt: () => void }
+type StoppingCriteria = { interrupt: () => void; interrupted: boolean }
 type TransformersModule = {
   AutoTokenizer: {
     from_pretrained: (
@@ -47,6 +59,9 @@ type TransformersModule = {
     options: Record<string, unknown>
   ) => unknown
   InterruptableStoppingCriteria: new () => StoppingCriteria
+  DynamicCache: new (entries: Record<string, Tensor>) => Cache
+  Tensor: new (type: string, data: unknown, dims: Array<number>) => Tensor
+  ones: (dims: Array<number>) => Tensor
   env: {
     fetch: typeof fetch
     backends: {
@@ -141,6 +156,7 @@ function trackGpu() {
     const requested = await requestDevice.call(this, descriptor)
     void requested.lost.then((info) => {
       gpu.lost = `${info.reason}${info.message ? `: ${info.message}` : ""}`
+      for (const notify of lostWaiters) notify()
     })
     requested.addEventListener("uncapturederror", (event) => {
       gpu.error = (event as GPUUncapturedErrorEvent).error.message
@@ -149,6 +165,32 @@ function trackGpu() {
   }
 }
 trackGpu()
+
+/** Called when the GPU device is lost. */
+const lostWaiters = new Set<() => void>()
+
+/**
+ * Runs `work`, failing as soon as the GPU device is lost. When Safari's GPU
+ * process crashes, ONNX Runtime can wait forever on a GPU that is gone, and
+ * the reply would sit at "Thinking..." with no error.
+ */
+async function unlessGpuLost<T>(work: Promise<T>): Promise<T> {
+  let notify = () => undefined as void
+  const lost = new Promise<never>((_, reject) => {
+    notify = () =>
+      reject(
+        new Error(
+          "The GPU stopped while the model was running (Safari reset it). Send your message again to reload the model."
+        )
+      )
+  })
+  lostWaiters.add(notify)
+  try {
+    return await Promise.race([work, lost])
+  } finally {
+    lostWaiters.delete(notify)
+  }
+}
 
 /** What the GPU looked like when something failed, for the error message. */
 function gpuReport() {
@@ -423,15 +465,76 @@ const running = new Map<string, StoppingCriteria>()
 /** End-of-turn tokens, dropped when special tokens are kept. */
 const END_TOKENS = /<\|im_end\|>|<\|endoftext\|>|<\|im_start\|>/g
 
+/**
+ * Prompt tokens read per step. iPhone Safari's GPU process crashed reading
+ * an 868-token prompt in one step (a web search's results, or a pasted
+ * article), while short prompts and long replies were fine.
+ */
+const PROMPT_CHUNK = 256
+
+/** Transformers.js's names for a model output's place in the cache. */
+const cacheName = (output: string) =>
+  output
+    .replace("present_conv", "past_conv")
+    .replace("present_ssm", "past_ssm")
+    .replace("present_recurrent", "past_recurrent")
+    .replace("present", "past_key_values")
+
+/**
+ * Reads all but the end of a long prompt into the model's cache, a chunk at
+ * a time, so no single GPU step grows with the prompt. generate() reads the
+ * rest and replies. Null for a prompt short enough to read in one step.
+ */
+async function readPrompt(
+  tf: TransformersModule,
+  model: Model,
+  inputIds: Tensor,
+  stopping: StoppingCriteria
+) {
+  const length = inputIds.dims[1]
+  // At least one token is left for generate(), which skips what the cache
+  // already holds; with none left it would read the whole prompt again.
+  const end = Math.floor((length - 1) / PROMPT_CHUNK) * PROMPT_CHUNK
+  if (end === 0) return null
+  let cache: Cache | null = null
+  try {
+    for (let start = 0; start < end; start += PROMPT_CHUNK) {
+      if (stopping.interrupted) break
+      const stop = start + PROMPT_CHUNK
+      const outputs = await model.forward({
+        input_ids: inputIds.slice(null, [start, stop]),
+        attention_mask: tf.ones([1, stop]),
+        ...(cache && { past_key_values: cache }),
+        // Logits for the last token only (the default here is every token).
+        num_logits_to_keep: new tf.Tensor("int64", [1n], [])
+      })
+      const entries: Record<string, Tensor> = {}
+      for (const [name, tensor] of Object.entries(outputs)) {
+        if (name.startsWith("present")) entries[cacheName(name)] = tensor
+        else if (tensor.location === "gpu-buffer") tensor.dispose()
+      }
+      if (cache) cache.update(entries)
+      else cache = new tf.DynamicCache(entries)
+    }
+    return cache
+  } catch (error) {
+    await cache?.dispose()
+    throw error
+  }
+}
+
 async function generate(
   id: string,
   chat: Array<ChatTurn>,
   tools: Array<ToolSpec>,
   thinking: boolean,
   sampling: Sampling
-) {
+): Promise<RunTimings> {
+  // Time to first token counts from here: it includes reading the prompt.
+  const requested = performance.now()
   if (!current) throw new Error("No model loaded.")
-  const { tf, tokenizer, model } = await current.runtime
+  const loaded = current
+  const { tf, tokenizer, model } = await loaded.runtime
   // Models with a thinking mode reason in a <think> block before answering.
   const prompt = tokenizer.apply_chat_template(chat, {
     ...(tools.length > 0 && { tools }),
@@ -450,27 +553,63 @@ async function generate(
   running.set(id, stopping)
   // With tools, keep special tokens: LFM2.5 marks its tool calls with them.
   const keepSpecial = tools.length > 0
+  // Every generated token, counted as the streamer gets it (text arrives
+  // word by word, later than its tokens).
+  let outputTokens = 0
+  let firstToken: number | null = null
+  let lastToken = 0
+  const timings = (): RunTimings => ({
+    inputTokens: inputs.input_ids.dims[1],
+    // Every run reads the whole prompt, so none of it is cached. Reusing the
+    // cache between runs would report its length here as cachedTokens.
+    outputTokens,
+    firstTokenMs: firstToken === null ? null : firstToken - requested,
+    decodeMs: firstToken === null ? 0 : lastToken - firstToken
+  })
   const streamer = new tf.TextStreamer(tokenizer, {
     skip_prompt: true,
     skip_special_tokens: !keepSpecial,
+    token_callback_function: (tokens: Array<bigint>) => {
+      lastToken = performance.now()
+      firstToken ??= lastToken
+      outputTokens += tokens.length
+    },
     callback_function: (raw: string) => {
       const text = keepSpecial ? raw.replace(END_TOKENS, "") : raw
       if (text) ctx.postMessage({ type: "token", id, text })
     }
   })
+  let cache: Cache | null = null
   try {
-    await model.generate({
-      ...inputs,
-      // Thinking takes many more tokens before the answer starts.
-      max_new_tokens: thinking ? 4096 : 1024,
-      do_sample: true,
-      ...sampling,
-      streamer,
-      stopping_criteria: [stopping]
-    })
+    cache = await unlessGpuLost(
+      readPrompt(tf, model, inputs.input_ids, stopping)
+    )
+    if (stopping.interrupted) return timings()
+    await unlessGpuLost(
+      model.generate({
+        ...inputs,
+        ...(cache && {
+          past_key_values: cache,
+          attention_mask: tf.ones(inputs.input_ids.dims)
+        }),
+        // Thinking takes many more tokens before the answer starts.
+        max_new_tokens: thinking ? 4096 : 1024,
+        do_sample: true,
+        ...sampling,
+        streamer,
+        stopping_criteria: [stopping]
+      })
+    )
+  } catch (error) {
+    // The model's GPU memory is gone with the device: load it again next time.
+    if (gpu.lost && current === loaded) current = null
+    throw error
   } finally {
     running.delete(id)
+    // generate() keeps a cache it was given; this one is done.
+    await cache?.dispose().catch(() => undefined)
   }
+  return timings()
 }
 
 const errorMessage = (error: unknown) =>
@@ -481,7 +620,7 @@ ctx.onmessage = ({ data }) => {
     load(data.modelId).catch(() => undefined)
   } else if (data.type === "generate") {
     generate(data.id, data.chat, data.tools, data.thinking, data.sampling)
-      .then(() => ctx.postMessage({ type: "done", id: data.id }))
+      .then((stats) => ctx.postMessage({ type: "done", id: data.id, stats }))
       .catch((error: unknown) =>
         ctx.postMessage({
           type: "error",

@@ -40,6 +40,7 @@ import type { ComponentProps, ReactNode } from "react"
 
 import { Markdown } from "#/components/chat/markdown"
 import { ModelSelect } from "#/components/chat/model-select"
+import { ReplyStatsLine, useReplyStats } from "#/components/chat/reply-stats"
 import { SourceList } from "#/components/chat/sources"
 import { useDictation } from "#/lib/dictation"
 import { checkMcpServers, useMcpTools } from "#/lib/mcp"
@@ -324,6 +325,8 @@ export function Thread({
     }
     wasLoading.current = isLoading
   }, [isLoading, messages])
+  // Token counts and speed of the latest reply, under the composer.
+  const replyStats = useReplyStats(threadId, isLoading, messages)
 
   const viewportRef = useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = useState(true)
@@ -454,7 +457,7 @@ export function Thread({
         )}
 
         {/* Composer pinned to the bottom of the thread. */}
-        <div className="sticky bottom-0 mt-auto flex flex-col bg-background pb-5">
+        <div className="sticky bottom-0 mt-auto flex flex-col bg-background pb-2">
           <div
             className={`absolute -top-12 self-center ${atBottom ? "invisible" : ""}`}
           >
@@ -468,6 +471,7 @@ export function Thread({
             </IconAction>
           </div>
           {composer}
+          <ReplyStatsLine stats={replyStats} />
         </div>
       </div>
     </div>
@@ -662,7 +666,7 @@ function UserMessage({
   return (
     <div className="group flex items-center justify-end gap-2">
       {!isRunning && (
-        <div className="opacity-0 group-hover:opacity-100 focus-within:opacity-100">
+        <div className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
           <IconAction label="Edit message" onPress={() => setIsEditing(true)}>
             <Pencil />
           </IconAction>

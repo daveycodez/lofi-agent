@@ -2,6 +2,7 @@ import { EventType, convertMessagesToModelMessages } from "@tanstack/ai"
 import type { ModelMessage, StreamChunk, UIMessage } from "@tanstack/ai"
 import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
 
+import { recordGeneration } from "#/lib/llm/generation-stats"
 import {
   JSON_TOOL_CALLS_MARKER,
   createToolCallSplitter,
@@ -127,6 +128,12 @@ type OpenAIChunk = {
     }
     finish_reason?: FinishReason
   }>
+  /** Sent in a last chunk of its own when asked for with include_usage. */
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    prompt_tokens_details?: { cached_tokens?: number }
+  } | null
 }
 
 /** How many times the model is told about calls to tools that don't exist. */
@@ -151,6 +158,8 @@ export const apfelConnection: ConnectConnectionAdapter = {
         body: JSON.stringify({
           model: APFEL_MODEL,
           stream: true,
+          // Token counts, for the stats under the composer.
+          stream_options: { include_usage: true },
           messages: chat,
           ...(clientTools.length > 0 && {
             tools: clientTools.map((tool) => ({
@@ -167,6 +176,7 @@ export const apfelConnection: ConnectConnectionAdapter = {
       })
 
     let response: Response
+    let sentAt = performance.now()
     try {
       response = await request()
     } catch (error) {
@@ -206,9 +216,32 @@ export const apfelConnection: ConnectConnectionAdapter = {
       // When apfel doesn't recognize a tool call, it passes it on as text;
       // that part is held back and read once the reply ends.
       const splitter = createToolCallSplitter([JSON_TOOL_CALLS_MARKER])
+      // apfel streams a few tokens per chunk: the first chunk's share of the
+      // characters stands in for its share of the tokens.
+      const timing = { first: 0, last: 0, firstChars: 0, chars: 0 }
+      let usage: OpenAIChunk["usage"]
       for await (const data of sseData(response.body)) {
         if (data === "[DONE]") break
-        const choice = (JSON.parse(data) as OpenAIChunk).choices?.[0]
+        const chunk = JSON.parse(data) as OpenAIChunk
+        usage = chunk.usage ?? usage
+        const choice = chunk.choices?.[0]
+        const chars =
+          (choice?.delta?.content?.length ?? 0) +
+          (choice?.delta?.tool_calls ?? []).reduce(
+            (n, piece) =>
+              n +
+              (piece.function?.name?.length ?? 0) +
+              (piece.function?.arguments?.length ?? 0),
+            0
+          )
+        if (chars > 0) {
+          timing.last = performance.now()
+          if (!timing.first) {
+            timing.first = timing.last
+            timing.firstChars = chars
+          }
+          timing.chars += chars
+        }
         const delta = choice?.delta?.content
         if (delta) {
           text += delta
@@ -232,6 +265,21 @@ export const apfelConnection: ConnectConnectionAdapter = {
         }
         if (choice?.finish_reason) finishReason = choice.finish_reason
       }
+      const outputTokens = usage?.completion_tokens
+      recordGeneration(threadId, {
+        inputTokens: usage?.prompt_tokens,
+        cachedTokens: usage?.prompt_tokens_details?.cached_tokens,
+        outputTokens,
+        ...(timing.first && {
+          firstTokenMs: timing.first - sentAt,
+          ...(outputTokens !== undefined && {
+            decodeTokens:
+              (outputTokens * (timing.chars - timing.firstChars)) /
+              timing.chars,
+            decodeMs: timing.last - timing.first
+          })
+        })
+      })
       const { text: rest, markup } = splitter.flush()
       const fromText =
         markup && streamed.length === 0
@@ -280,6 +328,7 @@ export const apfelConnection: ConnectConnectionAdapter = {
         })
       }
       try {
+        sentAt = performance.now()
         response = await request()
       } catch {
         break

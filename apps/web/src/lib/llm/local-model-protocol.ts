@@ -25,6 +25,18 @@ export type Sampling = {
   repetition_penalty: number
 }
 
+/** Token counts and timings of one generation, measured in the worker. */
+export type RunTimings = {
+  /** Tokens of the prompt the model read. */
+  inputTokens: number
+  /** Tokens the model generated (the end-of-turn token included). */
+  outputTokens: number
+  /** From the request to the first generated token, in ms; null if none. */
+  firstTokenMs: number | null
+  /** From the first generated token to the last, in ms. */
+  decodeMs: number
+}
+
 export type WorkerRequest =
   | { type: "load"; modelId: string }
   | {
@@ -42,5 +54,5 @@ export type WorkerResponse =
   | { type: "ready"; modelId: string }
   | { type: "load-error"; modelId: string; message: string }
   | { type: "token"; id: string; text: string }
-  | { type: "done"; id: string }
+  | { type: "done"; id: string; stats: RunTimings }
   | { type: "error"; id: string; message: string }

@@ -2,8 +2,10 @@ import { EventType, convertMessagesToModelMessages } from "@tanstack/ai"
 import type { ModelMessage, StreamChunk, UIMessage } from "@tanstack/ai"
 import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
 
+import { recordGeneration } from "#/lib/llm/generation-stats"
 import type {
   ChatTurn,
+  RunTimings,
   Sampling,
   ToolSpec,
   WorkerRequest,
@@ -53,7 +55,7 @@ export function localModelStatus(modelId: string) {
 /** Listeners for each running generation, by request id. */
 type Generation = {
   onToken: (text: string) => void
-  onEnd: (error?: string) => void
+  onEnd: (error?: string, stats?: RunTimings) => void
 }
 const generations = new Map<string, Generation>()
 
@@ -91,7 +93,8 @@ function handleMessage({ data }: MessageEvent<WorkerResponse>) {
   } else {
     const generation = generations.get(data.id)
     generations.delete(data.id)
-    generation?.onEnd(data.type === "error" ? data.message : undefined)
+    if (data.type === "error") generation?.onEnd(data.message)
+    else generation?.onEnd(undefined, data.stats)
   }
 }
 
@@ -234,7 +237,12 @@ async function* generateOnce(options: {
   abortSignal?: AbortSignal
 }): AsyncGenerator<
   StreamChunk,
-  { text: string; markup: string | null; failure?: string }
+  {
+    text: string
+    markup: string | null
+    failure?: string
+    stats?: RunTimings
+  }
 > {
   const { id, messageId, abortSignal } = options
 
@@ -243,6 +251,7 @@ async function* generateOnce(options: {
   let wake: (() => void) | null = null
   let finished = false
   let failure: string | undefined
+  let stats: RunTimings | undefined
   const nextChunk = () =>
     new Promise<void>((resolve) => {
       wake = resolve
@@ -252,8 +261,9 @@ async function* generateOnce(options: {
       queue.push(text)
       wake?.()
     },
-    onEnd: (error) => {
+    onEnd: (error, timings) => {
       failure = error
+      stats = timings
       finished = true
       wake?.()
     }
@@ -338,7 +348,7 @@ async function* generateOnce(options: {
   abortSignal?.removeEventListener("abort", onAbort)
   yield* toEvents(splitter.flush())
   yield* endReasoning()
-  return { ...toolSplitter.flush(), failure }
+  return { ...toolSplitter.flush(), failure, stats }
 }
 
 /** A TanStack AI connection that runs `modelId` locally. */
@@ -429,6 +439,19 @@ export function localModelConnection(options: {
           abortSignal
         })
         failure = result.failure
+        if (result.stats) {
+          const { inputTokens, outputTokens, firstTokenMs, decodeMs } =
+            result.stats
+          recordGeneration(threadId, {
+            inputTokens,
+            outputTokens,
+            ...(firstTokenMs !== null && {
+              firstTokenMs,
+              decodeTokens: Math.max(outputTokens - 1, 0),
+              decodeMs
+            })
+          })
+        }
         yield* textEvent(result.text)
         const parsed = result.markup ? parseToolCalls(result.markup) : []
         calls = parsed.filter((c) => toolNames.has(c.name))
