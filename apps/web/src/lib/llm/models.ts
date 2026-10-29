@@ -6,15 +6,11 @@ import {
   APFEL_URL,
   apfelConnection
 } from "#/lib/llm/apfel-connection"
-import {
-  loadLocalModel,
-  localModelConnection,
-  localModelStatus
-} from "#/lib/llm/local-model"
+import { localModelConnection, localModelStatus } from "#/lib/llm/local-model"
 import type { LocalModelStatus } from "#/lib/llm/local-model"
 import { createStore } from "#/lib/store"
 
-export type ModelId = "apple-fm" | "lfm3" | "lfm3-web" | "lfm2.5"
+export type ModelId = "apple-fm" | "lfm3" | "lfm3-web" | "lfm2.5" | "lfm2.5-web"
 
 /**
  * Whether models that can think should reason before answering. On by
@@ -25,7 +21,7 @@ export const thinkingStore = createStore<boolean>(true, "lofi-agent:think")
 
 /** Models that can think before answering. */
 export const canThink = (id: ModelId) =>
-  id === "lfm3" || id === "lfm3-web" || id === "lfm2.5"
+  id === "lfm3" || id === "lfm3-web" || id === "lfm2.5" || id === "lfm2.5-web"
 
 /** Models that run in the browser, by Hugging Face id. */
 const LFM3_ID = "onnx-community/LFM3-1.7B-ONNX"
@@ -41,10 +37,26 @@ const LFM3_WEB_ID =
 const LFM2_5_ID = "LiquidAI/LFM2.5-1.2B-Instruct-ONNX"
 /** LFM2.5 has no thinking switch: thinking is a separate model. */
 const LFM2_5_THINKING_ID = "LiquidAI/LFM2.5-1.2B-Thinking-ONNX"
+/**
+ * LiquidAI's LFM2.5 q4f16 builds with a `num_logits_to_keep` input, so
+ * reading a prompt makes logits for the last token only, not every token
+ * (210 MB for an 800-token prompt, which crashed iPhone Safari with web
+ * search on). Same weights. Pinned to a commit, like LFM3 Web.
+ */
+const LFM2_5_WEB_ID =
+  "daveycodez/LFM2.5-1.2B-Web@7cbec27ef76aac9be538a16dd5dd57d19328c654"
+const LFM2_5_WEB_THINKING_ID =
+  "daveycodez/LFM2.5-1.2B-Thinking-Web@eac258e512896325899cf2be2bbd18b546c71706"
 const LOCAL_MODELS: Partial<Record<ModelId, string>> = {
   lfm3: LFM3_ID,
   "lfm3-web": LFM3_WEB_ID,
-  "lfm2.5": LFM2_5_ID
+  "lfm2.5": LFM2_5_ID,
+  "lfm2.5-web": LFM2_5_WEB_ID
+}
+/** The model each LFM2.5 option runs instead when Think is on. */
+const THINKING_MODELS: Partial<Record<ModelId, string>> = {
+  "lfm2.5": LFM2_5_THINKING_ID,
+  "lfm2.5-web": LFM2_5_WEB_THINKING_ID
 }
 
 /** LFM3 card, "General" (chat, tool use, agents, coding). */
@@ -57,22 +69,34 @@ const lfm3Connection = (modelId: string, name: string) =>
     thinking: () => thinkingStore.get()
   })
 
-// LFM2.5-1.2B-Instruct card.
-const lfm25 = localModelConnection({
-  modelId: LFM2_5_ID,
-  name: "LFM2.5",
-  sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.05 },
-  toolFormat: "lfm2"
-})
-// LFM2.5-1.2B-Thinking card.
-const lfm25Thinking = localModelConnection({
-  modelId: LFM2_5_THINKING_ID,
-  name: "LFM2.5 Thinking",
-  sampling: { temperature: 0.05, top_k: 50, repetition_penalty: 1.05 },
-  toolFormat: "lfm2",
-  // Always thinks: give it the longer thinking budget.
-  thinking: () => true
-})
+/**
+ * LFM2.5 Instruct and Thinking, with each model card's sampling. The Think
+ * toggle picks the Thinking model when the message is sent.
+ */
+function lfm25Connection(
+  instructId: string,
+  thinkingId: string,
+  name: string
+): ConnectConnectionAdapter {
+  const instruct = localModelConnection({
+    modelId: instructId,
+    name,
+    sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.05 },
+    toolFormat: "lfm2"
+  })
+  const thinking = localModelConnection({
+    modelId: thinkingId,
+    name: `${name} Thinking`,
+    sampling: { temperature: 0.05, top_k: 50, repetition_penalty: 1.05 },
+    toolFormat: "lfm2",
+    // Always thinks: give it the longer thinking budget.
+    thinking: () => true
+  })
+  return {
+    connect: (...args) =>
+      (thinkingStore.get() ? thinking : instruct).connect(...args)
+  }
+}
 
 export const MODELS: Array<{
   id: ModelId
@@ -103,23 +127,23 @@ export const MODELS: Array<{
     id: "lfm2.5",
     name: "LFM2.5 1.2B",
     icon: "/icons/liquid.svg",
-    // The Think toggle picks the Thinking model when the message is sent.
-    connection: {
-      connect: (...args) =>
-        (thinkingStore.get() ? lfm25Thinking : lfm25).connect(...args)
-    }
+    connection: lfm25Connection(LFM2_5_ID, LFM2_5_THINKING_ID, "LFM2.5")
+  },
+  {
+    id: "lfm2.5-web",
+    name: "LFM2.5 1.2B Web",
+    icon: "/icons/liquid.svg",
+    connection: lfm25Connection(
+      LFM2_5_WEB_ID,
+      LFM2_5_WEB_THINKING_ID,
+      "LFM2.5 Web"
+    )
   }
 ]
 
 /** The Hugging Face model to run for `id`, given the Think toggle. */
 const localModelFor = (id: ModelId, thinking: boolean) =>
-  id === "lfm2.5" && thinking ? LFM2_5_THINKING_ID : LOCAL_MODELS[id]
-
-/** Starts loading a local model (no-op for the Apple model). */
-export function loadModel(id: ModelId) {
-  const modelId = localModelFor(id, thinkingStore.get())
-  if (modelId) void loadLocalModel(modelId).catch(() => undefined)
-}
+  (thinking && THINKING_MODELS[id]) || LOCAL_MODELS[id]
 
 const IDLE = createStore<LocalModelStatus>({ state: "idle" })
 
