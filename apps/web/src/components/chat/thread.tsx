@@ -627,7 +627,7 @@ function AssistantMessage({
           )}
           {seconds !== undefined && (
             <span className="px-1 text-xs text-muted tabular-nums">
-              {seconds.toFixed(2)}s
+              {Number(seconds.toFixed(1))}s
             </span>
           )}
         </div>
