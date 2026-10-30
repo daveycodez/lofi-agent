@@ -183,7 +183,10 @@ type TransformersModule = Record<string, unknown> & {
     backends: {
       onnx: {
         versions: { web: string }
-        wasm: { wasmPaths?: string | { mjs: string; wasm: string } }
+        wasm: {
+          wasmPaths?: string | { mjs: string; wasm: string }
+          numThreads?: number
+        }
       }
     }
   }
@@ -235,6 +238,15 @@ type Runtime = {
   /** The weights loaded: q4 on the CPU, whatever was asked for on the GPU. */
   dtype: WeightsDtype
 }
+
+/**
+ * Threads for a model on the CPU: every core the browser reports (ONNX
+ * Runtime's own default is half, up to 4). On an M3 Ultra, 4 threads wrote
+ * 3.0 tokens/s, 8 wrote 5.5 and 16 wrote 8.8. Several threads need a
+ * cross-origin isolated page; without one it's a single thread whatever
+ * this says.
+ */
+const cpuThreads = () => Math.max(1, navigator.hardwareConcurrency || 4)
 
 /**
  * WebGPU if this browser has it and can get a GPU adapter, else the CPU.
@@ -1058,6 +1070,7 @@ async function loadRuntime(
   const tf = await importTransformers(device)
   tf.env.fetch = fetchWithoutReferrer
   pickWasmBuild(tf, device)
+  if (device === "wasm") tf.env.backends.onnx.wasm.numThreads = cpuThreads()
   const { repo, revision } = parseModelId(modelId)
   const tokenizer = await tf.AutoTokenizer.from_pretrained(repo, { revision })
   // Newer repos keep the chat template in its own file, which Transformers.js
