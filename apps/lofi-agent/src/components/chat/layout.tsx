@@ -16,37 +16,11 @@ import {
   ConversationEmptyState,
   ConversationScrollButton
 } from "#/components/ai/conversation"
-import { Suggestion, Suggestions } from "#/components/ai/suggestions"
 import { sourcesByReply } from "#/lib/reply-sources"
 import { PendingReply } from "./message"
 import { ReplyStatsLine } from "./reply-stats"
-import { TranscriptContext, useComposer, useThread } from "./thread-context"
+import { TranscriptContext, useThread } from "./thread-context"
 import { useChatContext } from "./ui-components"
-
-const PROMPTS = [
-  {
-    label: "Summarize a topic",
-    prompt: "Summarize the history of the printing press in five bullet points."
-  },
-  {
-    label: "Draft a message",
-    prompt:
-      "Write a short, polite message asking to move tomorrow's meeting to Thursday."
-  },
-  {
-    label: "Explain a concept",
-    prompt: "Explain simply how vaccines train the immune system."
-  },
-  {
-    label: "Brainstorm ideas",
-    prompt: "Give me five fun ideas for a weekend coding side project."
-  },
-  { label: "Write a haiku", prompt: "Write a haiku about autumn." },
-  {
-    label: "Plan a dinner party",
-    prompt: "Help me plan a simple dinner party for six people."
-  }
-]
 
 export function ChatLayout({
   Messages,
@@ -135,20 +109,9 @@ function releaseOnToggle(target: EventTarget, stopScroll: () => void) {
 }
 
 function EmptyState({ Input }: { Input: ComponentType }) {
-  const { value } = useComposer()
-  const { send } = useThread()
   return (
     <ConversationEmptyState title="How can I help you today?">
       <Input />
-      {!value && (
-        <Suggestions>
-          {PROMPTS.map((p) => (
-            <Suggestion key={p.label} onPress={() => send(p.prompt)}>
-              {p.label}
-            </Suggestion>
-          ))}
-        </Suggestions>
-      )}
     </ConversationEmptyState>
   )
 }

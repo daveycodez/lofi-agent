@@ -8,7 +8,6 @@ import Check from "@gravity-ui/icons/Check"
 import Comments from "@gravity-ui/icons/Comments"
 import Ellipsis from "@gravity-ui/icons/Ellipsis"
 import Gear from "@gravity-ui/icons/Gear"
-import LayoutSideContentLeft from "@gravity-ui/icons/LayoutSideContentLeft"
 import LogoGithub from "@gravity-ui/icons/LogoGithub"
 import Pencil from "@gravity-ui/icons/Pencil"
 import Pin from "@gravity-ui/icons/Pin"
@@ -25,8 +24,7 @@ import {
   InputGroup,
   Label,
   SearchField,
-  TextField,
-  Tooltip
+  TextField
 } from "@heroui/react"
 import { eq, useLiveQuery } from "@tanstack/react-db"
 import { Link } from "@tanstack/react-router"
@@ -45,8 +43,6 @@ import {
 type SidebarProps = {
   activeId: string
   onNewThread: () => void
-  /** Collapses the desktop sidebar or closes the mobile drawer. */
-  onCollapse: () => void
   /** Called after navigating (closes the mobile drawer). */
   onNavigate?: () => void
   /** Called when the active thread is archived or deleted. */
@@ -63,19 +59,6 @@ export function ThreadListSidebar(props: SidebarProps) {
         <Comments className="size-4" />
         <span className="text-sm font-semibold">lofi-agent</span>
         <ChatsMenu onActiveRemoved={props.onActiveRemoved} />
-        <Tooltip delay={300}>
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label="Collapse sessions"
-            onPress={props.onCollapse}
-            className="-me-2"
-          >
-            <LayoutSideContentLeft />
-          </Button>
-          <Tooltip.Content>Collapse sessions</Tooltip.Content>
-        </Tooltip>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
@@ -136,7 +119,7 @@ function ChatsMenu({ onActiveRemoved }: { onActiveRemoved: () => void }) {
           size="sm"
           variant="ghost"
           aria-label="Session options"
-          className="ms-auto"
+          className="-me-2 ms-auto"
         >
           <Ellipsis />
         </Button>

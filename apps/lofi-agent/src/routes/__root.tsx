@@ -6,6 +6,24 @@ import { ThemeProvider } from "next-themes"
 
 import appCss from "../styles.css?url"
 
+/**
+ * The devtools let settings saved in the browser override their `config`,
+ * so a `triggerHidden: false` saved before the button was hidden would keep
+ * showing it. Drop that saved value so `config` decides.
+ */
+if (typeof window !== "undefined") {
+  try {
+    const key = "tanstack_devtools_settings"
+    const saved: unknown = JSON.parse(localStorage.getItem(key) ?? "null")
+    if (saved && typeof saved === "object" && "triggerHidden" in saved) {
+      const { triggerHidden: _, ...rest } = saved
+      localStorage.setItem(key, JSON.stringify(rest))
+    }
+  } catch {
+    // Storage is blocked or the value isn't JSON: nothing to fix.
+  }
+}
+
 export const Route = createRootRoute({
   head: () => ({
     meta: [

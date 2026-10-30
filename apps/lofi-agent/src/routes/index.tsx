@@ -94,10 +94,7 @@ function Assistant() {
         className="hidden w-0 shrink-0 overflow-hidden border-separator transition-[width] duration-200 ease-linear data-open:w-60 data-open:border-r md:block"
       >
         <div className="h-full w-60">
-          <ThreadListSidebar
-            {...sidebarProps}
-            onCollapse={() => sidebarOpenSetting.set(false)}
-          />
+          <ThreadListSidebar {...sidebarProps} />
         </div>
       </aside>
 
@@ -110,7 +107,6 @@ function Assistant() {
           >
             <ThreadListSidebar
               {...sidebarProps}
-              onCollapse={() => setDrawerOpen(false)}
               onNavigate={() => setDrawerOpen(false)}
             />
           </Drawer.Dialog>
@@ -126,18 +122,19 @@ function Assistant() {
             <Button
               isIconOnly
               variant="ghost"
-              aria-label="Open sessions"
+              aria-label="Toggle sessions"
+              // Opens or closes the sidebar on desktop, and opens the drawer
+              // on small screens.
               onPress={() => {
-                if (isDesktop()) sidebarOpenSetting.set(true)
+                if (isDesktop()) sidebarOpenSetting.set(!sidebarOpen)
                 else setDrawerOpen(true)
               }}
-              // Shown on small screens, and on desktop once the sidebar is collapsed.
               size="sm"
-              className={`-ms-2 ${sidebarOpen ? "md:hidden" : ""}`}
+              className="-ms-2"
             >
               <LayoutSideContentLeft />
             </Button>
-            <Tooltip.Content placement="bottom">Open sessions</Tooltip.Content>
+            <Tooltip.Content placement="bottom">Toggle sessions</Tooltip.Content>
           </Tooltip>
           <h1 className="min-w-0 flex-1 truncate text-sm font-medium">
             {meta?.title ?? "New session"}
