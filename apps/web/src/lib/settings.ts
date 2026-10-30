@@ -15,9 +15,9 @@ export const systemPromptStore = createStore("", "lofi-agent:system-prompt")
  * "now" is, then the user's own prompt if they wrote one. The date only, not
  * the time: the prompt then stays the same all day, so the local model can
  * reuse what it already read of a chat instead of reading it all again.
- * Just the date, no words: with "Today's date is …", LFM3 thinking about a
+ * The wording matters: with "Today's date is …", LFM3 thinking about a
  * question on recent events decided it had no current information and
- * didn't call web search. The bare date doesn't do that.
+ * didn't call web search; "The current date is …" doesn't do that.
  */
 export function currentSystemPrompt() {
   const today = new Date().toLocaleDateString("en-US", {
@@ -26,7 +26,7 @@ export function currentSystemPrompt() {
     month: "long",
     day: "numeric"
   })
-  return [`${today}.`, systemPromptStore.get().trim()]
+  return [`The current date is ${today}.`, systemPromptStore.get().trim()]
     .filter(Boolean)
     .join("\n\n")
 }
