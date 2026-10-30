@@ -36,6 +36,8 @@ export function ImagePart({ part }: PartProps<typeof chatOptions, "image">) {
     <img
       alt=""
       src={src}
+      // Through CORS, as the page's cross-origin isolation requires.
+      crossOrigin="anonymous"
       className="max-h-[341px] max-w-full self-start rounded-2xl object-cover"
     />
   )

@@ -10,7 +10,7 @@ import { cloudflare } from "@cloudflare/vite-plugin"
 /** Same as src/start.ts, for the dev and preview servers. */
 const CROSS_ORIGIN_ISOLATION = {
   "Cross-Origin-Opener-Policy": "same-origin",
-  "Cross-Origin-Embedder-Policy": "credentialless"
+  "Cross-Origin-Embedder-Policy": "require-corp"
 }
 
 const config = defineConfig({

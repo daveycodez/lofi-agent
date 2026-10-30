@@ -45,7 +45,7 @@ Every model is Q4_K_M: in llama.cpp's WebAssembly build it reads prompts and wri
 
 - **Context:** each model's own (8,192 tokens), not wllama's 1,024, which a system prompt with tools outgrows.
 - **On the CPU:** `n_gpu_layers: 0`, so it runs the same everywhere, without WebGPU. wllama would otherwise use WebGPU where the browser has it.
-- **Threads:** wllama's default, half the cores, where the page is cross-origin isolated (`Cross-Origin-Opener-Policy: same-origin` with `Cross-Origin-Embedder-Policy: require-corp` or `credentialless`); one elsewhere. `wllamaText(model, { threads })` sets a number.
+- **Threads:** wllama's default, half the cores, where the page is cross-origin isolated (`Cross-Origin-Opener-Policy: same-origin` with `Cross-Origin-Embedder-Policy: require-corp`; Safari and Firefox on Android ignore `credentialless`); one elsewhere. `wllamaText(model, { threads })` sets a number.
 
 The GGUF file is saved to the Origin Private File System by wllama, and loads from there afterwards, offline too.
 

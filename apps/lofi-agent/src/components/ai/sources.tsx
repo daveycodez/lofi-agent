@@ -9,8 +9,13 @@ import { useState } from "react"
 
 import type { Source } from "#/lib/sources"
 
+/**
+ * Google's favicon service, where google.com/s2/favicons redirects. Asked
+ * directly: the redirect has no Cross-Origin-Resource-Policy header, so
+ * the page's cross-origin isolation would block it.
+ */
 const faviconUrl = (url: string) =>
-  `https://www.google.com/s2/favicons?domain_url=${encodeURIComponent(url)}&sz=64`
+  `https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=${encodeURIComponent(url)}&size=64`
 
 /** The site's icon, or a globe if it has none. */
 function Favicon({ url }: { url: string }) {
@@ -21,6 +26,8 @@ function Favicon({ url }: { url: string }) {
       alt=""
       src={faviconUrl(url)}
       loading="lazy"
+      // No CORS: Google's icons send no CORS headers, but allow embedding
+      // in cross-origin isolated pages (Cross-Origin-Resource-Policy).
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}
       className="size-3.5 shrink-0 rounded-full"
