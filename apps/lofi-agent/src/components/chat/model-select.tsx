@@ -1,5 +1,5 @@
 import ChevronDown from "@gravity-ui/icons/ChevronDown"
-import { Button, ListBox, Popover, Spinner } from "@heroui/react"
+import { Button, Header, ListBox, Popover, Spinner } from "@heroui/react"
 import { useRef, useState } from "react"
 
 import {
@@ -7,6 +7,7 @@ import {
   checkAfm,
   modelInfo,
   modelStore,
+  PROVIDERS,
   useCurrentModel,
   useModels
 } from "#/lib/llm/models"
@@ -35,6 +36,12 @@ export function ModelSelect() {
   const afm = afmStatus.use()
   const [isOpen, setIsOpen] = useState(false)
   const current = modelInfo(model)
+  // Models by provider, each a section of the list; a provider this device
+  // offers no model of is left out.
+  const sections = PROVIDERS.map((provider) => ({
+    ...provider,
+    models: models.filter((m) => m.adapter.name === provider.id)
+  })).filter((section) => section.models.length > 0)
   // Counts picks, so a slow Apple check can't undo a newer choice.
   const lastPick = useRef(0)
   // The Apple model while its check runs, so the checkmark moves right away.
@@ -107,14 +114,19 @@ export function ModelSelect() {
                 if (key) void select(key as ModelId)
               }}
             >
-              {models.map((m) => (
-                <ListBox.Item key={m.id} id={m.id} textValue={m.name}>
-                  <span className="flex items-center gap-2">
-                    <ModelLogo src={m.icon} />
-                    {m.name}
-                  </span>
-                  <ListBox.ItemIndicator />
-                </ListBox.Item>
+              {sections.map((section) => (
+                <ListBox.Section key={section.id}>
+                  <Header>{section.name}</Header>
+                  {section.models.map((m) => (
+                    <ListBox.Item key={m.id} id={m.id} textValue={m.name}>
+                      <span className="flex items-center gap-2">
+                        <ModelLogo src={m.icon} />
+                        {m.name}
+                      </span>
+                      <ListBox.ItemIndicator />
+                    </ListBox.Item>
+                  ))}
+                </ListBox.Section>
               ))}
             </ListBox>
           </Popover.Dialog>

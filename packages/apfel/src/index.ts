@@ -3,9 +3,14 @@
  */
 export {
   APFEL_BASE_URL,
-  APFEL_MODEL,
+  APFEL_TEXT_MODELS,
   ApfelTextAdapter,
-  apfel,
+  apfelText,
   isApfelAvailable
 } from "./adapter.js"
-export type { ApfelModelOptions, ApfelOptions, ApfelStats } from "./adapter.js"
+export type {
+  ApfelModelOptions,
+  ApfelProviderUsageDetails,
+  ApfelTextConfig,
+  ApfelTextModel
+} from "./adapter.js"

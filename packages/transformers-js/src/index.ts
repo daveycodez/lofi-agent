@@ -1,8 +1,24 @@
 /**
  * TanStack AI adapter for Transformers.js models that run in the browser.
  */
-export { transformersJs, TransformersJsTextAdapter } from "./adapter.js"
-export type { RunStats, TransformersJsOptions } from "./adapter.js"
+export { transformersJsText, TransformersJsTextAdapter } from "./adapter.js"
+export type {
+  TransformersJsProviderUsageDetails,
+  TransformersJsTextConfig,
+  TransformersJsTextConfigFor,
+  TransformersJsTextProviderOptions
+} from "./adapter.js"
+export {
+  TRANSFORMERS_JS_MODEL_META,
+  TRANSFORMERS_JS_MODEL_REASONING,
+  TRANSFORMERS_JS_TEXT_MODELS
+} from "./model-meta.js"
+export type {
+  TransformersJsListedModel,
+  TransformersJsModelMeta,
+  TransformersJsModelReasoningByName,
+  TransformersJsTextModel
+} from "./model-meta.js"
 export { loadModel, modelStatus, setDebug } from "./client.js"
 export type { ModelStatus } from "./client.js"
 export type { Sampling } from "./protocol.js"

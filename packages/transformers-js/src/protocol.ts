@@ -51,8 +51,11 @@ export type WorkerRequest =
       id: string
       chat: Array<ChatTurn>
       tools: Array<ToolSpec>
-      thinking: boolean
+      /** The chat template's `enable_thinking`; its default when left out. */
+      thinking?: boolean
       sampling: Sampling
+      /** Most tokens to generate; the worker's default when left out. */
+      maxTokens?: number
     }
   | { type: "stop"; id: string }
 
@@ -61,8 +64,6 @@ export type WorkerResponse =
   | { type: "ready"; modelId: string }
   | { type: "load-error"; modelId: string; message: string }
   | { type: "token"; id: string; text: string }
-  /** The run's counts so far: once the prompt is tokenized, then as it replies. */
-  | { type: "stats"; id: string; stats: RunTimings }
   | { type: "done"; id: string; stats: RunTimings }
   | { type: "error"; id: string; message: string }
   /** A diagnostic line for the page's console (dev only). */

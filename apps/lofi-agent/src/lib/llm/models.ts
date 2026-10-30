@@ -1,124 +1,58 @@
+import { supportedReasoningLevels } from "@tanstack/ai"
+import type { ModelReasoning } from "@tanstack/ai"
 import {
   modelStatus,
-  transformersJs
+  TRANSFORMERS_JS_MODEL_REASONING,
+  transformersJsText
 } from "@tanstack-ai-browser/transformers-js"
 import type {
   ModelStatus,
-  RunStats,
-  Sampling,
-  TransformersJsOptions
+  TransformersJsListedModel
 } from "@tanstack-ai-browser/transformers-js"
-import { apfel, isApfelAvailable } from "@tanstack-ai-browser/apfel"
+import {
+  APFEL_BASE_URL,
+  apfelText,
+  isApfelAvailable
+} from "@tanstack-ai-browser/apfel"
 import { useSyncExternalStore } from "react"
 
-import { recordGeneration } from "#/lib/llm/generation-stats"
-import type { GenerationStats } from "#/lib/llm/generation-stats"
 import { createStore } from "#/lib/store"
 
-export type ModelId = "apple-fm" | "lfm3" | "lfm3-web" | "lfm2.5" | "lfm2.5-web"
+export type ModelId =
+  | "apple-fm"
+  | "lfm3"
+  | "lfm3-web"
+  | "lfm2.5"
+  | "lfm2.5-thinking"
+  | "lfm2.5-web"
+  | "lfm2.5-thinking-web"
 
 /**
- * Whether models that can think should reason before answering. On by
- * default: LFM3 and LFM2.5 answer much better with it. (A new key, so the
- * old default of off doesn't carry over.)
+ * Whether models with a thinking switch should reason before answering. On
+ * by default: LFM3 answers much better with it. (A new key, so the old
+ * default of off doesn't carry over.)
  */
 export const thinkingStore = createStore<boolean>(true, "lofi-agent:think")
 
-/** Models that can think before answering. */
-export const canThink = (id: ModelId) =>
-  id === "lfm3" || id === "lfm3-web" || id === "lfm2.5" || id === "lfm2.5-web"
+/** Where the app reaches apfel on this Mac: its default address. */
+const APFEL_URL = APFEL_BASE_URL
+const APPLE_MODEL = "apple-foundationmodel"
 
-/** Models that run in the browser, by Hugging Face id. */
-const LFM3_ID = "onnx-community/LFM3-1.7B-ONNX"
-/**
- * A build of LFM3 made for iPhone Safari: GPTQ 4-bit with block size 32 (so
- * onnxruntime-web's fast prompt kernel and fused kernels apply), a 48k
- * vocabulary, no embedding copy at load (900 MB of weights instead of
- * 1.09 GB), and flash attention in the sliding-window layers (no buffer that
- * grows with the square of the prompt). Sequences are limited to 16,384
- * tokens. Pinned to a commit, so browsers download this version's files.
- */
-const LFM3_WEB_ID =
-  "daveycodez/LFM3-1.7B-Web@3c75909fbf17af6f734263e9cee75625bcfd7523"
-const LFM2_5_ID = "LiquidAI/LFM2.5-1.2B-Instruct-ONNX"
-/** LFM2.5 has no thinking switch: thinking is a separate model. */
-const LFM2_5_THINKING_ID = "LiquidAI/LFM2.5-1.2B-Thinking-ONNX"
-/**
- * LiquidAI's LFM2.5 q4f16 builds with a `num_logits_to_keep` input, so
- * reading a prompt makes logits for the last token only, not every token
- * (210 MB for an 800-token prompt, which crashed iPhone Safari with web
- * search on). Same weights. Pinned to a commit, like LFM3 Web.
- */
-const LFM2_5_WEB_ID =
-  "daveycodez/LFM2.5-1.2B-Web@7cbec27ef76aac9be538a16dd5dd57d19328c654"
-const LFM2_5_WEB_THINKING_ID =
-  "daveycodez/LFM2.5-1.2B-Thinking-Web@eac258e512896325899cf2be2bbd18b546c71706"
-
-/** A model run's counts and timings, as the stats line takes them. */
-function generationStats({
-  inputTokens,
-  cachedTokens,
-  outputTokens,
-  firstTokenMs,
-  promptMs,
-  decodeMs
-}: RunStats): GenerationStats {
-  return {
-    inputTokens,
-    ...(cachedTokens > 0 && { cachedTokens }),
-    ...(promptMs !== null && { promptMs }),
-    outputTokens,
-    ...(firstTokenMs !== null && {
-      firstTokenMs,
-      decodeTokens: Math.max(outputTokens - 1, 0),
-      decodeMs
-    })
-  }
-}
-
-/** Each model call's counts go to the stats line, as it runs and at the end. */
-const onStats: TransformersJsOptions["onStats"] = (stats, run) =>
-  recordGeneration(run.threadId, run.callId, generationStats(stats), run.done)
-
-/** LFM3 card, "General" (chat, tool use, agents, coding). */
-const LFM3_SAMPLING: Sampling = {
-  temperature: 0.1,
-  top_k: 50,
-  repetition_penalty: 1.1
-}
-const LFM2_5_SAMPLING: Sampling = {
-  temperature: 0.1,
-  top_k: 50,
-  repetition_penalty: 1.05
-}
-const LFM2_5_THINKING_SAMPLING: Sampling = {
-  temperature: 0.05,
-  top_k: 50,
-  repetition_penalty: 1.05
-}
-
-const lfm3 = (modelId: string) =>
-  transformersJs(modelId, {
-    toolFormat: "lfm3",
-    sampling: LFM3_SAMPLING,
-    onStats,
-    debug: import.meta.env.DEV
-  })
-
-/** LFM2.5 Instruct, and its Thinking model when Think is on. */
-const lfm25 = (instructId: string, thinkingId: string) =>
-  transformersJs(instructId, {
-    toolFormat: "lfm2",
-    sampling: LFM2_5_SAMPLING,
-    thinking: { model: thinkingId, sampling: LFM2_5_THINKING_SAMPLING },
-    onStats,
-    debug: import.meta.env.DEV
-  })
-
-/** Apple's on-device model, through apfel on this Mac. */
-const appleFoundationModel = apfel({
-  onStats: (stats, run) =>
-    recordGeneration(run.threadId, run.callId, stats, run.done)
+/** A Transformers.js model of the package's list, in the picker. */
+const local = (
+  id: ModelId,
+  name: string,
+  model: TransformersJsListedModel
+) => ({
+  id,
+  name,
+  icon: "/icons/liquid.svg",
+  adapter: transformersJsText(model, { debug: import.meta.env.DEV }),
+  /** The model it downloads, for its loading status. */
+  download: model as string | null,
+  reasoning: TRANSFORMERS_JS_MODEL_REASONING[model] as
+    | ModelReasoning
+    | undefined
 })
 
 export const MODELS = [
@@ -127,46 +61,52 @@ export const MODELS = [
     name: "Apple Foundation Model",
     /** Provider logo in /public/icons (LobeHub icons, MIT). */
     icon: "/icons/apple.svg",
-    adapter: appleFoundationModel,
-    /** Runs outside the browser: no download to report. */
-    runs: null
+    adapter: apfelText(APPLE_MODEL, { baseURL: APFEL_URL }),
+    /** Runs outside the browser: nothing to download. */
+    download: null,
+    reasoning: undefined
   },
-  {
-    id: "lfm3",
-    name: "LFM3 1.7B",
-    icon: "/icons/liquid.svg",
-    adapter: lfm3(LFM3_ID),
-    /** The Hugging Face model it runs, with Think off and on. */
-    runs: { off: LFM3_ID, on: LFM3_ID }
-  },
-  {
-    id: "lfm3-web",
-    name: "LFM3 1.7B Web",
-    icon: "/icons/liquid.svg",
-    adapter: lfm3(LFM3_WEB_ID),
-    runs: { off: LFM3_WEB_ID, on: LFM3_WEB_ID }
-  },
-  {
-    id: "lfm2.5",
-    name: "LFM2.5 1.2B",
-    icon: "/icons/liquid.svg",
-    adapter: lfm25(LFM2_5_ID, LFM2_5_THINKING_ID),
-    runs: { off: LFM2_5_ID, on: LFM2_5_THINKING_ID }
-  },
-  {
-    id: "lfm2.5-web",
-    name: "LFM2.5 1.2B Web",
-    icon: "/icons/liquid.svg",
-    adapter: lfm25(LFM2_5_WEB_ID, LFM2_5_WEB_THINKING_ID),
-    runs: { off: LFM2_5_WEB_ID, on: LFM2_5_WEB_THINKING_ID }
-  }
+  local("lfm3", "LFM3 1.7B", "onnx-community/LFM3-1.7B-ONNX"),
+  local("lfm3-web", "LFM3 1.7B Web", "daveycodez/LFM3-1.7B-Web"),
+  local("lfm2.5", "LFM2.5 1.2B", "LiquidAI/LFM2.5-1.2B-Instruct-ONNX"),
+  local(
+    "lfm2.5-thinking",
+    "LFM2.5 1.2B Thinking",
+    "LiquidAI/LFM2.5-1.2B-Thinking-ONNX"
+  ),
+  local("lfm2.5-web", "LFM2.5 1.2B Web", "daveycodez/LFM2.5-1.2B-Web"),
+  local(
+    "lfm2.5-thinking-web",
+    "LFM2.5 1.2B Thinking Web",
+    "daveycodez/LFM2.5-1.2B-Thinking-Web"
+  )
 ] satisfies Array<{
   id: ModelId
   name: string
   icon: string
-  adapter: ReturnType<typeof transformersJs> | ReturnType<typeof apfel>
-  runs: { off: string; on: string } | null
+  adapter: ReturnType<typeof transformersJsText> | ReturnType<typeof apfelText>
+  download: string | null
+  reasoning: ModelReasoning | undefined
 }>
+
+/**
+ * The picker's sections: each adapter's provider (its `name`), in order,
+ * with the name shown as the section's heading.
+ */
+export const PROVIDERS = [
+  { id: "apfel", name: "apfel" },
+  { id: "transformers-js", name: "Transformers.js" }
+] as const
+
+/**
+ * Models whose reasoning can be switched on and off, so the composer shows
+ * the Think toggle: "off" and a level above it. A model that always thinks
+ * (LFM2.5 Thinking) or never does has nothing to switch.
+ */
+export function canThink(id: ModelId) {
+  const levels = supportedReasoningLevels(modelInfo(id).reasoning)
+  return levels.includes("off") && levels.length > 1
+}
 
 /**
  * The model to start with, and to fall back on: LFM3 Web runs anywhere,
@@ -215,12 +155,10 @@ export function useModels() {
 
 const IDLE = createStore<ModelStatus>({ state: "idle" })
 
-/** Loading status of the model the Think toggle would run for `id`. */
+/** Loading status of the model `id` downloads, if it downloads one. */
 export function useModelStatus(id: ModelId): ModelStatus {
-  const runs = modelInfo(id).runs
-  const thinking = thinkingStore.use()
-  const status = runs ? modelStatus(thinking ? runs.on : runs.off) : null
-  const store = status ?? { subscribe: IDLE.subscribe, get: IDLE.get }
+  const download = modelInfo(id).download
+  const store = download ? modelStatus(download) : IDLE
   return useSyncExternalStore(store.subscribe, store.get, store.get)
 }
 
@@ -234,4 +172,5 @@ export const afmStatus = createStore<"idle" | "checking" | "unavailable">(
  * a website makes Chrome ask for permission, so this only runs when the
  * user picks the Apple model.
  */
-export const checkAfm = () => isApfelAvailable()
+export const checkAfm = () =>
+  isApfelAvailable(APPLE_MODEL, { baseURL: APFEL_URL })

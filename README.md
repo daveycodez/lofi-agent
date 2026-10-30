@@ -14,12 +14,9 @@
 ```ts
 import { chat } from "@tanstack/ai"
 import { stream, useChat } from "@tanstack/ai-react"
-import { transformersJs } from "@tanstack-ai-browser/transformers-js"
+import { transformersJsText } from "@tanstack-ai-browser/transformers-js"
 
-const adapter = transformersJs("daveycodez/LFM3-1.7B-Web", {
-  toolFormat: "lfm3",
-  sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.1 }
-})
+const adapter = transformersJsText("daveycodez/LFM3-1.7B-Web")
 
 // chat() runs in the page; useChat reads its stream directly.
 const chatState = useChat({

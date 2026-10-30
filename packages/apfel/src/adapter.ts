@@ -1,16 +1,17 @@
 /**
  * A TanStack AI text adapter for Apple's on-device Foundation Model, served
- * by apfel's OpenAI-compatible server (`apfel --serve --cors`). No backend
- * involved: the browser streams straight from localhost. Hand it to `chat()`
+ * by apfel's OpenAI-compatible server on the user's Mac. No backend
+ * involved: the browser streams straight from it. Hand it to `chat()`
  * like any hosted model's adapter: `chat()` runs tools and the agent loop,
  * and each `chatStream` call here is one completion from apfel, streamed
  * back as AG-UI events.
  */
-import { EventType, normalizeSystemPrompts } from "@tanstack/ai"
+import { buildBaseUsage, EventType, normalizeSystemPrompts } from "@tanstack/ai"
 import type {
   AdapterYieldChunk,
   ModelMessage,
   TextOptions,
+  TokenUsage,
   Tool
 } from "@tanstack/ai"
 import { BaseTextAdapter } from "@tanstack/ai/adapters"
@@ -25,45 +26,38 @@ import {
   parseJsonToolCalls
 } from "./tool-calls.js"
 
-/** Where `apfel --serve` listens by default. */
+/** Where apfel's server listens by default. */
 export const APFEL_BASE_URL = "http://127.0.0.1:11434/v1"
-/** The model id apfel serves Apple's Foundation Model under. */
-export const APFEL_MODEL = "apple-foundationmodel"
 
-/**
- * A model call's token counts and timings. apfel reports token counts only
- * in the usage at the end of the stream; counts it doesn't report are left
- * out.
- */
-export type ApfelStats = {
-  /** Tokens of the prompt. */
-  inputTokens?: number
-  /** Prompt tokens served from a cache, if apfel reports them. */
-  cachedTokens?: number
-  /** Tokens the model generated. */
-  outputTokens?: number
-  /** From sending the request to the first generated token, in ms. */
-  firstTokenMs?: number
-  /** Tokens generated after the first chunk (estimated, see below). */
-  decodeTokens?: number
-  /** From the first generated chunk to the last, in ms. */
-  decodeMs?: number
+/** The models apfel serves: Apple's on-device Foundation Model. */
+export const APFEL_TEXT_MODELS = ["apple-foundationmodel"] as const
+
+/** A model apfel serves. */
+export type ApfelTextModel = (typeof APFEL_TEXT_MODELS)[number] | (string & {})
+
+export type ApfelTextConfig = {
+  /** apfel's OpenAI-compatible API, up to `/v1`. `APFEL_BASE_URL` by default. */
+  baseURL?: string
+  /** Headers sent with every request, such as apfel's bearer token. */
+  defaultHeaders?: Record<string, string>
 }
 
-export type ApfelOptions = {
-  /** apfel's OpenAI-compatible API, up to `/v1`. */
-  baseUrl?: string
-  /** The model id to ask apfel for. */
-  model?: string
+/**
+ * Timings of one model call, in milliseconds, in `RUN_FINISHED`'s
+ * `usage.providerUsageDetails`. The adapter measures them as the stream
+ * arrives; apfel itself reports token counts only.
+ */
+export type ApfelProviderUsageDetails = {
+  /** From sending the request to the first generated text. */
+  firstTokenMs?: number
+  /** From the first generated text to the last. */
+  decodeMs?: number
   /**
-   * The call's stats at its first token (`done: false`, time to first token
-   * only) and when it ends (`done: true`). `callId` is unique per model
-   * call; `chat()` makes one per step of its agent loop.
+   * Tokens generated after the first chunk, estimated: apfel streams a few
+   * tokens per chunk, and the first chunk's share of the characters stands
+   * in for its share of the tokens.
    */
-  onStats?: (
-    stats: ApfelStats,
-    run: { threadId: string; runId: string; callId: string; done: boolean }
-  ) => void
+  decodeTokens?: number
 }
 
 /**
@@ -283,27 +277,34 @@ async function errorBody(response: Response) {
   return raw.slice(0, 200)
 }
 
-function usageOf(usage: OpenAIUsage | null | undefined) {
+/** apfel's token counts as TanStack AI usage, with the call's timings. */
+function usageOf(
+  usage: OpenAIUsage | null | undefined,
+  details?: ApfelProviderUsageDetails
+): TokenUsage | undefined {
   if (
     usage?.prompt_tokens === undefined ||
     usage.completion_tokens === undefined
   ) {
     return undefined
   }
-  const cachedTokens = usage.prompt_tokens_details?.cached_tokens
-  return {
+  const result = buildBaseUsage<ApfelProviderUsageDetails>({
     promptTokens: usage.prompt_tokens,
     completionTokens: usage.completion_tokens,
-    totalTokens: usage.prompt_tokens + usage.completion_tokens,
-    ...(cachedTokens && { promptTokensDetails: { cachedTokens } })
+    totalTokens: usage.prompt_tokens + usage.completion_tokens
+  })
+  const cachedTokens = usage.prompt_tokens_details?.cached_tokens
+  if (cachedTokens) result.promptTokensDetails = { cachedTokens }
+  if (details && Object.keys(details).length > 0) {
+    result.providerUsageDetails = details
   }
+  return result
 }
 
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error)
 
-const unreachable = (baseUrl: string) =>
-  `Couldn't reach Apple's on-device model at ${baseUrl}. Start it with \`apfel --serve --cors\`.`
+const unreachable = (baseURL: string) => `Couldn't reach apfel at ${baseURL}.`
 
 let ids = 0
 const nextId = (prefix: string) =>
@@ -311,8 +312,8 @@ const nextId = (prefix: string) =>
 
 type StreamedCall = { name: string; arguments: string }
 
-export class ApfelTextAdapter extends BaseTextAdapter<
-  string,
+export class ApfelTextAdapter<TModel extends string> extends BaseTextAdapter<
+  TModel,
   ApfelModelOptions,
   readonly ["text"],
   MetadataByModality,
@@ -321,15 +322,21 @@ export class ApfelTextAdapter extends BaseTextAdapter<
   never,
   ApfelReasoning
 > {
+  override readonly kind = "text" as const
   readonly name = "apfel" as const
-  override readonly api = "apfel" as const
-  private readonly baseUrl: string
-  private readonly onStats: ApfelOptions["onStats"]
+  override readonly provider = "apfel" as const
+  override readonly api = "openai-completions" as const
+  override readonly inputModalities = ["text"] as const
+  private readonly baseURL: string
+  private readonly headers: Record<string, string>
 
-  constructor(options: ApfelOptions = {}) {
-    super({}, options.model ?? APFEL_MODEL)
-    this.baseUrl = (options.baseUrl ?? APFEL_BASE_URL).replace(/\/+$/, "")
-    this.onStats = options.onStats
+  constructor(config: ApfelTextConfig, model: TModel) {
+    super({}, model)
+    this.baseURL = (config.baseURL ?? APFEL_BASE_URL).replace(/\/+$/, "")
+    this.headers = {
+      ...config.defaultHeaders,
+      "Content-Type": "application/json"
+    }
   }
 
   async *chatStream(
@@ -337,7 +344,6 @@ export class ApfelTextAdapter extends BaseTextAdapter<
   ): AsyncIterable<AdapterYieldChunk> {
     const runId = options.runId ?? nextId("run")
     const threadId = options.threadId
-    const callId = nextId("call")
     const messageId = nextId("msg")
     const reasoningId = nextId("reasoning")
     const model = this.model
@@ -367,7 +373,7 @@ export class ApfelTextAdapter extends BaseTextAdapter<
     const tools = toOpenAITools(options.tools)
     const toolNames = new Set(tools.map((tool) => tool.function.name))
     const send = options.wrapFetch ? options.wrapFetch(fetch) : fetch
-    const url = `${this.baseUrl}/chat/completions`
+    const url = `${this.baseURL}/chat/completions`
     logger.request(
       `activity=chat provider=apfel model=${model} messages=${options.messages.length} tools=${tools.length} stream=true`,
       { provider: "apfel", model }
@@ -377,7 +383,7 @@ export class ApfelTextAdapter extends BaseTextAdapter<
     try {
       response = await send(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: this.headers,
         body: JSON.stringify({
           ...options.modelOptions,
           model,
@@ -401,7 +407,7 @@ export class ApfelTextAdapter extends BaseTextAdapter<
         error,
         source: "apfel.chatStream"
       })
-      yield runError(unreachable(this.baseUrl))
+      yield runError(unreachable(this.baseURL))
       return
     }
     if (!response.ok || !response.body) {
@@ -533,11 +539,6 @@ export class ApfelTextAdapter extends BaseTextAdapter<
           if (!timing.first) {
             timing.first = timing.last
             timing.firstChars = chars
-            // Token counts come only with the usage at the end.
-            this.onStats?.(
-              { firstTokenMs: timing.first - sentAt },
-              { threadId, runId, callId, done: false }
-            )
           }
           timing.chars += chars
         }
@@ -567,23 +568,17 @@ export class ApfelTextAdapter extends BaseTextAdapter<
     }
 
     const outputTokens = usage?.completion_tokens
-    this.onStats?.(
-      {
-        inputTokens: usage?.prompt_tokens,
-        cachedTokens: usage?.prompt_tokens_details?.cached_tokens,
-        outputTokens,
-        ...(timing.first && {
+    const details: ApfelProviderUsageDetails = timing.first
+      ? {
           firstTokenMs: timing.first - sentAt,
+          decodeMs: timing.last - timing.first,
           ...(outputTokens !== undefined && {
             decodeTokens:
               (outputTokens * (timing.chars - timing.firstChars)) /
-              timing.chars,
-            decodeMs: timing.last - timing.first
+              timing.chars
           })
-        })
-      },
-      { threadId, runId, callId, done: true }
-    )
+        }
+      : {}
 
     endReasoning()
     const { text: rest, markup } = splitter.flush()
@@ -640,7 +635,7 @@ export class ApfelTextAdapter extends BaseTextAdapter<
     endText()
     yield* events.splice(0)
 
-    const finishUsage = usageOf(usage)
+    const finishUsage = usageOf(usage, details)
     yield {
       type: EventType.RUN_FINISHED,
       runId,
@@ -674,9 +669,9 @@ export class ApfelTextAdapter extends BaseTextAdapter<
     )
     let response: Response
     try {
-      response = await send(`${this.baseUrl}/chat/completions`, {
+      response = await send(`${this.baseURL}/chat/completions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: this.headers,
         body: JSON.stringify({
           ...chatOptions.modelOptions,
           model,
@@ -700,7 +695,7 @@ export class ApfelTextAdapter extends BaseTextAdapter<
         source: "apfel.structuredOutput"
       })
       if (chatOptions.abortController?.signal.aborted) throw error
-      throw new Error(unreachable(this.baseUrl))
+      throw new Error(unreachable(this.baseURL))
     }
     if (!response.ok) {
       throw new Error(
@@ -737,16 +732,23 @@ export class ApfelTextAdapter extends BaseTextAdapter<
 }
 
 /**
- * A TanStack AI adapter for Apple's on-device Foundation Model through
- * apfel (`apfel --serve --cors`).
+ * A TanStack AI text adapter for Apple's on-device Foundation Model, served
+ * by apfel.
  *
  * @example
  * ```ts
- * chat({ adapter: apfel(), messages, threadId })
+ * chat({
+ *   adapter: apfelText("apple-foundationmodel", { baseURL: APFEL_BASE_URL }),
+ *   messages,
+ *   threadId
+ * })
  * ```
  */
-export function apfel(options?: ApfelOptions) {
-  return new ApfelTextAdapter(options)
+export function apfelText<TModel extends ApfelTextModel>(
+  model: TModel,
+  config: ApfelTextConfig = {}
+): ApfelTextAdapter<TModel> {
+  return new ApfelTextAdapter(config, model)
 }
 
 /**
@@ -754,12 +756,13 @@ export function apfel(options?: ApfelOptions) {
  * lists it within 10 seconds.
  */
 export async function isApfelAvailable(
-  options: Pick<ApfelOptions, "baseUrl" | "model"> = {}
+  model: ApfelTextModel,
+  config: ApfelTextConfig = {}
 ) {
-  const baseUrl = (options.baseUrl ?? APFEL_BASE_URL).replace(/\/+$/, "")
-  const model = options.model ?? APFEL_MODEL
+  const baseURL = (config.baseURL ?? APFEL_BASE_URL).replace(/\/+$/, "")
   try {
-    const response = await fetch(`${baseUrl}/models`, {
+    const response = await fetch(`${baseURL}/models`, {
+      headers: { ...config.defaultHeaders },
       signal: AbortSignal.timeout(10_000)
     })
     if (!response.ok) return false

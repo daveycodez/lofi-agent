@@ -1,10 +1,14 @@
 /**
  * Token counts and timings of each run of the model, by chat, for the stats
- * line under the composer. Connections record a run each time the model reads
- * a prompt and generates, as it goes and when it ends; a reply that calls
- * tools runs it more than once. Each chat's latest reply's stats are kept in
- * localStorage, by thread id, until the chat is deleted.
+ * line under the composer. Each model call's usage is recorded when it ends
+ * (`chat()`'s `onUsage`); a reply that calls tools runs the model more than
+ * once. Each chat's latest reply's stats are kept in localStorage, by thread
+ * id, until the chat is deleted.
  */
+import type { TokenUsage } from "@tanstack/ai"
+import type { ApfelProviderUsageDetails } from "@tanstack-ai-browser/apfel"
+import type { TransformersJsProviderUsageDetails } from "@tanstack-ai-browser/transformers-js"
+
 import { createStore } from "#/lib/store"
 
 /** One run of the model. Counts the source doesn't report are left out. */
@@ -23,15 +27,32 @@ export type GenerationStats = {
   decodeTokens?: number
   /** From the first generated token to the last, in ms. */
   decodeMs?: number
-  /** Run by a sub-agent of the reply rather than the chat's own agent. */
-  subAgent?: boolean
+}
+
+/** Timings both adapters report, under the same names. */
+type UsageTimings = TransformersJsProviderUsageDetails & ApfelProviderUsageDetails
+
+/** A model call's stats from its usage: token counts, and the adapter's timings. */
+export function statsFromUsage(usage: TokenUsage): GenerationStats {
+  const timings = usage.providerUsageDetails as UsageTimings | undefined
+  const cachedTokens = usage.promptTokensDetails?.cachedTokens
+  return {
+    inputTokens: usage.promptTokens,
+    ...(cachedTokens && { cachedTokens }),
+    outputTokens: usage.completionTokens,
+    ...(timings?.firstTokenMs !== undefined && {
+      firstTokenMs: timings.firstTokenMs
+    }),
+    ...(timings?.promptMs !== undefined && { promptMs: timings.promptMs }),
+    ...(timings?.decodeMs !== undefined && {
+      decodeMs: timings.decodeMs,
+      decodeTokens: timings.decodeTokens ?? Math.max(usage.completionTokens - 1, 0)
+    })
+  }
 }
 
 /** The current reply's runs in each chat, by key, in the order they started. */
 const runs = new Map<string, Map<string, GenerationStats>>()
-
-/** Pseudo-chats whose runs count as sub-agent runs of a chat's reply. */
-const subAgentOf = new Map<string, string>()
 
 /** Each chat's current reply's stats as they come in (this session). */
 const live = createStore<Record<string, ReplyStats | null>>({})
@@ -46,32 +67,21 @@ const without = <T>(record: Record<string, T>, ids: Array<string>) =>
   Object.fromEntries(Object.entries(record).filter(([id]) => !ids.includes(id)))
 
 /**
- * Starts a new reply in a chat: its stats line empties until the model
- * reports on its first run. Runs after tool calls are part of the same reply.
+ * Starts a new reply in a chat: its stats line empties until the model's
+ * first run ends. Runs after tool calls are part of the same reply.
  */
 export function startReply(threadId: string) {
-  if (subAgentOf.has(threadId)) return
   runs.set(threadId, new Map())
   live.set((all) => ({ ...all, [threadId]: null }))
   if (threadId in saved.get()) saved.set((all) => without(all, [threadId]))
 }
 
-/**
- * Records a run of the model in a chat's reply. A run reports under the same
- * key as it goes (`done` false), then once more when it ends; the reply's
- * stats are saved when one of its runs ends.
- */
+/** Records a finished run of the model in a chat's reply, and saves the reply's stats. */
 export function recordGeneration(
   threadId: string,
   key: string,
-  stats: GenerationStats,
-  done = true
+  stats: GenerationStats
 ) {
-  const parent = subAgentOf.get(threadId)
-  if (parent) {
-    recordGeneration(parent, key, { ...stats, subAgent: true }, done)
-    return
-  }
   let list = runs.get(threadId)
   if (!list) {
     list = new Map()
@@ -80,18 +90,7 @@ export function recordGeneration(
   list.set(key, stats)
   const reply = replyStats([...list.values()])
   live.set((all) => ({ ...all, [threadId]: reply }))
-  if (done && reply) saved.set((all) => ({ ...all, [threadId]: reply }))
-}
-
-/**
- * Counts the runs recorded under `runId` (a sub-agent's own pseudo-chat) as
- * sub-agent runs of `threadId`'s reply, until the returned function is called.
- */
-export function countAsSubAgent(runId: string, threadId: string) {
-  subAgentOf.set(runId, threadId)
-  return () => {
-    subAgentOf.delete(runId)
-  }
+  if (reply) saved.set((all) => ({ ...all, [threadId]: reply }))
 }
 
 /** Forgets deleted chats' stats. */
@@ -148,9 +147,8 @@ export function replyStats(
   generations: Array<GenerationStats>
 ): ReplyStats | null {
   if (generations.length === 0) return null
-  // The prompt of the agent's last run is what the model last read.
-  const last =
-    generations.filter((g) => !g.subAgent).at(-1) ?? generations.at(-1)
+  // The prompt of the last run is what the model last read.
+  const last = generations.at(-1)
   const timed = generations.filter(
     (g) => g.decodeTokens !== undefined && g.decodeMs !== undefined
   )
@@ -161,8 +159,8 @@ export function replyStats(
       ? last.inputTokens + last.outputTokens
       : undefined
   const firstTokenMs = generations[0].firstTokenMs
-  // Prompt reading across the reply's runs, sub-agents' included: what each
-  // read fresh, and how long until its first token.
+  // Prompt reading across the reply's runs: what each read fresh, and how
+  // long until its first token.
   const read = generations.filter(
     (g) => g.inputTokens !== undefined && g.promptMs !== undefined
   )

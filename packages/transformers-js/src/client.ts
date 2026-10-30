@@ -3,6 +3,7 @@
  * runs the model off the main thread so the page stays smooth. One worker,
  * and one model in it at a time: loading another frees the previous one.
  */
+import { runtimeModelId } from "./model-meta.js"
 import { createStore } from "./store.js"
 import type { Store } from "./store.js"
 import type {
@@ -28,12 +29,16 @@ export type ModelStatus =
 
 const statuses = new Map<string, Store<ModelStatus>>()
 
-/** Loading status of a model, by Hugging Face id. */
-export function modelStatus(modelId: string): Store<ModelStatus> {
-  let status = statuses.get(modelId)
+/**
+ * Loading status of a model, by its name: a listed model or any Hugging Face
+ * id.
+ */
+export function modelStatus(model: string): Store<ModelStatus> {
+  const id = runtimeModelId(model)
+  let status = statuses.get(id)
   if (!status) {
     status = createStore<ModelStatus>({ state: "idle" })
-    statuses.set(modelId, status)
+    statuses.set(id, status)
   }
   return status
 }
@@ -41,7 +46,6 @@ export function modelStatus(modelId: string): Store<ModelStatus> {
 /** Listeners for each running generation, by request id. */
 type Generation = {
   onToken: (text: string) => void
-  onStats: (stats: RunTimings) => void
   onEnd: (error?: string, stats?: RunTimings) => void
 }
 const generations = new Map<string, Generation>()
@@ -83,8 +87,6 @@ function handleMessage({ data }: MessageEvent<WorkerResponse>) {
     }
   } else if (data.type === "token") {
     generations.get(data.id)?.onToken(data.text)
-  } else if (data.type === "stats") {
-    generations.get(data.id)?.onStats(data.stats)
   } else if (data.type === "log") {
     // A worker's own console output doesn't reach a dev server's terminal.
     console.info(data.text)
@@ -126,8 +128,12 @@ function keepDownloads() {
     .catch(() => undefined)
 }
 
-/** Loads a model (downloading it the first time), replacing any other. */
-export function loadModel(modelId: string): Promise<void> {
+/**
+ * Loads a model (downloading it the first time), replacing any other: a
+ * listed model at its pinned revision, or any Hugging Face id.
+ */
+export function loadModel(model: string): Promise<void> {
+  const modelId = runtimeModelId(model)
   if (loaded?.modelId === modelId) return loaded.load.promise
   if (loaded) {
     // The worker frees the previous model before loading this one.
@@ -160,11 +166,10 @@ export async function* generate(request: {
   id: string
   chat: Array<ChatTurn>
   tools: Array<ToolSpec>
-  thinking: boolean
+  thinking?: boolean
   sampling: Sampling
+  maxTokens?: number
   signal?: AbortSignal
-  /** The run's counts so far, a few times a second while it runs. */
-  onStats?: (stats: RunTimings) => void
 }): AsyncGenerator<string, GenerationEnd> {
   const { id, signal } = request
   // Bridge the worker's messages to this async generator.
@@ -177,7 +182,6 @@ export async function* generate(request: {
       queue.push(text)
       wake?.()
     },
-    onStats: (stats) => request.onStats?.(stats),
     onEnd: (failure, stats) => {
       end = { failure, stats }
       finished = true
@@ -191,8 +195,9 @@ export async function* generate(request: {
     id,
     chat: request.chat,
     tools: request.tools,
-    thinking: request.thinking,
-    sampling: request.sampling
+    ...(request.thinking !== undefined && { thinking: request.thinking }),
+    sampling: request.sampling,
+    ...(request.maxTokens !== undefined && { maxTokens: request.maxTokens })
   })
   try {
     while (!finished || queue.length > 0) {

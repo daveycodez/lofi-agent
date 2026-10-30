@@ -1,8 +1,12 @@
 import { chat, chatParamsFromRequestBody } from "@tanstack/ai"
-import type { StreamChunk } from "@tanstack/ai"
+import type { ChatMiddleware, StreamChunk } from "@tanstack/ai"
 import { stream } from "@tanstack/ai-react"
 
-import { startReply } from "#/lib/llm/generation-stats"
+import {
+  recordGeneration,
+  startReply,
+  statsFromUsage
+} from "#/lib/llm/generation-stats"
 import {
   canThink,
   currentModel,
@@ -11,6 +15,20 @@ import {
 } from "#/lib/llm/models"
 import { getMcpTools } from "#/lib/mcp"
 import { currentSystemPrompt } from "#/lib/settings"
+
+/**
+ * Each model call's usage, as the adapter reports it when the call ends, to
+ * the stats line. A reply that calls tools makes one call per step.
+ */
+const replyStats: ChatMiddleware = {
+  name: "reply-stats",
+  onUsage: (ctx, usage) =>
+    recordGeneration(
+      ctx.threadId,
+      `${ctx.runId}:${ctx.iteration}`,
+      statsFromUsage(usage)
+    )
+}
 
 /** The AG-UI request useChat makes for a run. */
 type RunAgentInput = Parameters<Parameters<typeof stream>[0]>[3]
@@ -47,6 +65,7 @@ async function* reply(
     ...(canThink(model) && {
       reasoning: thinkingStore.get() ? "high" : "off"
     }),
+    middleware: [replyStats],
     abortController
   })
 }

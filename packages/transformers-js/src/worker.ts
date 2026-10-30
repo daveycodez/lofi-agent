@@ -1131,39 +1131,6 @@ function reuseSaved(
   }
 }
 
-/** "The current date is …", a paragraph of its own in system prompts. */
-const DATE_LINE = /(?:^|\n+)(The current date is [^\n]*\.)[ \t]*(?=\n|$)/
-
-/**
- * The chat with the date line taken out of its system prompt, and the line,
- * to add back at the very end of the rendered system message: after the
- * tool definitions, which chat templates put after the system prompt. The
- * start of the prompt (system prompt and tools), which the cache keeps, then
- * stays the same from day to day. Left in place when it's the whole system
- * prompt and there are no tools: it's the end already, and the template
- * leaves out an empty system message.
- */
-function withoutDate(chat: Array<ChatTurn>, tools: Array<ToolSpec>) {
-  const system = chat.at(0)
-  const match =
-    system?.role === "system" ? DATE_LINE.exec(system.content) : null
-  if (!system || !match) return { chat, date: null }
-  const content = system.content.replace(match[0], "").trim()
-  if (!content && tools.length === 0) return { chat, date: null }
-  return {
-    chat: [{ ...system, content }, ...chat.slice(1)],
-    date: match[1]
-  }
-}
-
-/** Adds a line at the end of a rendered prompt's system message. */
-const afterSystem = (prompt: string, line: string) => {
-  const end = prompt.indexOf("<|im_end|>")
-  return end < 0
-    ? prompt
-    : `${prompt.slice(0, end)}\n\n${line}${prompt.slice(end)}`
-}
-
 /**
  * How many tokens the system prompt and tools take at the start of a
  * prompt, or 0 if there are none or they can't be told apart.
@@ -1172,7 +1139,7 @@ function systemLength(
   tokenizer: Tokenizer,
   chat: Array<ChatTurn>,
   tools: Array<ToolSpec>,
-  thinking: boolean,
+  thinking: boolean | undefined,
   ids: Array<number>
 ) {
   const system = chat[0]?.role === "system" ? [chat[0]] : []
@@ -1182,7 +1149,7 @@ function systemLength(
       ...(tools.length > 0 && { tools }),
       add_generation_prompt: false,
       tokenize: false,
-      enable_thinking: thinking
+      ...(thinking !== undefined && { enable_thinking: thinking })
     })
     const prefix = Array.from(
       tokenizer(text, { add_special_tokens: false }).input_ids.data,
@@ -1191,9 +1158,8 @@ function systemLength(
     let common = 0
     const limit = Math.min(prefix.length, ids.length - 1)
     while (common < limit && prefix[common] === ids[common]) common++
-    // The prompt may go on inside the system message (the date, moved after
-    // the tools), so its last few tokens can differ: the end of the message,
-    // or a token merged across the join.
+    // The last few tokens can differ where the system message ends and the
+    // next turn begins (a token merged across the join).
     return common >= prefix.length - 3 ? common : 0
   } catch {
     return 0
@@ -1615,32 +1581,26 @@ function createStreamer(
   }
 }
 
-/** How often a reply's counts go to the page while it generates. */
-const STATS_INTERVAL_MS = 250
-
 async function generate(
   id: string,
   chat: Array<ChatTurn>,
   tools: Array<ToolSpec>,
-  thinking: boolean,
-  sampling: Sampling
+  thinking: boolean | undefined,
+  sampling: Sampling,
+  maxTokens: number | undefined
 ): Promise<RunTimings> {
   // Time to first token counts from here: it includes reading the prompt.
   const requested = performance.now()
   if (!current) throw new Error("No model loaded.")
   const loaded = current
   const { tf, tokenizer, model } = await loaded.runtime
-  // The date goes at the very end of the system message, after the tool
-  // definitions, so a new day doesn't change the start the cache holds.
-  const { chat: dateless, date } = withoutDate(chat, tools)
   // Models with a thinking mode reason in a <think> block before answering.
-  const rendered = tokenizer.apply_chat_template(dateless, {
+  const prompt = tokenizer.apply_chat_template(chat, {
     ...(tools.length > 0 && { tools }),
     add_generation_prompt: true,
     tokenize: false,
-    enable_thinking: thinking
+    ...(thinking !== undefined && { enable_thinking: thinking })
   })
-  const prompt = date ? afterSystem(rendered, date) : rendered
   // Some templates open the <think> block in the prompt itself; start the
   // reply with it too so the thread shows what follows as thinking.
   if (prompt.trimEnd().endsWith("<think>")) {
@@ -1657,7 +1617,7 @@ async function generate(
     )
   }
   // Thinking takes many more tokens before the answer starts.
-  const wanted = thinking ? 4096 : 1024
+  const wanted = maxTokens ?? (thinking === false ? 1024 : 4096)
   const maxNewTokens = Math.min(wanted, room)
   const stopping = new tf.InterruptableStoppingCriteria()
   running.set(id, stopping)
@@ -1670,7 +1630,7 @@ async function generate(
   let lastToken = 0
   let readStarted = performance.now()
   // What the last run left in the cache that this prompt starts with.
-  const systemEnd = systemLength(tokenizer, dateless, tools, thinking, ids)
+  const systemEnd = systemLength(tokenizer, chat, tools, thinking, ids)
   let reused = reuseSaved(tf, loaded.modelId, ids, systemEnd)
   const timings = (): RunTimings => ({
     inputTokens: ids.length,
@@ -1680,26 +1640,12 @@ async function generate(
     promptMs: firstToken === null ? null : firstToken - readStarted,
     decodeMs: firstToken === null ? 0 : lastToken - firstToken
   })
-  // Counts so far for the stats line: the prompt's now, then the reply's at
-  // its first token and every STATS_INTERVAL_MS after.
-  let reported = 0
-  const report = () => {
-    reported = performance.now()
-    ctx.postMessage({ type: "stats", id, stats: timings() })
-  }
-  report()
   const streamer = createStreamer(tokenizer, {
     skipSpecial: !keepSpecial,
     onTokens: (tokens: Array<bigint>) => {
       lastToken = performance.now()
       firstToken ??= lastToken
       outputTokens += tokens.length
-      if (
-        firstToken === lastToken ||
-        lastToken - reported >= STATS_INTERVAL_MS
-      ) {
-        report()
-      }
       if (outputTokens % 16 === 0) nudgeGarbageCollector()
       if (outputTokens % 32 === 0) {
         logMemory(`reply ${outputTokens} tokens (prompt ${gpu.promptTokens})`)
@@ -1841,7 +1787,6 @@ async function generate(
     outputTokens >= maxNewTokens &&
     !stopping.interrupted
   ) {
-    report()
     throw new ContextLimitError(
       `The reply stopped at the model's limit of ${CONTEXT_LIMIT.toLocaleString("en-US")} tokens for a session. Start a new session to keep going.`
     )
@@ -1856,7 +1801,14 @@ ctx.onmessage = ({ data }) => {
   if (data.type === "load") {
     load(data.modelId).catch(() => undefined)
   } else if (data.type === "generate") {
-    generate(data.id, data.chat, data.tools, data.thinking, data.sampling)
+    generate(
+      data.id,
+      data.chat,
+      data.tools,
+      data.thinking,
+      data.sampling,
+      data.maxTokens
+    )
       .then((stats) => ctx.postMessage({ type: "done", id: data.id, stats }))
       .catch((error: unknown) => {
         if (DEBUG && error instanceof Error) {

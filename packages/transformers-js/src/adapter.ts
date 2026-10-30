@@ -5,13 +5,16 @@
  * `chatStream` call here is one generation in the worker, streamed back as
  * AG-UI events.
  */
-import { EventType, normalizeSystemPrompts } from "@tanstack/ai"
+import { buildBaseUsage, EventType, normalizeSystemPrompts } from "@tanstack/ai"
 import type {
   AdapterYieldChunk,
   ModelMessage,
+  ReasoningRequest,
   TextOptions,
+  TokenUsage,
   Tool
 } from "@tanstack/ai"
+import { resolveReasoning } from "@tanstack/ai/adapter-internals"
 import { BaseTextAdapter } from "@tanstack/ai/adapters"
 import type {
   StructuredOutputOptions,
@@ -19,6 +22,11 @@ import type {
 } from "@tanstack/ai/adapters"
 
 import { generate, loadModel, setDebug } from "./client.js"
+import { modelMeta, modelReasoning } from "./model-meta.js"
+import type {
+  TransformersJsListedModel,
+  TransformersJsModelReasoningByName
+} from "./model-meta.js"
 import type { ChatTurn, RunTimings, Sampling, ToolSpec } from "./protocol.js"
 import { createThinkingSplitter, splitThinking } from "./thinking.js"
 import {
@@ -28,35 +36,75 @@ import {
 } from "./tool-calls.js"
 import type { ParsedToolCall, ToolFormat } from "./tool-calls.js"
 
-/** A run's token counts and timings, as the worker measures them. */
-export type RunStats = RunTimings
-
-export type TransformersJsOptions = {
-  /** How the model writes tool calls: LFM2's markers or LFM3's XML-ish calls. */
-  toolFormat: ToolFormat
-  /** Sampling from the model card. */
-  sampling: Sampling
+export type TransformersJsTextConfig = {
   /**
-   * A separate model to run when reasoning is on, for families whose
-   * thinking is its own model (LFM2.5 Thinking), and its sampling.
+   * How the model writes tool calls: LFM2's markers or LFM3's XML-ish calls.
+   * A listed model's own by default; required for any other model.
    */
-  thinking?: { model: string; sampling: Sampling }
-  /**
-   * The run's counts while it generates (a few times a second) and once at
-   * the end (`done`). `callId` is unique per model call; `chat()` makes one
-   * per step of its agent loop.
-   */
-  onStats?: (
-    stats: RunStats,
-    run: { threadId: string; runId: string; callId: string; done: boolean }
-  ) => void
+  toolFormat?: ToolFormat
   /** Memory and cache logs from the worker, in the console. */
   debug?: boolean
 }
 
-type TransformersJsReasoning = {
-  levels: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
-  budget: false
+/** The config a model takes: any other model than a listed one names its tool format. */
+export type TransformersJsTextConfigFor<TModel extends string> =
+  TModel extends TransformersJsListedModel
+    ? TransformersJsTextConfig
+    : TransformersJsTextConfig & { toolFormat: ToolFormat }
+
+/**
+ * Per-call `modelOptions`: sampling, over the model card's (a listed
+ * model's) or the defaults (any other), and the most tokens to generate.
+ */
+export type TransformersJsTextProviderOptions = Partial<Sampling> & {
+  /** Most tokens to generate: 4,096 by default, 1,024 with reasoning off. */
+  max_new_tokens?: number
+}
+
+/**
+ * Timings of one model call, in milliseconds, in `RUN_FINISHED`'s
+ * `usage.providerUsageDetails`.
+ */
+export type TransformersJsProviderUsageDetails = {
+  /** From the request to the first generated token, reading the prompt included. */
+  firstTokenMs?: number
+  /** From starting to read the prompt (the model loaded) to the first token. */
+  promptMs?: number
+  /** From the first generated token to the last. */
+  decodeMs?: number
+  /** Tokens generated after the first one, over `decodeMs`. */
+  decodeTokens?: number
+}
+
+/**
+ * The reasoning levels of a model, for `chat({ reasoning })`. A model this
+ * package doesn't list gets the on/off toggle (the chat template's
+ * `enable_thinking`). `never`: a listed model that doesn't reason.
+ */
+type ResolveReasoning<TModel extends string> =
+  TModel extends keyof TransformersJsModelReasoningByName
+    ? TransformersJsModelReasoningByName[TModel]
+    : TModel extends TransformersJsListedModel
+      ? never
+      : { levels: "off" | "high"; budget: false }
+
+/** Sampling for a model this package doesn't list. */
+const DEFAULT_SAMPLING: Sampling = {
+  temperature: 0.7,
+  top_k: 50,
+  repetition_penalty: 1
+}
+
+/**
+ * The chat template's `enable_thinking` for a request: true or false for a
+ * model that reasons, left out when the request doesn't ask (the template's
+ * default applies), false for a model that doesn't reason.
+ */
+function enableThinking(request: ReasoningRequest | undefined, model: string) {
+  const reasoning = modelReasoning(model)
+  if (!reasoning) return false
+  const value = resolveReasoning(request, reasoning)?.value
+  return value === undefined ? undefined : value === "true"
 }
 
 type MetadataByModality = {
@@ -160,14 +208,26 @@ function toToolSpecs(tools: Array<Tool> | undefined): Array<ToolSpec> {
   }))
 }
 
-const usageOf = (stats: RunTimings) => ({
-  promptTokens: stats.inputTokens,
-  completionTokens: stats.outputTokens,
-  totalTokens: stats.inputTokens + stats.outputTokens,
-  ...(stats.cachedTokens > 0 && {
-    promptTokensDetails: { cachedTokens: stats.cachedTokens }
+/** A model call's counts as TanStack AI usage, its timings as provider details. */
+function usageOf(stats: RunTimings): TokenUsage {
+  const usage = buildBaseUsage<TransformersJsProviderUsageDetails>({
+    promptTokens: stats.inputTokens,
+    completionTokens: stats.outputTokens,
+    totalTokens: stats.inputTokens + stats.outputTokens
   })
-})
+  if (stats.cachedTokens > 0) {
+    usage.promptTokensDetails = { cachedTokens: stats.cachedTokens }
+  }
+  usage.providerUsageDetails = {
+    ...(stats.firstTokenMs !== null && { firstTokenMs: stats.firstTokenMs }),
+    ...(stats.promptMs !== null && { promptMs: stats.promptMs }),
+    ...(stats.firstTokenMs !== null && {
+      decodeMs: stats.decodeMs,
+      decodeTokens: Math.max(stats.outputTokens - 1, 0)
+    })
+  }
+  return usage
+}
 
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error)
@@ -180,37 +240,46 @@ export class TransformersJsTextAdapter<
   TModel extends string
 > extends BaseTextAdapter<
   TModel,
-  Record<string, never>,
+  TransformersJsTextProviderOptions,
   readonly ["text"],
   MetadataByModality,
   ReadonlyArray<string>,
   unknown,
   never,
-  TransformersJsReasoning
+  ResolveReasoning<TModel>
 > {
+  override readonly kind = "text" as const
   readonly name = "transformers-js" as const
   override readonly api = "transformers-js" as const
-  private readonly options: TransformersJsOptions
+  override readonly inputModalities = ["text"] as const
+  private readonly toolFormat: ToolFormat
 
-  constructor(model: TModel, options: TransformersJsOptions) {
+  constructor(config: TransformersJsTextConfig, model: TModel) {
     super({}, model)
-    this.options = options
-    if (options.debug) setDebug(true)
+    const toolFormat = config.toolFormat ?? modelMeta(model)?.toolFormat
+    if (!toolFormat) {
+      throw new Error(
+        `Set toolFormat for ${model}: it isn't a model this package lists.`
+      )
+    }
+    this.toolFormat = toolFormat
+    if (config.debug) setDebug(true)
   }
 
-  /** The model to run and its sampling, given the reasoning asked for. */
-  private pick(reasoning: TextOptions["reasoning"]) {
-    const thinks = reasoning !== undefined && reasoning.level !== "off"
-    const alternate = thinks ? this.options.thinking : undefined
+  /** Sampling for a call: `modelOptions` over the model card's or the defaults. */
+  private sampling(modelOptions: TransformersJsTextProviderOptions | undefined) {
+    const base = modelMeta(this.model)?.sampling ?? DEFAULT_SAMPLING
     return {
-      model: alternate?.model ?? this.model,
-      sampling: alternate?.sampling ?? this.options.sampling,
-      // A separate thinking model always thinks; it takes no switch.
-      thinking: thinks
+      temperature: modelOptions?.temperature ?? base.temperature,
+      top_k: modelOptions?.top_k ?? base.top_k,
+      repetition_penalty:
+        modelOptions?.repetition_penalty ?? base.repetition_penalty
     }
   }
 
-  async *chatStream(options: TextOptions): AsyncIterable<AdapterYieldChunk> {
+  async *chatStream(
+    options: TextOptions<TransformersJsTextProviderOptions>
+  ): AsyncIterable<AdapterYieldChunk> {
     const runId = options.runId ?? nextId("run")
     const threadId = options.threadId
     const callId = nextId("call")
@@ -220,7 +289,9 @@ export class TransformersJsTextAdapter<
       options.abortController?.signal ??
       (options.request as RequestInit | undefined)?.signal ??
       undefined
-    const { model, sampling, thinking } = this.pick(options.reasoning)
+    const model = this.model
+    const sampling = this.sampling(options.modelOptions)
+    const thinking = enableThinking(options.reasoning, model)
     const timestamp = () => Date.now()
 
     yield {
@@ -249,11 +320,9 @@ export class TransformersJsTextAdapter<
       .join("\n\n")
     const chat: Array<ChatTurn> = [
       ...(system ? [{ role: "system" as const, content: system }] : []),
-      ...toChatTurns(options.messages, this.options.toolFormat)
+      ...toChatTurns(options.messages, this.toolFormat)
     ]
     const tools = toToolSpecs(options.tools)
-    const report = (stats: RunTimings, done: boolean) =>
-      this.options.onStats?.(stats, { threadId, runId, callId, done })
 
     // Thinking streams as reasoning events, then the answer as text up to
     // any tool-call markup, which is held back and parsed at the end.
@@ -344,8 +413,8 @@ export class TransformersJsTextAdapter<
       tools,
       thinking,
       sampling,
-      signal,
-      onStats: (stats) => report(stats, false)
+      maxTokens: options.modelOptions?.max_new_tokens,
+      signal
     })
     let next = await stream.next()
     while (!next.done) {
@@ -362,7 +431,6 @@ export class TransformersJsTextAdapter<
     // Markup that isn't any tool call is shown as the text it is.
     if (markup && parsed.length === 0) addText(markup)
     yield* events.splice(0)
-    if (stats) report(stats, true)
 
     for (const [index, call] of parsed.entries()) {
       const toolCallId = nextId("tool")
@@ -429,11 +497,10 @@ export class TransformersJsTextAdapter<
    * loosely; `chat()` validates the result.
    */
   async structuredOutput(
-    options: StructuredOutputOptions<Record<string, never>>
+    options: StructuredOutputOptions<TransformersJsTextProviderOptions>
   ): Promise<StructuredOutputResult<unknown>> {
     const { chatOptions, outputSchema } = options
-    const { model, sampling } = this.pick(undefined)
-    await loadModel(model)
+    await loadModel(this.model)
     const system = normalizeSystemPrompts(chatOptions.systemPrompts)
       .map((p) => p.content)
       .concat(
@@ -444,11 +511,12 @@ export class TransformersJsTextAdapter<
       id: nextId("call"),
       chat: [
         { role: "system", content: system },
-        ...toChatTurns(chatOptions.messages, this.options.toolFormat)
+        ...toChatTurns(chatOptions.messages, this.toolFormat)
       ],
       tools: [],
-      thinking: false,
-      sampling,
+      thinking: enableThinking(chatOptions.reasoning, this.model),
+      sampling: this.sampling(chatOptions.modelOptions),
+      maxTokens: chatOptions.modelOptions?.max_new_tokens,
       signal: chatOptions.abortController?.signal
     })
     let raw = ""
@@ -475,23 +543,25 @@ export class TransformersJsTextAdapter<
 }
 
 /**
- * A TanStack AI adapter for a Transformers.js model in the browser.
+ * A TanStack AI text adapter for a Transformers.js model in the browser: a
+ * model this package lists (`TRANSFORMERS_JS_TEXT_MODELS`), which needs no
+ * config, or any other Hugging Face ONNX model, given its tool format.
  *
  * @example
  * ```ts
  * chat({
- *   adapter: transformersJs("daveycodez/LFM3-1.7B-Web", {
- *     toolFormat: "lfm3",
- *     sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.1 }
- *   }),
+ *   adapter: transformersJsText("daveycodez/LFM3-1.7B-Web"),
  *   messages,
- *   threadId
+ *   threadId,
+ *   reasoning: "high"
  * })
  * ```
  */
-export function transformersJs<TModel extends string>(
+export function transformersJsText<TModel extends string>(
   model: TModel,
-  options: TransformersJsOptions
-) {
-  return new TransformersJsTextAdapter(model, options)
+  ...[config]: TModel extends TransformersJsListedModel
+    ? [config?: TransformersJsTextConfigFor<TModel>]
+    : [config: TransformersJsTextConfigFor<TModel>]
+): TransformersJsTextAdapter<TModel> {
+  return new TransformersJsTextAdapter(config ?? {}, model)
 }
