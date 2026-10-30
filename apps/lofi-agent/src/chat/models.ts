@@ -209,19 +209,11 @@ export const hasWebGpuNow = webGpu.get
 export const useHasWebGpu = () =>
   useSyncExternalStore(webGpu.subscribe, webGpu.get, () => true)
 
-/**
- * Offered only where there's no WebGPU. onnx-community's LFM2 1.2B Tool
- * computes logits for every prompt token (it has no `num_logits_to_keep`
- * input, unlike our Web builds), which crashed iPhone Safari on WebGPU;
- * with WebGPU, better models are there anyway.
- */
-const CPU_ONLY: ReadonlyArray<ModelId> = ["lfm2-tool"]
-
 /** What this device can run: Apple's model on Apple devices, CPU models without WebGPU. */
 const canRun = (id: ModelId, isApple: boolean, hasGpu: boolean) =>
   isModelId(id) &&
   (id !== "apple-fm" || isApple) &&
-  (hasGpu ? !CPU_ONLY.includes(id) : !modelInfo(id).needsWebGpu)
+  (hasGpu || !modelInfo(id).needsWebGpu)
 
 /**
  * The pick, if this device can run it, else the default: LFM3 Web, or
