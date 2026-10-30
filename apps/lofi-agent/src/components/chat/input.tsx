@@ -16,9 +16,9 @@ import {
 import {
   afmStatus,
   checkAfm,
-  EFFORT_LABELS,
+  effortButtonLabel,
   effortFor,
-  effortLevels,
+  effortOptions,
   PROVIDERS,
   useModels
 } from "#/chat/models"
@@ -144,10 +144,7 @@ function ChatModelSelector() {
   const models = useModels()
   const afm = afmStatus.use()
   // The levels the picked model has, and the one it runs at.
-  const efforts = effortLevels(model).map((id) => ({
-    id,
-    name: EFFORT_LABELS[id]
-  }))
+  const efforts = effortOptions(model)
   const level = effortFor(model, effort)
   // Models by provider, each a section; a provider this device offers no
   // model of is left out.
@@ -195,6 +192,7 @@ function ChatModelSelector() {
         onChange={(id) => void select(id as ModelId)}
         efforts={efforts}
         effort={level}
+        effortLabel={level && effortButtonLabel(model, level)}
         onEffortChange={(id) => setEffort(id as ReasoningLevel)}
         status={
           afm === "checking"

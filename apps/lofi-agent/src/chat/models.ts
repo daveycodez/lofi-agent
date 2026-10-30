@@ -114,7 +114,7 @@ export const effortFor = (id: ModelId, effort: ReasoningLevel) => {
 }
 
 /** Each level's name in the picker. */
-export const EFFORT_LABELS: Record<ReasoningLevel, string> = {
+const EFFORT_LABELS: Record<ReasoningLevel, string> = {
   off: "Off",
   minimal: "Minimal",
   low: "Low",
@@ -122,6 +122,37 @@ export const EFFORT_LABELS: Record<ReasoningLevel, string> = {
   high: "High",
   xhigh: "Extra high",
   max: "Max"
+}
+
+/**
+ * Whether a model's thinking is only on or off: "off" and one level (LFM3
+ * and Gemma 4 take a true/false switch, declared as off and high).
+ */
+const isThinkingSwitch = (levels: ReadonlyArray<ReasoningLevel>) =>
+  levels.length === 2 && levels[0] === "off"
+
+/**
+ * The picker's options for a model's levels: Off and On for a model that
+ * only switches thinking, else each level by name.
+ */
+export function effortOptions(id: ModelId) {
+  const levels = effortLevels(id)
+  const isSwitch = isThinkingSwitch(levels)
+  return levels.map((level) => ({
+    id: level,
+    name: isSwitch ? (level === "off" ? "Off" : "On") : EFFORT_LABELS[level]
+  }))
+}
+
+/**
+ * What the picker's button says after the model's name: "Thinking" while a
+ * switch-only model thinks, the level for a model with levels, nothing when
+ * it doesn't think or has nothing to pick.
+ */
+export function effortButtonLabel(id: ModelId, level: ReasoningLevel) {
+  const levels = effortLevels(id)
+  if (levels.length === 0 || level === "off") return undefined
+  return isThinkingSwitch(levels) ? "Thinking" : EFFORT_LABELS[level]
 }
 
 /**

@@ -46,6 +46,7 @@ export function ModelSelector({
   onChange,
   efforts = [],
   effort,
+  effortLabel,
   onEffortChange,
   status
 }: {
@@ -56,6 +57,8 @@ export function ModelSelector({
   efforts?: Array<EffortOption>
   /** The level the picked model runs at. */
   effort?: string
+  /** Shown muted after the model's name, such as "Thinking" or "High". */
+  effortLabel?: string
   onEffortChange?: (id: string) => void
   /** A short note beside the button, such as a check in progress. */
   status?: { text: string; isError?: boolean } | null
@@ -64,9 +67,6 @@ export function ModelSelector({
   const current = sections
     .flatMap((section) => section.models)
     .find((model) => model.id === value)
-  // The button names the level only while the model thinks: not "Off".
-  const effortName =
-    effort === "off" ? undefined : efforts.find((e) => e.id === effort)?.name
 
   return (
     // min-w-0: a long model name truncates instead of pushing the toolbar's
@@ -76,15 +76,15 @@ export function ModelSelector({
         <Button
           size="sm"
           variant="tertiary"
-          aria-label={`Model: ${current?.name ?? value}${effortName ? `, thinking ${effortName}` : ""}`}
+          aria-label={`Model: ${current?.name ?? value}${effortLabel ? ` (${effortLabel})` : ""}`}
           // The toolbar it sits in is muted: the model's name isn't, only
           // its effort.
           className="min-w-0 text-foreground"
         >
           {current && <ModelLogo src={current.icon} />}
           <span className="min-w-0 truncate">{current?.name ?? value}</span>
-          {effortName && (
-            <span className="shrink-0 text-muted">{effortName}</span>
+          {effortLabel && (
+            <span className="shrink-0 text-muted">{effortLabel}</span>
           )}
           {/* Buttons pull icons in by 2px; keep the caret 8px from the label. */}
           <ChevronDown className="ms-0 shrink-0" />
@@ -98,6 +98,8 @@ export function ModelSelector({
           >
             <ListBox
               aria-label="Model"
+              // Scrolls right up to the Thinking row's line; its own padding
+              // is the gap under the last model.
               className="min-h-0 overflow-y-auto"
               selectionMode="single"
               disallowEmptySelection
@@ -129,7 +131,7 @@ export function ModelSelector({
               ))}
             </ListBox>
             {efforts.length > 0 && (
-              <div className="mt-1 flex shrink-0 items-center justify-between gap-3 border-t border-separator px-2 pt-2 pb-1">
+              <div className="flex shrink-0 items-center justify-between gap-3 border-t border-separator px-2 pt-2 pb-1">
                 <span className="text-xs text-muted">Thinking</span>
                 <ToggleButtonGroup
                   aria-label="Thinking effort"
