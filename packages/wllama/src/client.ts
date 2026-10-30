@@ -49,6 +49,13 @@ export type RuntimeOptions = {
    */
   wasmUrl?: string
   /**
+   * Where wllama's compat build is served: its WebAssembly file and its
+   * worker script. Browsers without JSPI or 64-bit WebAssembly memory
+   * (Safari) run it instead of the main build, which doesn't run there. By
+   * default the bundler emits both from `@wllama/wllama-compat`.
+   */
+  compat?: { wasm: string; worker: string }
+  /**
    * CPU threads: three quarters of the cores the browser reports by
    * default, where the page is cross-origin isolated; one otherwise
    * (WebAssembly threads need SharedArrayBuffer).
@@ -67,6 +74,73 @@ export function configureRuntime(next: RuntimeOptions) {
 
 const defaultWasmUrl = () =>
   new URL("@wllama/wllama/esm/wasm/wllama.wasm", import.meta.url).href
+
+const defaultCompat = () => ({
+  wasm: new URL("@wllama/wllama-compat/wasm/wllama.wasm", import.meta.url)
+    .href,
+  worker: new URL("@wllama/wllama-compat/wasm/wllama.js", import.meta.url).href
+})
+
+/** A WebAssembly module with only a 64-bit memory. */
+const MEMORY64_MODULE = new Uint8Array([
+  0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 4, 1
+])
+
+/**
+ * Whether wllama's compat build has to run here: without JSPI, or without
+ * 64-bit WebAssembly memory, checked by compiling a module that has one.
+ * (Safari accepts `new WebAssembly.Memory({ address: "i64" })`, wllama's own
+ * check, but can't compile the main build.) Not in Firefox, which runs the
+ * main build without JSPI.
+ */
+function needsCompat() {
+  if (/Firefox\//.test(navigator.userAgent)) return false
+  return !("Suspending" in WebAssembly) || !WebAssembly.validate(MEMORY64_MODULE)
+}
+
+/**
+ * Runs `wllama` on its compat build. wllama only uses one where its own
+ * checks say so, and they pass in Safari, which then fails to compile the
+ * main build (and the load never ends), so its worker's resources are set
+ * here too.
+ */
+function useCompat(
+  wllama: Wllama,
+  compat: { wasm: string; worker: { code: string } }
+) {
+  wllama.setCompat(compat)
+  const target = wllama as unknown as { getWorkerResources: () => object }
+  const resources = target.getWorkerResources.bind(wllama)
+  target.getWorkerResources = () => ({
+    ...resources(),
+    wasmPath: compat.wasm,
+    jsPath: compat.worker,
+    compat: true
+  })
+}
+
+let compatCode: Promise<string> | undefined
+
+/**
+ * wllama's compat build, served with the site rather than from wllama's
+ * CDN, so it works offline too. wllama wraps the worker script in a
+ * function, so it's passed as code that ends in a newline: a bundler's
+ * dev server may end it in a `//# sourceMappingURL` comment, which would
+ * otherwise comment out the end of that function.
+ */
+async function compatBuild() {
+  const { wasm, worker } = options.compat ?? defaultCompat()
+  compatCode ??= fetch(worker).then(async (response) => {
+    if (!response.ok) {
+      throw new Error(`Couldn't load wllama's compat build (${response.status}).`)
+    }
+    return `${await response.text()}\n`
+  })
+  compatCode.catch(() => {
+    compatCode = undefined
+  })
+  return { wasm, worker: { code: await compatCode } }
+}
 
 /**
  * Threads to run on (see `RuntimeOptions.threads`). Not every core:
@@ -124,6 +198,7 @@ async function startLoad(
   const status = modelStatus(model)
   const url = modelUrl(model)
   const meta = modelMeta(model)
+  if (needsCompat()) useCompat(wllama, await compatBuild())
   // A model already in storage loads from it, without the network.
   const saved = await wllama.modelManager.getModels()
   const cached = saved.some((m) => m.url === url)

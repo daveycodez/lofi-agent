@@ -56,6 +56,12 @@ The package starts wllama with `new URL("@wllama/wllama/esm/wasm/wllama.wasm", i
 wllamaText("LiquidAI/LFM2.5-350M-GGUF", { wasmUrl: "/wllama.wasm" })
 ```
 
-Browsers without JSPI or WebAssembly Memory64 (Safari) get wllama's compatibility build, which it fetches from jsDelivr (`@wllama/wllama-compat`). It's slower.
+Browsers that can't compile 64-bit WebAssembly memory or lack JSPI (Safari, on iPhone too) run wllama's compat build instead, from `@wllama/wllama-compat`, emitted the same way: `new URL("@wllama/wllama-compat/wasm/wllama.wasm", import.meta.url)` and `…/wllama.js`. It's slower, on one thread. Elsewhere, serve both files and pass their URLs:
+
+```ts
+wllamaText("LiquidAI/LFM2.5-350M-GGUF", {
+  compat: { wasm: "/wllama-compat.wasm", worker: "/wllama-compat.js" }
+})
+```
 
 **Status:** early (0.x); the API may change. See the [repository README](https://github.com/daveycodez/tanstack-ai-browser#readme).

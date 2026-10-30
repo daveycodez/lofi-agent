@@ -44,6 +44,11 @@ export type WllamaTextConfig = {
    * emit it from `new URL(…, import.meta.url)`. Applies to every model.
    */
   wasmUrl?: string
+  /**
+   * Where wllama's compat build (for Safari) is served, if not from
+   * `@wllama/wllama-compat` through the bundler.
+   */
+  compat?: { wasm: string; worker: string }
   /** CPU threads: three quarters of the cores where the page is cross-origin isolated, else one. */
   threads?: number
   /** wllama's and llama.cpp's logs, in the console. */
@@ -252,6 +257,7 @@ export class WllamaTextAdapter<
     super({}, model)
     configureRuntime({
       ...(config.wasmUrl && { wasmUrl: config.wasmUrl }),
+      ...(config.compat && { compat: config.compat }),
       ...(config.threads && { threads: config.threads }),
       ...(config.debug && { debug: true })
     })

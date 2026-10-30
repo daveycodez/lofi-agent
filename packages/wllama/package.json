@@ -56,6 +56,7 @@
   },
   "dependencies": {
     "@huggingface/jinja": "0.5.10",
-    "@wllama/wllama": "3.8.1"
+    "@wllama/wllama": "3.8.1",
+    "@wllama/wllama-compat": "3.8.1"
   }
 }
