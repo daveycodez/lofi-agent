@@ -54,8 +54,9 @@ export type RuntimeOptions = {
   /**
    * Where this package's faster build of wllama is served
    * (`wasm/wllama-relaxed.wasm`), or `false` to use wllama's own. Browsers
-   * with relaxed SIMD (Chrome, Firefox) use it; by default the bundler emits
-   * it from this package. See scripts/build-wasm.sh.
+   * whose relaxed SIMD reads signed values (Chrome and Firefox on ARM) use
+   * it; by default the bundler emits it from this package. See
+   * scripts/build-wasm.sh.
    */
   relaxedSimdWasmUrl?: string | false
   /**
@@ -89,15 +90,27 @@ const defaultWasmUrl = () =>
 const relaxedWasmUrl = () =>
   new URL("../wasm/wllama-relaxed.wasm", import.meta.url).href
 
-/** A WebAssembly module with one relaxed SIMD instruction (i32x4.relaxed_dot_i8x16_i7x16_add_s). */
-const RELAXED_SIMD_MODULE = new Uint8Array([
-  0, 97, 115, 109, 1, 0, 0, 0, 1, 6, 1, 96, 1, 123, 1, 123, 3, 2, 1, 0, 10, 13,
-  1, 11, 0, 32, 0, 32, 0, 32, 0, 253, 147, 2, 11
+/**
+ * One relaxed SIMD dot product, i32x4.relaxed_dot_i8x16_i7x16_add_s(1, -1, 0),
+ * as a WebAssembly function: -4 where the browser reads the 7-bit operand as
+ * signed (ARM), 1020 where it reads it as unsigned (V8 on Intel and AMD).
+ * llama.cpp's relaxed kernels (PR #19590) put signed values there, so they
+ * only compute correctly with the signed reading.
+ */
+const RELAXED_DOT_TEST = new Uint8Array([
+  0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 127, 3, 2, 1, 0, 7, 5, 1, 1,
+  102, 0, 0, 10, 64, 1, 62, 0, 253, 12, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 253, 12, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+  255, 255, 255, 255, 253, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  253, 147, 2, 253, 27, 0, 11
 ])
 
+/** Whether the faster build computes correctly here (see RELAXED_DOT_TEST). */
 function hasRelaxedSimd() {
   try {
-    return WebAssembly.validate(RELAXED_SIMD_MODULE)
+    const module = new WebAssembly.Module(RELAXED_DOT_TEST)
+    const { f } = new WebAssembly.Instance(module).exports as { f: () => number }
+    return f() === -4
   } catch {
     return false
   }
