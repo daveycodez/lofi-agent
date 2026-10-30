@@ -24,9 +24,10 @@ import {
   InputGroup,
   Label,
   SearchField,
+  Skeleton,
   TextField
 } from "@heroui/react"
-import { eq, useLiveQuery } from "@tanstack/react-db"
+import { eq, useLiveQuery, useOptionalDbClient } from "@tanstack/react-db"
 import { Link } from "@tanstack/react-router"
 import { Fragment, useEffect, useRef, useState } from "react"
 
@@ -106,10 +107,11 @@ export function ThreadListSidebar(props: SidebarProps) {
 /** Actions for all chats at once, in the header: deleting them all. */
 function ChatsMenu({ onActiveRemoved }: { onActiveRemoved: () => void }) {
   // Every session, archived ones included.
+  const db = useOptionalDbClient()
   const { data: allThreads } = useLiveQuery({
-    query: (q) => q.from({ thread: threadsCollection })
+    query: (q) => (db ? q.from({ thread: threadsCollection }) : null)
   })
-  const count = allThreads.length
+  const count = allThreads?.length ?? 0
   const [isConfirming, setIsConfirming] = useState(false)
   return (
     <>
@@ -202,18 +204,24 @@ function ThreadList({
   onNavigate,
   onActiveRemoved
 }: SidebarProps) {
+  // Off until the database is open (and on the server): the list shows
+  // skeleton rows meanwhile.
+  const db = useOptionalDbClient()
   const { data: threads } = useLiveQuery({
     query: (q) =>
-      q
-        .from({ thread: threadsCollection })
-        .where(({ thread }) => eq(thread.archived, false))
-        .orderBy(({ thread }) => thread.updatedAt, "desc")
+      db
+        ? q
+            .from({ thread: threadsCollection })
+            .where(({ thread }) => eq(thread.archived, false))
+            .orderBy(({ thread }) => thread.updatedAt, "desc")
+        : null
   })
   const [search, setSearch] = useState("")
   const query = search.trim().toLowerCase()
+  const all = threads ?? []
   const filtered = query
-    ? threads.filter((t) => t.title.toLowerCase().includes(query))
-    : threads
+    ? all.filter((t) => t.title.toLowerCase().includes(query))
+    : all
 
   // Pinned threads first, then the rest grouped by date.
   const groups: Array<{ label: string; items: Array<Thread> }> = []
@@ -257,7 +265,9 @@ function ThreadList({
       </SearchField>
 
       <nav aria-label="Sessions" className="mt-6 flex flex-col gap-0.5">
-        {query && filtered.length === 0 ? (
+        {!threads ? (
+          <ThreadListSkeleton />
+        ) : query && filtered.length === 0 ? (
           <p className="px-2 py-2 text-sm text-muted">No sessions found</p>
         ) : (
           groups.map((group, i) => (
@@ -281,6 +291,22 @@ function ThreadList({
         )}
       </nav>
     </>
+  )
+}
+
+/** Rows the size of the list's, while the sessions load. */
+function ThreadListSkeleton() {
+  const widths = ["w-3/4", "w-1/2", "w-2/3", "w-3/5", "w-1/2", "w-2/3"]
+  return (
+    <div role="status" className="flex flex-col gap-0.5">
+      <span className="sr-only">Loading sessions</span>
+      <Skeleton className="mb-1 ms-2 h-4 w-12 rounded-md" />
+      {widths.map((width, i) => (
+        <div key={i} className="flex h-10 items-center px-4 md:h-9">
+          <Skeleton className={`h-3.5 rounded-md ${width}`} />
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -369,8 +395,8 @@ function ThreadListItem({
     // otherwise. The actions button sits over its end.
     <div className="group relative">
       <Link
-        to="/"
-        search={{ thread: thread.id }}
+        to="/sessions/$sessionId"
+        params={{ sessionId: thread.id }}
         onClick={onNavigate}
         className={buttonVariants({
           variant: isActive ? "tertiary" : "ghost",

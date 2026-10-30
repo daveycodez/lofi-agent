@@ -1,4 +1,4 @@
-import { eq, useLiveQuery } from "@tanstack/react-db"
+import { eq, useLiveQuery, useOptionalDbClient } from "@tanstack/react-db"
 import { Fragment } from "react"
 
 import { replyStatsCollection } from "#/lib/db"
@@ -11,12 +11,15 @@ import { formatReplyStats, replyStatsItems } from "#/chat/generation-stats"
  * it wraps between items.
  */
 export function ReplyStatsLine({ threadId }: { threadId: string }) {
+  const db = useOptionalDbClient()
   const { data } = useLiveQuery({
     query: (q) =>
-      q
-        .from({ record: replyStatsCollection })
-        .where(({ record }) => eq(record.id, threadId))
-        .findOne()
+      db
+        ? q
+            .from({ record: replyStatsCollection })
+            .where(({ record }) => eq(record.id, threadId))
+            .findOne()
+        : null
   })
   const stats = data?.stats
   const items = stats ? replyStatsItems(stats) : []

@@ -1,5 +1,5 @@
 /** User settings, one row each in the settings collection. */
-import { eq, useLiveQuery } from "@tanstack/react-db"
+import { eq, useLiveQuery, useOptionalDbClient } from "@tanstack/react-db"
 
 import { settings, settingsCollection } from "#/lib/db"
 import type { SettingKey, Settings } from "#/lib/db"
@@ -25,13 +25,17 @@ export function setting<K extends SettingKey>(key: K, initial: Settings[K]) {
     }
   }
 
+  /** Reads as `initial` until the database is open (and on the server). */
   const use = (): Settings[K] => {
+    const db = useOptionalDbClient()
     const { data } = useLiveQuery({
       query: (q) =>
-        q
-          .from({ setting: settingsCollection })
-          .where(({ setting }) => eq(setting.id, key))
-          .findOne()
+        db
+          ? q
+              .from({ setting: settingsCollection })
+              .where(({ setting }) => eq(setting.id, key))
+              .findOne()
+          : null
     })
     return data ? (data.value as Settings[K]) : initial
   }

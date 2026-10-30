@@ -4,8 +4,7 @@ import { routeTree } from "./routeTree.gen"
 export function getRouter() {
   const router = createTanStackRouter({
     routeTree,
-    // The app scrolls inside its own panels, never the window. (Its script
-    // also warns in development next to the client-only index route.)
+    // The app scrolls inside its own panels, never the window.
     scrollRestoration: false,
     defaultPreload: "intent",
     defaultPreloadStaleTime: 0

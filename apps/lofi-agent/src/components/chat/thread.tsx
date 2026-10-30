@@ -6,6 +6,7 @@
  */
 import { Spinner } from "@heroui/react"
 import { useChat } from "@tanstack/ai-react"
+import { useOptionalDbClient } from "@tanstack/react-db"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import { useSelectedModel, useThinking } from "#/chat/model"
@@ -18,6 +19,7 @@ import {
   useMcpSettled
 } from "#/lib/mcp"
 import { touchThread } from "#/lib/threads"
+import { ThreadSkeleton } from "./layout"
 import { ComposerProvider, ThreadContext } from "./thread-context"
 import type { ThreadActions } from "./thread-context"
 import { ChatUI } from "./ui-components"
@@ -28,9 +30,27 @@ type ThreadProps = {
   onSend: () => void
 }
 
-export function Thread(props: ThreadProps) {
+/**
+ * The session, once the database is open: its messages and the chat's
+ * saved state are there. Before that (and on the server) it's a skeleton.
+ */
+export function Thread({
+  isNew,
+  ...props
+}: ThreadProps & {
+  /** A session not saved yet, which opens on the welcome. */
+  isNew: boolean
+}) {
+  const db = useOptionalDbClient()
   // Connect to the user's MCP servers so their tools are ready.
-  useEffect(checkMcpServers, [])
+  useEffect(() => {
+    if (db) checkMcpServers()
+  }, [db])
+  if (!db) return <ThreadSkeleton threadId={props.threadId} isNew={isNew} />
+  return <ThreadGate {...props} />
+}
+
+function ThreadGate(props: ThreadProps) {
   const toolsKnown = useMcpSettled()
   // The chat client matches a saved approval to tool definitions once, as
   // it loads. A session saved waiting for one loads after the MCP tools

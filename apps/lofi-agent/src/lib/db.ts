@@ -5,8 +5,10 @@
  * stores into memory, so reads are synchronous once `openDb()` resolves,
  * and changes reach other open tabs.
  *
- * Browser only: the route that uses this turns server rendering off and
- * awaits `openDb()` in its loader.
+ * IndexedDB is browser only. Pages render on the server (and are
+ * prerendered) without it: `useDb()` gives no client there and during
+ * hydration, so live queries stay off and data shows as skeletons, then the
+ * client once `openDb()` has loaded everything.
  */
 import type { ChatPersistedState } from "@tanstack/ai-react"
 import {
@@ -16,6 +18,7 @@ import {
   indexedDBCollectionOptions
 } from "@tanstack/react-db"
 import type { IndexedDBInstance } from "@tanstack/react-db"
+import { useSyncExternalStore } from "react"
 
 import type { ReplyStats } from "#/chat/generation-stats"
 import type { ModelId } from "#/chat/models"
@@ -116,6 +119,7 @@ export const replyStatsCollection = collectionOptions("replyStats", (client) =>
 
 let client: DbClient | undefined
 let opening: Promise<DbClient> | undefined
+const listeners = new Set<() => void>()
 
 // Editing this module in development reloads the page: a hot swap would
 // leave the open client behind in the old module.
@@ -134,6 +138,7 @@ export function openDb() {
       next.collection(replyStatsCollection).preload()
     ])
     client = next
+    listeners.forEach((listener) => listener())
     return next
   })()
   // A failed open isn't kept, so the next navigation tries again.
@@ -141,6 +146,23 @@ export function openDb() {
     opening = undefined
   })
   return opening
+}
+
+const subscribe = (listener: () => void) => {
+  listeners.add(listener)
+  return () => listeners.delete(listener)
+}
+
+/**
+ * The open DbClient, or undefined on the server, while the page hydrates
+ * (so the first render matches the server's), and until `openDb()` resolves.
+ */
+export function useDb() {
+  return useSyncExternalStore(
+    subscribe,
+    () => client,
+    () => undefined
+  )
 }
 
 /** The browser's DbClient. Throws before `openDb()` has resolved. */

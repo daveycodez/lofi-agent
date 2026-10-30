@@ -17,6 +17,7 @@ import {
   ConversationScrollButton
 } from "#/components/ai/conversation"
 import { sourcesByReply } from "#/lib/reply-sources"
+import { PromptInputSkeleton } from "./input"
 import { PendingReply } from "./message"
 import { ReplyStatsLine } from "./reply-stats"
 import { TranscriptContext, useThread } from "./thread-context"
@@ -113,6 +114,38 @@ function EmptyState({ Input }: { Input: ComponentType }) {
     <ConversationEmptyState title="How can I help you today?">
       <Input />
     </ConversationEmptyState>
+  )
+}
+
+/**
+ * A session before the database opens (and on the server): a new session's
+ * welcome, or a saved one's transcript as a skeleton, with the prompt input.
+ * Laid out like ChatLayout, so nothing moves when the chat takes over.
+ */
+export function ThreadSkeleton({
+  threadId,
+  isNew
+}: {
+  threadId: string
+  isNew: boolean
+}) {
+  if (isNew) {
+    return (
+      <ConversationEmptyState title="How can I help you today?">
+        <PromptInputSkeleton />
+      </ConversationEmptyState>
+    )
+  }
+  return (
+    <Conversation>
+      <ConversationContent>
+        <TranscriptSkeleton />
+      </ConversationContent>
+      <div className="relative mx-auto flex w-full max-w-[calc(714px+3rem)] flex-col px-6 pb-2">
+        <PromptInputSkeleton />
+        <ReplyStatsLine threadId={threadId} />
+      </div>
+    </Conversation>
   )
 }
 

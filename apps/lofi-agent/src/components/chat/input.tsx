@@ -4,7 +4,7 @@
  */
 import Bulb from "@gravity-ui/icons/Bulb"
 import Microphone from "@gravity-ui/icons/Microphone"
-import { ToggleButton, Tooltip } from "@heroui/react"
+import { Skeleton, ToggleButton, Tooltip } from "@heroui/react"
 import { useRef, useState } from "react"
 
 import {
@@ -98,6 +98,35 @@ export function ChatPromptInput() {
             isDisabled={!canSend}
             onSubmit={submit}
             onStop={stop}
+          />
+        </PromptInputTools>
+      </PromptInputToolbar>
+    </PromptInput>
+  )
+}
+
+/**
+ * The prompt input as it looks before the database opens (and on the
+ * server): the same box, read-only, with a skeleton for the picked model,
+ * which is a saved setting.
+ */
+export function PromptInputSkeleton() {
+  const noop = () => undefined
+  return (
+    <PromptInput label="Message input" name="message">
+      <PromptInputTextarea placeholder="Send a message..." value="" readOnly />
+      <PromptInputToolbar>
+        <PromptInputTools>
+          <div className="flex h-9 items-center px-3 md:h-8">
+            <Skeleton className="h-3.5 w-28 rounded-md" />
+          </div>
+        </PromptInputTools>
+        <PromptInputTools end>
+          <PromptInputSubmit
+            status="ready"
+            isDisabled
+            onSubmit={noop}
+            onStop={noop}
           />
         </PromptInputTools>
       </PromptInputToolbar>

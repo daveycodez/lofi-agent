@@ -18,7 +18,7 @@
  */
 import { toolDefinition } from "@tanstack/ai"
 import type { MCPClient, MCPClientOptions, McpServerTool } from "@tanstack/ai-mcp"
-import { useLiveQuery } from "@tanstack/react-db"
+import { useLiveQuery, useOptionalDbClient } from "@tanstack/react-db"
 import { useMemo } from "react"
 import { v7 as uuidv7 } from "uuid"
 
@@ -138,11 +138,13 @@ function sameUrl(url: string) {
 
 export const getMcpServers = () => allServers(mcpServers().toArray)
 
+/** The servers, built-in ones only until the database is open. */
 export function useMcpServers() {
+  const db = useOptionalDbClient()
   const { data } = useLiveQuery({
-    query: (q) => q.from({ server: mcpServersCollection })
+    query: (q) => (db ? q.from({ server: mcpServersCollection }) : null)
   })
-  return useMemo(() => allServers(data), [data])
+  return useMemo(() => allServers(data ?? []), [data])
 }
 
 function isBuiltIn(id: string) {

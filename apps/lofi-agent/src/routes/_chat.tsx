@@ -8,9 +8,23 @@ import Moon from "@gravity-ui/icons/Moon"
 import Plus from "@gravity-ui/icons/Plus"
 import Sun from "@gravity-ui/icons/Sun"
 import TrashBin from "@gravity-ui/icons/TrashBin"
-import { Button, Drawer, Dropdown, Header, Label, Tooltip } from "@heroui/react"
+import {
+  Button,
+  Drawer,
+  Dropdown,
+  Header,
+  Label,
+  Skeleton,
+  Tooltip
+} from "@heroui/react"
 import { DbProvider, eq, useLiveQuery } from "@tanstack/react-db"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import type { DbClient } from "@tanstack/react-db"
+import {
+  createFileRoute,
+  Outlet,
+  useNavigate,
+  useParams
+} from "@tanstack/react-router"
 import { useTheme } from "next-themes"
 import { useEffect, useState } from "react"
 import { v7 as uuidv7 } from "uuid"
@@ -20,27 +34,42 @@ import { ThreadListSidebar } from "#/components/chat/thread-list-sidebar"
 import { McpServersModal } from "#/components/mcp/mcp-servers-modal"
 import { SettingsModal } from "#/components/settings/settings-modal"
 import { copyText, formatChatLog } from "#/lib/chat-log"
-import { dbClient, openDb, threadsCollection } from "#/lib/db"
+import { openDb, threadsCollection, useDb } from "#/lib/db"
 import { setting } from "#/lib/settings"
 import { threadMessages } from "#/chat/persistence"
 import { archiveThread, deleteThread } from "#/lib/threads"
 
-type Search = { thread?: string }
+/**
+ * The chat app around both its pages, `/` (a new session) and
+ * `/sessions/$sessionId`: the sidebar, the header and the open session.
+ * The session is rendered here rather than by the pages, so sending the
+ * first message on `/` moves to the session's URL without remounting the
+ * chat that is replying.
+ *
+ * It renders on the server and is prerendered: the data is in IndexedDB,
+ * which opens in the browser after hydration. Until then there is no
+ * DbClient, live queries are off, and what they would show is a skeleton.
+ */
+export const Route = createFileRoute("/_chat")({
+  component: ChatApp
+})
 
-export const Route = createFileRoute("/")({
-  validateSearch: (search: Record<string, unknown>): Search => ({
-    thread: typeof search.thread === "string" ? search.thread : undefined
-  }),
-  // The app's data is in IndexedDB, which only the browser has: render this
-  // page in the browser, once its collections have loaded.
-  ssr: false,
-  loader: () => openDb().then(() => null),
-  component: () => (
-    <DbProvider client={dbClient()}>
+function ChatApp() {
+  const db = useDb()
+  useEffect(() => {
+    openDb().catch((error: unknown) =>
+      console.error("Couldn't open the database", error)
+    )
+  }, [])
+  return (
+    // react-db reads this through useOptionalDbClient, so no client is
+    // fine: every live query in the app is off until there is one.
+    <DbProvider client={db as DbClient}>
       <Assistant />
+      <Outlet />
     </DbProvider>
   )
-})
+}
 
 const sidebarOpenSetting = setting("sidebarOpen", true)
 
@@ -48,11 +77,20 @@ const isDesktop = () => window.matchMedia("(min-width: 768px)").matches
 
 /** App shell matching assistant-ui.com's demo: 240px sidebar, 48px header. */
 function Assistant() {
-  const { thread } = Route.useSearch()
-  const navigate = useNavigate({ from: "/" })
-  // A new thread gets its id up front; it joins the URL and sidebar on first send.
+  const { sessionId } = useParams({ strict: false })
+  const navigate = useNavigate()
+  const db = useDb()
+  // A new session gets its id up front; it joins the URL and sidebar on
+  // first send.
   const [draftId, setDraftId] = useState(() => uuidv7())
-  const threadId = thread ?? draftId
+  // Coming back to `/` from the session the draft became (with Back, say)
+  // starts a new draft rather than showing that session again.
+  const [prevSessionId, setPrevSessionId] = useState(sessionId)
+  if (sessionId !== prevSessionId) {
+    setPrevSessionId(sessionId)
+    if (!sessionId && draftId === prevSessionId) setDraftId(uuidv7())
+  }
+  const threadId = sessionId ?? draftId
 
   const sidebarOpen = sidebarOpenSetting.use()
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -60,15 +98,17 @@ function Assistant() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const { data: meta } = useLiveQuery({
     query: (q) =>
-      q
-        .from({ thread: threadsCollection })
-        .where(({ thread }) => eq(thread.id, threadId))
-        .findOne()
+      db
+        ? q
+            .from({ thread: threadsCollection })
+            .where(({ thread }) => eq(thread.id, threadId))
+            .findOne()
+        : null
   })
 
   const newThread = () => {
     setDraftId(uuidv7())
-    void navigate({ search: {} })
+    void navigate({ to: "/" })
   }
 
   const sidebarProps = {
@@ -137,7 +177,12 @@ function Assistant() {
             <Tooltip.Content placement="bottom">Toggle sessions</Tooltip.Content>
           </Tooltip>
           <h1 className="min-w-0 flex-1 truncate text-sm font-medium">
-            {meta?.title ?? "New session"}
+            {/* A session's title is in the database: a skeleton until it opens. */}
+            {sessionId && !db ? (
+              <Skeleton className="h-4 w-40 rounded-md" />
+            ) : (
+              (meta?.title ?? "New session")
+            )}
           </h1>
           <Tooltip delay={300}>
             <Button
@@ -160,8 +205,14 @@ function Assistant() {
           <Thread
             key={threadId}
             threadId={threadId}
+            isNew={!sessionId}
             onSend={() => {
-              if (!thread) void navigate({ search: { thread: threadId } })
+              if (!sessionId) {
+                void navigate({
+                  to: "/sessions/$sessionId",
+                  params: { sessionId: threadId }
+                })
+              }
             }}
           />
         </main>
