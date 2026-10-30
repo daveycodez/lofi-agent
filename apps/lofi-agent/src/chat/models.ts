@@ -30,6 +30,7 @@ export type ModelId =
   | "lfm2.5-web"
   | "lfm2.5-thinking-web"
   | "lfm2-tool"
+  | "lfm2.5-350m"
 
 /** Where the app reaches apfel on this Mac: its default address. */
 const APFEL_URL = APFEL_BASE_URL
@@ -80,7 +81,8 @@ export const MODELS = [
     "LFM2.5 1.2B Thinking Web",
     "daveycodez/LFM2.5-1.2B-Thinking-Web"
   ),
-  local("lfm2-tool", "LFM2 1.2B Tool", "onnx-community/LFM2-1.2B-Tool-ONNX")
+  local("lfm2-tool", "LFM2 1.2B Tool", "onnx-community/LFM2-1.2B-Tool-ONNX"),
+  local("lfm2.5-350m", "LFM2.5 350M", "LiquidAI/LFM2.5-350M-ONNX")
 ] satisfies Array<{
   id: ModelId
   name: string
