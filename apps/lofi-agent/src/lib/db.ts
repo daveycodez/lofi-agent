@@ -10,6 +10,7 @@
  * hydration, so live queries stay off and data shows as skeletons, then the
  * client once `openDb()` has loaded everything.
  */
+import type { ReasoningLevel } from "@tanstack/ai"
 import type { ChatPersistedState } from "@tanstack/ai-react"
 import {
   collectionOptions,
@@ -41,8 +42,8 @@ export type Settings = {
   /** A system prompt the user wrote, sent before the date. Empty means none. */
   systemPrompt: string
   model: ModelId
-  /** Whether models with a thinking switch reason before answering. */
-  think: boolean
+  /** How hard models think, clamped to each model's levels. */
+  effort: ReasoningLevel
   sidebarOpen: boolean
 }
 

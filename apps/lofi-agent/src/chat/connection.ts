@@ -17,8 +17,8 @@ import {
   startReply,
   statsFromUsage
 } from "./generation-stats"
-import { selectedModel } from "./model"
-import { canThink, isModelId, modelInfo } from "./models"
+import { isReasoningLevel, selectedModel } from "./model"
+import { effortFor, isModelId, modelInfo } from "./models"
 
 /**
  * Each model call's usage, as the adapter reports it when the call ends, to
@@ -57,9 +57,11 @@ function readModel(forwarded: Record<string, unknown> | undefined) {
   return isModelId(model) ? model : selectedModel()
 }
 
-/** Whether a session forwarded "think first" with this run. */
-const readThink = (forwarded: Record<string, unknown> | undefined) =>
-  forwarded?.think !== false
+/** The effort a session forwarded with this run, high if none. */
+function readEffort(forwarded: Record<string, unknown> | undefined) {
+  const effort = forwarded?.effort
+  return isReasoningLevel(effort) ? effort : "high"
+}
 
 /** The AG-UI request useChat makes for a run. */
 type RunAgentInput = Parameters<Parameters<typeof stream>[0]>[3]
@@ -76,6 +78,7 @@ async function* reply(
   const params = await chatParamsFromRequestBody(input)
   if (params.messages.at(-1)?.role === "user") startReply(params.threadId)
   const model = readModel(params.forwardedProps)
+  const reasoning = effortFor(model, readEffort(params.forwardedProps))
   // stop() aborts the run, here in the page.
   const abortController = new AbortController()
   signal?.addEventListener("abort", () => abortController.abort(), {
@@ -97,11 +100,10 @@ async function* reply(
       connection: "keep-alive",
       onDiscoveryError: reportMcpDiscoveryError
     },
-    // Think: the adapter reads any level but "off" as "think first". Models
-    // without a thinking switch get none.
-    ...(canThink(model) && {
-      reasoning: readThink(params.forwardedProps) ? "high" : "off"
-    }),
+    // The effort picked, clamped to the model's levels. Models that don't
+    // reason get none. The type is the levels these adapters declare;
+    // effortFor already picked one this model has.
+    ...(reasoning && { reasoning: reasoning as "off" | "high" }),
     middleware: [replyStats, compactToolResults],
     abortController
   })

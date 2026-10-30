@@ -1,5 +1,5 @@
-import { supportedReasoningLevels } from "@tanstack/ai"
-import type { ModelReasoning } from "@tanstack/ai"
+import { clampReasoningLevel, supportedReasoningLevels } from "@tanstack/ai"
+import type { ModelReasoning, ReasoningLevel } from "@tanstack/ai"
 import {
   modelStatus,
   TRANSFORMERS_JS_MODEL_REASONING,
@@ -93,18 +93,40 @@ export const PROVIDERS = [
 ] as const
 
 /**
- * Models whose reasoning can be switched on and off, so the composer shows
- * the Think toggle: "off" and a level above it. A model that always thinks
- * (LFM2.5 Thinking) or never does has nothing to switch.
+ * The effort levels to offer for a model, least to most thinking: the
+ * levels its reasoning data has (LFM3 and Gemma 4: off and high). None for
+ * a model with one level or none, which has nothing to pick: LFM2.5
+ * Thinking always thinks, the others never do.
  */
-export function canThink(id: ModelId) {
+export function effortLevels(id: ModelId): ReadonlyArray<ReasoningLevel> {
   const levels = supportedReasoningLevels(modelInfo(id).reasoning)
-  return levels.includes("off") && levels.length > 1
+  return levels.length > 1 ? levels : []
+}
+
+/**
+ * The level a model runs at for the effort picked: that level if the model
+ * has it, else the nearest it has (TanStack AI's clamp). Undefined for a
+ * model that doesn't reason.
+ */
+export const effortFor = (id: ModelId, effort: ReasoningLevel) => {
+  const { reasoning } = modelInfo(id)
+  return reasoning ? clampReasoningLevel(reasoning, effort) : undefined
+}
+
+/** Each level's name in the picker. */
+export const EFFORT_LABELS: Record<ReasoningLevel, string> = {
+  off: "Off",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max"
 }
 
 /**
  * The model to start with, and to fall back on: LFM3 Web runs anywhere,
- * iPhone Safari included, with thinking on (see ./model.ts).
+ * iPhone Safari included, thinking at high effort (see ./model.ts).
  */
 export const DEFAULT_MODEL: ModelId = "lfm3-web"
 

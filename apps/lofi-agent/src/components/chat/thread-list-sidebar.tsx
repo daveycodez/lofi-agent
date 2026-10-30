@@ -31,6 +31,7 @@ import { eq, useLiveQuery, useOptionalDbClient } from "@tanstack/react-db"
 import { Link } from "@tanstack/react-router"
 import { Fragment, useEffect, useRef, useState } from "react"
 
+import { useIsGenerating } from "#/chat/generating"
 import { threadsCollection } from "#/lib/db"
 import type { Thread } from "#/lib/db"
 import {
@@ -121,7 +122,7 @@ function ChatsMenu({ onActiveRemoved }: { onActiveRemoved: () => void }) {
           size="sm"
           variant="ghost"
           aria-label="Session options"
-          className="-me-2 ms-auto"
+          className="-me-2 ms-auto text-muted hover:text-foreground aria-expanded:text-foreground"
         >
           <Ellipsis />
         </Button>
@@ -321,6 +322,7 @@ function ThreadListItem({
   onNavigate?: () => void
   onActiveRemoved: () => void
 }) {
+  const isGenerating = useIsGenerating(thread.id)
   const [isRenaming, setIsRenaming] = useState(false)
   const [draft, setDraft] = useState(thread.title)
   const renameRef = useRef<HTMLInputElement>(null)
@@ -402,10 +404,14 @@ function ThreadListItem({
           variant: isActive ? "tertiary" : "ghost",
           fullWidth: true,
           className:
-            "justify-start pe-10 font-normal group-has-aria-expanded:bg-default"
+            // Hovering the row's ⋯ hovers the row too.
+            "justify-start pe-10 font-normal group-hover:bg-(--button-bg-hover) group-has-aria-expanded:bg-default"
         })}
       >
-        <span className="min-w-0 flex-1 truncate">
+        {/* Shimmers while the session writes a reply. */}
+        <span
+          className={`min-w-0 flex-1 truncate ${isGenerating ? "text-shimmer" : ""}`}
+        >
           {thread.title || "New session"}
         </span>
       </Link>
@@ -415,7 +421,7 @@ function ThreadListItem({
           size="sm"
           variant="ghost"
           aria-label="Session actions"
-          className="absolute end-1 top-1/2 z-10 -translate-y-1/2"
+          className="absolute end-1 top-1/2 z-10 -translate-y-1/2 text-muted hover:text-foreground aria-expanded:text-foreground"
         >
           <Ellipsis />
         </Button>

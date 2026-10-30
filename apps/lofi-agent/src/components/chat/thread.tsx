@@ -9,8 +9,9 @@ import { useChat } from "@tanstack/ai-react"
 import { useOptionalDbClient } from "@tanstack/react-db"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
-import { useSelectedModel, useThinking } from "#/chat/model"
+import { useEffort, useSelectedModel } from "#/chat/model"
 import type { ChatForwardedProps } from "#/chat/model"
+import { setGenerating } from "#/chat/generating"
 import { chatOptions } from "#/chat/options"
 import { hasPendingInterrupts } from "#/chat/persistence"
 import {
@@ -67,18 +68,24 @@ function ThreadGate(props: ThreadProps) {
 }
 
 function ThreadChat({ threadId, onSend }: ThreadProps) {
-  // Each run forwards the picked model and Think setting; the run picks its
+  // Each run forwards the picked model and effort; the run picks its
   // adapter from them (src/chat/connection.ts).
   const model = useSelectedModel()
-  const think = useThinking()
+  const effort = useEffort()
   const forwardedProps: ChatForwardedProps = useMemo(
-    () => ({ model, think }),
-    [model, think]
+    () => ({ model, effort }),
+    [model, effort]
   )
   // MCP tools that ask first: the chat client needs their definitions to
   // accept an approval (src/lib/mcp.ts).
   const tools = useMcpApprovalTools()
   const chat = useChat({ ...chatOptions, threadId, forwardedProps, tools })
+
+  // The sidebar shimmers the title of a session that is replying.
+  useEffect(() => {
+    setGenerating(threadId, chat.isLoading)
+    return () => setGenerating(threadId, false)
+  }, [threadId, chat.isLoading])
 
   // Actions read the latest chat through refs, so they stay the same
   // functions and widgets that use them don't re-render on every chunk.

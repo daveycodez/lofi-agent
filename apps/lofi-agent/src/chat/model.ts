@@ -1,9 +1,12 @@
 /**
- * The model the user picked, and whether it thinks first. Each session sends
+ * The model the user picked, and how hard it thinks. Each session sends
  * both with every run in `forwardedProps` (see the Thread component), and
- * the run picks its adapter from them (./connection.ts). Both are saved in
- * the settings collection.
+ * the run picks its adapter and reasoning level from them
+ * (./connection.ts). Both are saved in the settings collection.
  */
+import { REASONING_LEVELS } from "@tanstack/ai"
+import type { ReasoningLevel } from "@tanstack/ai"
+
 import { setting } from "#/lib/settings"
 import {
   DEFAULT_MODEL,
@@ -16,10 +19,11 @@ import type { ModelId } from "./models"
 const modelSetting = setting("model", DEFAULT_MODEL)
 
 /**
- * Whether models with a thinking switch reason before answering. On by
- * default: LFM3 answers much better with it.
+ * How hard models think, one level for every model: each run clamps it to
+ * the model's own levels. High by default: LFM3 answers much better
+ * thinking.
  */
-const thinkingSetting = setting("think", true)
+const effortSetting = setting("effort", "high")
 
 /** The picked model, if this device offers it, else the default. */
 export const selectedModel = () =>
@@ -30,9 +34,13 @@ export const useSelectedModel = () =>
 
 export const setSelectedModel = (id: ModelId) => modelSetting.set(id)
 
-export const useThinking = thinkingSetting.use
+export const useEffort = effortSetting.use
 
-export const setThinking = (on: boolean) => thinkingSetting.set(on)
+export const setEffort = (level: ReasoningLevel) => effortSetting.set(level)
+
+/** Whether `value` is a reasoning level, as a run reads it. */
+export const isReasoningLevel = (value: unknown): value is ReasoningLevel =>
+  REASONING_LEVELS.includes(value as ReasoningLevel)
 
 /** What each run of a session forwards, for the run to read. */
-export type ChatForwardedProps = { model: ModelId; think: boolean }
+export type ChatForwardedProps = { model: ModelId; effort: ReasoningLevel }

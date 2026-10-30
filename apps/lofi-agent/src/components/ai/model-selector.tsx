@@ -1,8 +1,19 @@
 import ChevronDown from "@gravity-ui/icons/ChevronDown"
-import { Button, Header, ListBox, Popover, Spinner } from "@heroui/react"
+import {
+  Button,
+  Header,
+  ListBox,
+  Popover,
+  Spinner,
+  ToggleButton,
+  ToggleButtonGroup
+} from "@heroui/react"
 import { useState } from "react"
 
 export type ModelOption = { id: string; name: string; icon: string }
+
+/** A thinking effort level the picked model offers. */
+export type EffortOption = { id: string; name: string }
 
 export type ModelSection = {
   id: string
@@ -24,17 +35,28 @@ function ModelLogo({ src }: { src: string }) {
 
 /**
  * A model picker for the prompt input's toolbar: a ghost Button opening a
- * Popover with a single-selection ListBox, one section per provider.
+ * Popover with a single-selection ListBox, one section per provider. For a
+ * model with thinking effort levels, a "Thinking" row under the list picks
+ * one, and the button shows it after the model's name (as assistant-ui's
+ * model selector does).
  */
 export function ModelSelector({
   sections,
   value,
   onChange,
+  efforts = [],
+  effort,
+  onEffortChange,
   status
 }: {
   sections: Array<ModelSection>
   value: string
   onChange: (id: string) => void
+  /** The picked model's effort levels, least to most; none hides the row. */
+  efforts?: Array<EffortOption>
+  /** The level the picked model runs at. */
+  effort?: string
+  onEffortChange?: (id: string) => void
   /** A short note beside the button, such as a check in progress. */
   status?: { text: string; isError?: boolean } | null
 }) {
@@ -42,6 +64,7 @@ export function ModelSelector({
   const current = sections
     .flatMap((section) => section.models)
     .find((model) => model.id === value)
+  const effortName = efforts.find((e) => e.id === effort)?.name
 
   return (
     // min-w-0: a long model name truncates instead of pushing the toolbar's
@@ -51,18 +74,27 @@ export function ModelSelector({
         <Button
           size="sm"
           variant="ghost"
-          aria-label={`Model: ${current?.name ?? value}`}
+          aria-label={`Model: ${current?.name ?? value}${effortName ? `, thinking ${effortName}` : ""}`}
           className="min-w-0 text-muted"
         >
           {current && <ModelLogo src={current.icon} />}
           <span className="min-w-0 truncate">{current?.name ?? value}</span>
+          {effortName && (
+            <span className="shrink-0 text-muted/70">{effortName}</span>
+          )}
           {/* Buttons pull icons in by 2px; keep the caret 8px from the label. */}
           <ChevronDown className="ms-0 shrink-0" />
         </Button>
         <Popover.Content placement="bottom start">
-          <Popover.Dialog aria-label="Model" className="p-1">
+          {/* Within the room the popover gets: the list scrolls, the
+              Thinking row stays in view under it. */}
+          <Popover.Dialog
+            aria-label="Model"
+            className="flex max-h-[inherit] flex-col p-1"
+          >
             <ListBox
               aria-label="Model"
+              className="min-h-0 overflow-y-auto"
               selectionMode="single"
               disallowEmptySelection
               selectedKeys={new Set([value])}
@@ -92,6 +124,35 @@ export function ModelSelector({
                 </ListBox.Section>
               ))}
             </ListBox>
+            {efforts.length > 0 && (
+              <div className="mt-1 flex shrink-0 items-center justify-between gap-3 border-t border-separator px-2 pt-2 pb-1">
+                <span className="text-xs text-muted">Thinking</span>
+                <ToggleButtonGroup
+                  aria-label="Thinking effort"
+                  size="sm"
+                  isDetached
+                  selectionMode="single"
+                  disallowEmptySelection
+                  selectedKeys={effort ? [effort] : []}
+                  onSelectionChange={(keys) => {
+                    const [key] = [...keys]
+                    if (key !== undefined) onEffortChange?.(String(key))
+                  }}
+                  className="gap-0.5"
+                >
+                  {efforts.map((option) => (
+                    <ToggleButton
+                      key={option.id}
+                      id={option.id}
+                      variant="ghost"
+                      className="h-6 min-w-0 rounded-md px-2 text-xs font-normal text-muted data-[selected=true]:bg-default data-[selected=true]:font-medium data-[selected=true]:text-foreground"
+                    >
+                      {option.name}
+                    </ToggleButton>
+                  ))}
+                </ToggleButtonGroup>
+              </div>
+            )}
           </Popover.Dialog>
         </Popover.Content>
       </Popover>

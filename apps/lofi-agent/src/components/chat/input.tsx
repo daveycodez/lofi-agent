@@ -1,22 +1,24 @@
 /**
- * The `input` widget: the prompt input, with the model picker, the Think
- * toggle and voice input in its toolbar.
+ * The `input` widget: the prompt input, with the model picker (and its
+ * thinking effort) and voice input in its toolbar.
  */
-import Bulb from "@gravity-ui/icons/Bulb"
 import Microphone from "@gravity-ui/icons/Microphone"
-import { Skeleton, ToggleButton, Tooltip } from "@heroui/react"
+import { Skeleton } from "@heroui/react"
+import type { ReasoningLevel } from "@tanstack/ai"
 import { useRef, useState } from "react"
 
 import {
+  setEffort,
   setSelectedModel,
-  setThinking,
-  useSelectedModel,
-  useThinking
+  useEffort,
+  useSelectedModel
 } from "#/chat/model"
 import {
   afmStatus,
-  canThink,
   checkAfm,
+  EFFORT_LABELS,
+  effortFor,
+  effortLevels,
   PROVIDERS,
   useModels
 } from "#/chat/models"
@@ -39,7 +41,6 @@ export function ChatPromptInput() {
   const { value, setValue } = useComposer()
   const { send } = useThread()
   const { isLoading, stop } = useChatContext()
-  const model = useSelectedModel()
   // A message sent while a reply runs waits in the queue.
   const canSend = !!value.trim()
 
@@ -77,7 +78,6 @@ export function ChatPromptInput() {
       <PromptInputToolbar>
         <PromptInputTools>
           <ChatModelSelector />
-          {canThink(model) && <ThinkToggle />}
         </PromptInputTools>
         <PromptInputTools end>
           {dictation.isSupported && (
@@ -141,8 +141,15 @@ export function PromptInputSkeleton() {
  */
 function ChatModelSelector() {
   const model = useSelectedModel()
+  const effort = useEffort()
   const models = useModels()
   const afm = afmStatus.use()
+  // The levels the picked model has, and the one it runs at.
+  const efforts = effortLevels(model).map((id) => ({
+    id,
+    name: EFFORT_LABELS[id]
+  }))
+  const level = effortFor(model, effort)
   // Models by provider, each a section; a provider this device offers no
   // model of is left out.
   const sections = PROVIDERS.map((provider) => ({
@@ -187,6 +194,9 @@ function ChatModelSelector() {
         sections={sections}
         value={pending ?? model}
         onChange={(id) => void select(id as ModelId)}
+        efforts={efforts}
+        effort={level}
+        onEffortChange={(id) => setEffort(id as ReasoningLevel)}
         status={
           afm === "checking"
             ? { text: "Loading model" }
@@ -196,30 +206,5 @@ function ChatModelSelector() {
         }
       />
     </>
-  )
-}
-
-/** Turns on reasoning before answering, for models that can think. */
-function ThinkToggle() {
-  const isThinking = useThinking()
-  return (
-    <Tooltip delay={300}>
-      <ToggleButton
-        isIconOnly
-        size="sm"
-        variant="ghost"
-        isSelected={isThinking}
-        onChange={setThinking}
-        aria-label="Think before answering"
-        className={isThinking ? "shrink-0" : "shrink-0 text-muted"}
-      >
-        <Bulb />
-      </ToggleButton>
-      <Tooltip.Content>
-        {isThinking
-          ? "Thinking on: slower, more careful"
-          : "Think before answering"}
-      </Tooltip.Content>
-    </Tooltip>
   )
 }
