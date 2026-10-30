@@ -1,109 +1,108 @@
-# New Nx Repository
+# lofi-agent
 
-<a alt="Nx logo" href="https://nx.dev" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/nrwl/nx/master/images/nx-logo.png" width="45"></a>
+A chat app that runs small language models entirely in your browser. Models are downloaded from Hugging Face once, stored on your device, and run on the GPU through WebGPU in a Web Worker, so your prompts and replies are never sent to a server. It is built to work in Safari on iPhone, not just on desktop, and can also talk to Apple's on-device Foundation Model on a Mac. The models can call tools: a built-in web search and any MCP servers you add.
 
-✨ Your new, shiny [Nx workspace](https://nx.dev) is ready ✨.
+## Why it's different
 
-[Learn more about this workspace setup and its capabilities](https://nx.dev/docs/technologies/typescript/introduction?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects) or run `npx nx graph` to visually explore what was created. Now, let's get you up to speed!
+- **Private.** In-browser models run on your device. The app has no backend and no accounts: the Cloudflare Worker only serves prerendered pages. Chats, settings and MCP server details stay in your browser's storage.
+- **Runs on iPhone.** The default model is a custom build made for iPhone Safari, and the runtime is tuned to stay inside its memory and GPU limits. In-browser models hold up to 8,192 tokens per chat, prompt and reply together.
+- **Download once.** Model weights (about 0.8 to 1.1 GB per model) are saved to the browser's Origin Private File System and loaded from disk on later visits.
+- **Reuses work between runs.** The model keeps what it has already read, so a follow-up message, the next step after a tool call, or a new chat with the same system prompt only reads what's new.
 
-🚀 If you haven't connected to Nx Cloud yet, [complete your setup here](https://cloud.nx.app/get-started). Get faster builds with remote caching, distributed task execution, and self-healing CI. [See how your workspace can benefit](#nx-cloud).
+What does leave your device: web search queries (if web search is on), calls to MCP servers you add, and the downloads of model files (Hugging Face) and the runtime (jsDelivr).
 
-## Generate a library
+## Models
 
-```sh
-npx nx g @nx/js:lib packages/pkg1 --publishable --importPath=@my-org/pkg1
-```
+| Model | Notes |
+| --- | --- |
+| **LFM3 1.7B Web** (default) | Liquid AI's LFM3, in a custom ONNX build for iPhone Safari: 4-bit weights (about 900 MB), a smaller vocabulary, and flash attention in its sliding-window layers to keep memory down on long prompts. |
+| LFM3 1.7B | The `onnx-community` ONNX export of LFM3. |
+| LFM2.5 1.2B | Liquid AI's ONNX builds. With Think on, it runs the separate LFM2.5 1.2B Thinking model. |
+| LFM2.5 1.2B Web | The same weights, re-exported so reading a prompt computes output for the last token only. Long prompts (for example, with web search results) crashed iPhone Safari without this. |
+| Apple Foundation Model | Apple's on-device model, served on your Mac by [apfel](https://apfel.franzai.com). Shown on Apple devices only; needs a Mac (see Requirements). |
 
-## Run tasks
+The "Web" builds are published under [`daveycodez` on Hugging Face](https://huggingface.co/daveycodez) and pinned to a commit. Models that can reason before answering have a Think toggle in the composer, on by default.
 
-To build the library use:
+## Features
 
-```sh
-npx nx run pkg1:build
-```
+- Streaming replies with collapsible thinking, Markdown, math (KaTeX) and syntax-highlighted code
+- Web search tool, on by default: tries Exa, then Parallel, then Firecrawl through their public MCP endpoints. No API keys needed. Results show as numbered source chips the reply can cite.
+- MCP servers: add any Streamable HTTP server by URL, with an optional bearer token. The browser connects directly, so the server must allow this site (CORS).
+- Chats saved in the browser (messages in IndexedDB, the chat list in localStorage)
+- Sidebar with search, pinned chats and date groups; rename, pin, archive and delete chats, or delete them all
+- Edit a sent message and resend it, even while the model is still replying
+- Per reply: copy, regenerate, read aloud, export as Markdown, delete
+- Copy a whole chat as plain text, including thinking, tool calls and their results
+- A stats line under the composer for the latest reply: tokens in, cached, out and total, tokens per second, and time to first token
+- Voice input through the browser's speech recognition, where available
+- Settings: turn web search on or off, and write a system prompt sent with every chat (after the current date)
+- Light, dark and system themes
 
-To run any task with Nx use:
+## Requirements
 
-```sh
-npx nx run <project-name>:<target>
-```
+- A browser with WebGPU. Where the browser has JavaScript Promise Integration (Safari 27 and recent Chrome), a smaller, faster ONNX Runtime build is used.
+- Around 1 GB of free storage per model.
+- WebGPU needs a secure context: `localhost` during development, HTTPS otherwise.
+- For the Apple Foundation Model: a Mac with Apple silicon on macOS 26 or later, with Apple Intelligence turned on, and apfel running:
 
-These targets are either [inferred automatically](https://nx.dev/docs/concepts/inferred-tasks?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects) or defined in the `project.json` or `package.json` files.
+  ```sh
+  brew install apfel
+  apfel --serve --cors
+  ```
 
-[More about running tasks in the docs &raquo;](https://nx.dev/docs/features/run-tasks?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
+  On a site other than `localhost`, add `--allowed-origins <site origin>`. The app shows these steps when it can't reach the model. It isn't available on iPhone or iPad.
 
-## Versioning and releasing
+## Getting started
 
-To version and release the library use
-
-```
-npx nx release
-```
-
-Pass `--dry-run` to see what would happen without actually releasing the library.
-
-[Learn more about Nx release &raquo;](https://nx.dev/docs/features/manage-releases?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-
-## Keep TypeScript project references up to date
-
-Nx automatically updates TypeScript [project references](https://www.typescriptlang.org/docs/handbook/project-references.html) in `tsconfig.json` files to ensure they remain accurate based on your project dependencies (`import` or `require` statements). This sync is automatically done when running tasks such as `build` or `typecheck`, which require updated references to function correctly.
-
-To manually trigger the process to sync the project graph dependencies information to the TypeScript project references, run the following command:
-
-```sh
-npx nx sync
-```
-
-You can enforce that the TypeScript project references are always in the correct state when running in CI by adding a step to your CI job configuration that runs the following command:
-
-```sh
-npx nx sync:check
-```
-
-[Learn more about nx sync](https://nx.dev/reference/nx-commands#sync)
-
-## Nx Cloud
-
-Nx Cloud ensures a [fast and scalable CI](https://nx.dev/nx-cloud?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects) pipeline. It includes features such as:
-
-- [Remote caching](https://nx.dev/docs/features/ci-features/remote-cache?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-- [Task distribution across multiple machines](https://nx.dev/docs/features/ci-features/distribute-task-execution?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-- [Automated e2e test splitting](https://nx.dev/docs/features/ci-features/split-e2e-tasks?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-- [Task flakiness detection and rerunning](https://nx.dev/docs/features/ci-features/flaky-tasks?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
-
-### Set up CI (non-Github Actions CI)
-
-**Note:** This is only required if your CI provider is not GitHub Actions.
-
-Use the following command to configure a CI workflow for your workspace:
+You need Node.js and pnpm (the repo pins `pnpm@12.6.0` in `packageManager`).
 
 ```sh
-npx nx g ci-workflow
+pnpm install
+pnpm nx dev web
 ```
 
-[Learn more about Nx on CI](https://nx.dev/docs/features/ci-features?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
+The app runs at http://localhost:3000. The dev server also listens on your local network and accepts ngrok tunnel hosts, which give it the HTTPS that WebGPU needs when you open it on a phone.
 
-## Install Nx Console
+Other tasks:
 
-Nx Console is an editor extension that enriches your developer experience. It lets you run tasks, generate code, and improves code autocompletion in your IDE. It is available for VSCode and IntelliJ.
+```sh
+pnpm nx build web       # production build, pages prerendered
+pnpm nx preview web     # serve the build
+pnpm nx typecheck web
+pnpm nx lint web
+pnpm nx deploy web      # build, then wrangler deploy to Cloudflare Workers
+```
 
-[Install Nx Console &raquo;](https://nx.dev/docs/getting-started/editor-setup?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
+Deploying needs a Cloudflare account (`wrangler login`). No environment variables or API keys are required.
 
-## 🔗 Learn More
+## Project structure
 
-- [Nx Documentation](https://nx.dev/docs)
-- [Crafting Your Workspace Tutorial](https://nx.dev/docs/getting-started/tutorials/crafting-your-workspace)
-- [Module Boundaries](https://nx.dev/docs/features/enforce-module-boundaries)
-- [Releasing Packages](https://nx.dev/docs/features/manage-releases)
-- [Nx Plugins](https://nx.dev/docs/concepts/nx-plugins)
-- [Nx Cloud](https://nx.dev/nx-cloud)
+```
+apps/web/                  the app (Nx project "web")
+  src/routes/              pages (TanStack Router file routes)
+  src/components/chat/     thread, composer, sidebar, model picker, Apple setup
+  src/components/mcp/      MCP servers dialog
+  src/components/settings/ settings dialog
+  src/lib/llm/             models, the WebGPU worker, Apple model connection,
+                           tool-call parsing, reply stats
+  src/lib/                 web search, MCP, chat storage, settings, dictation,
+                           Markdown helpers
+  wrangler.jsonc           Cloudflare Worker config
+```
 
-## 💬 Community
+## Tech stack
 
-Join the Nx community:
+- [TanStack Start](https://tanstack.com/start) and TanStack Router with React 19, on Vite
+- [TanStack AI](https://tanstack.com/ai) for chat state, tool calls, IndexedDB persistence and the MCP client
+- [Transformers.js](https://huggingface.co/docs/transformers.js) 4.3.2 and onnxruntime-web on WebGPU, loaded from jsDelivr at runtime
+- [HeroUI](https://heroui.com) v3, Tailwind CSS v4 and Gravity UI icons
+- TanStack Markdown, tanstack-markdown-math (KaTeX) and TanStack Highlight
+- Cloudflare Workers for hosting
+- Nx and pnpm workspace
 
-- [Discord](https://go.nx.dev/community)
-- [X (Twitter)](https://twitter.com/nxdevtools)
-- [LinkedIn](https://www.linkedin.com/company/nrwl)
-- [YouTube](https://www.youtube.com/@nxdevtools)
-- [Blog](https://nx.dev/blog)
+## Credits
+
+- The chat and sidebar layout follows [assistant-ui](https://github.com/assistant-ui/assistant-ui) (MIT).
+- Provider icons are from [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT).
+- LFM3 and LFM2.5 are models by [Liquid AI](https://huggingface.co/LiquidAI).
+- Apple's model is reached through [apfel](https://apfel.franzai.com).
