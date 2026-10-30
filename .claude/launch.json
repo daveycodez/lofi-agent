@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "web",
+      "name": "lofi-agent",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["nx", "dev", "web"],
+      "runtimeArgs": ["nx", "dev", "lofi-agent"],
       "port": 3000
     }
   ]

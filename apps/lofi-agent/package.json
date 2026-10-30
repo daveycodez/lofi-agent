@@ -1,5 +1,5 @@
 {
-  "name": "@lofi-agent/web",
+  "name": "@tanstack-ai-browser/lofi-agent",
   "private": true,
   "type": "module",
   "imports": {
@@ -49,7 +49,7 @@
     "wrangler": "^4.70.0"
   },
   "nx": {
-    "name": "web",
+    "name": "lofi-agent",
     "tags": [
       "scope:web",
       "type:app"

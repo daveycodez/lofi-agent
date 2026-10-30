@@ -224,7 +224,7 @@ importers:
         specifier: ^8.72.1
         version: 8.72.1(eslint@9.39.5(jiti@2.7.0)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3)
 
-  apps/web:
+  apps/lofi-agent:
     dependencies:
       '@gravity-ui/icons':
         specifier: 2.23.0
@@ -323,6 +323,8 @@ importers:
       wrangler:
         specifier: ^4.70.0
         version: 4.154.0(@types/node@22.20.5)
+
+  packages/tanstack-ai-browser: {}
 
 packages:
 
