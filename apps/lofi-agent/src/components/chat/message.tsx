@@ -19,7 +19,7 @@ import type { MessageProps } from "@tanstack/ai-react/ui"
 import { useContext, useEffect, useMemo, useState } from "react"
 
 import { useSelectedModel } from "#/chat/model"
-import { useModelStatus } from "#/chat/models"
+import { modelInfo, useModelStatus } from "#/chat/models"
 import type { chatOptions } from "#/chat/options"
 import { Action, Actions } from "#/components/ai/actions"
 import { Message, MessageContent } from "#/components/ai/message"
@@ -248,32 +248,40 @@ export function PendingReply() {
   )
 }
 
+/** A size in bytes, as a browser's downloads list writes it: "412 MB", "1.10 GB". */
+const formatBytes = (bytes: number) =>
+  bytes >= 1e9
+    ? `${(bytes / 1e9).toFixed(2)} GB`
+    : `${Math.round(bytes / 1e6)} MB`
+
 /**
  * A spinner until the reply starts. A model downloads when the first
- * message is sent to it; its progress shows here until it's done.
+ * message is sent to it: meanwhile, which model and how much of it is
+ * here, shimmering like "Thinking…".
  */
 function Working() {
-  const status = useModelStatus(useSelectedModel())
+  const model = useSelectedModel()
+  const status = useModelStatus(model)
   const downloading =
     status.state === "loading" && !status.cached && status.progress < 1
-      ? status.progress
+      ? status
       : null
-  // Not every model thinks: a spinner until the reply starts, and
-  // "Thinking…" only on the thinking itself.
-  if (downloading === null) {
-    return (
-      <Spinner
-        size="sm"
-        color="current"
-        aria-label="Waiting for the reply"
-        className="text-muted"
-      />
-    )
-  }
+  // A row as tall as the Thoughts toggle, centered as its label is, so
+  // nothing moves when the reply takes its place.
   return (
-    <div className="flex items-center gap-2 text-sm text-muted">
-      <Spinner size="sm" color="current" />
-      {`Downloading ${Math.round(downloading * 100)}%`}
+    <div className="flex min-h-8 w-fit items-center py-1 text-sm text-muted">
+      {downloading ? (
+        <span className="text-shimmer">
+          {`Downloading ${modelInfo(model).name}… `}
+          {downloading.totalBytes
+            ? `${formatBytes(downloading.loadedBytes ?? 0)} of ${formatBytes(downloading.totalBytes)}`
+            : `${Math.round(downloading.progress * 100)}%`}
+        </span>
+      ) : (
+        // Not every model thinks: a spinner until the reply starts, and
+        // "Thinking…" only on the thinking itself.
+        <Spinner size="sm" color="current" aria-label="Waiting for the reply" />
+      )}
     </div>
   )
 }

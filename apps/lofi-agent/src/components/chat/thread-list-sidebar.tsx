@@ -85,7 +85,7 @@ export function ThreadListSidebar(props: SidebarProps) {
         </Button>
         {/* The source on GitHub: a link styled as the ghost buttons above. */}
         <a
-          href="https://github.com/daveycodez/lofi-agent"
+          href="https://github.com/daveycodez/tanstack-ai-browser"
           target="_blank"
           rel="noopener noreferrer"
           className={buttonVariants({

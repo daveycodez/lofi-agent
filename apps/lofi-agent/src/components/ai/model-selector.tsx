@@ -79,7 +79,7 @@ export function ModelSelector({
           aria-label={`Model: ${current?.name ?? value}${effortLabel ? ` (${effortLabel})` : ""}`}
           // The toolbar it sits in is muted: the model's name isn't, only
           // its effort.
-          className="min-w-0 text-foreground"
+          className="min-w-0 font-normal text-foreground"
         >
           {current && <ModelLogo src={current.icon} />}
           <span className="min-w-0 truncate">{current?.name ?? value}</span>
