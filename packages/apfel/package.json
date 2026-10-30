@@ -1,6 +1,6 @@
 {
   "name": "@tanstack-ai-browser/apfel",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "TanStack AI adapter for Apple's on-device Foundation Model, served by apfel",
   "license": "MIT",
   "author": "daveycodez",
