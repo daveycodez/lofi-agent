@@ -36,12 +36,13 @@ export function ConversationContent({
   return (
     <ScrollShadow
       ref={scrollRef}
-      className="size-full px-6 pt-6"
+      className="size-full"
       style={{ scrollbarGutter: "stable both-edges" }}
     >
+      {/* HeroUI Pro's ChatConversation.Content padding. */}
       <div
         ref={contentRef}
-        className={`mx-auto flex w-full max-w-[714px] flex-col px-4 ${className}`}
+        className={`mx-auto flex w-full max-w-[714px] flex-col px-4 pt-8 pb-8 ${className}`}
       >
         {children}
       </div>

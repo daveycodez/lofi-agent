@@ -45,7 +45,7 @@ export function ChatLayout({
           <Transcript Messages={Messages} Interrupts={Interrupts} />
         )}
       </ConversationContent>
-      <div className="relative mx-auto flex w-full max-w-[calc(714px+3rem)] flex-col px-6 pb-2">
+      <div className="relative mx-auto flex w-full max-w-[calc(714px+2rem)] flex-col px-4 pb-2">
         <ConversationScrollButton isLoading={isLoading} />
         {queue.length > 0 && (
           <div className="mb-2 flex flex-col gap-1">
@@ -84,7 +84,7 @@ function Transcript({
       {/* Opening something (thoughts, a tool call, sources) keeps
           following the bottom while it's followed, and moves nothing once
           scrolled up. */}
-      <div className="mb-6 flex flex-col gap-y-8">
+      <div className="flex flex-col gap-y-8">
         <Messages />
         {/* The reply before its first token, or a run that failed. */}
         {last?.role === "user" && (isLoading || error) && <PendingReply />}
@@ -130,7 +130,7 @@ export function ThreadSkeleton({
       <ConversationContent>
         <TranscriptSkeleton />
       </ConversationContent>
-      <div className="relative mx-auto flex w-full max-w-[calc(714px+3rem)] flex-col px-6 pb-2">
+      <div className="relative mx-auto flex w-full max-w-[calc(714px+2rem)] flex-col px-4 pb-2">
         <PromptInputSkeleton />
         <ReplyStatsLine threadId={threadId} />
       </div>

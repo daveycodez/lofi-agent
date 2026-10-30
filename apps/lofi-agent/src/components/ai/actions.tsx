@@ -4,7 +4,7 @@ import type { ComponentProps, ReactNode } from "react"
 /**
  * A row of actions under a message, faded to half until the message is
  * hovered, one of them has focus or its menu is open, as in HeroUI Pro's
- * ChatMessage.
+ * ChatMessage. 4px closer to the message than its parts are to each other.
  */
 export function Actions({
   className = "",
@@ -12,7 +12,7 @@ export function Actions({
 }: ComponentProps<"div">) {
   return (
     <div
-      className={`flex items-center gap-1 opacity-50 transition-opacity group-hover/message:opacity-100 focus-within:opacity-100 has-aria-expanded:opacity-100 ${className}`}
+      className={`-mt-1 flex items-center gap-1 opacity-50 transition-opacity group-hover/message:opacity-100 focus-within:opacity-100 has-aria-expanded:opacity-100 ${className}`}
       {...props}
     />
   )
