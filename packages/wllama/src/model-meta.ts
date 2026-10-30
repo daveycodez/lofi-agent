@@ -6,7 +6,6 @@
 import type { ModelReasoning } from "@tanstack/ai"
 import type { ModelReasoningCapability } from "@tanstack/ai/adapter-internals"
 
-import type { ToolFormat } from "./tool-calls.js"
 
 /** Sampling settings from a model's card, as llama.cpp takes them. */
 export type Sampling = {
@@ -38,8 +37,6 @@ export type WllamaModelMeta = {
   context: number
   /** Reasoning levels for `chat({ reasoning })`, read from the chat template. */
   reasoning?: ModelReasoning
-  /** How the model writes tool calls. */
-  toolFormat: ToolFormat
   /** Sampling from the model card, used unless `modelOptions` overrides it. */
   sampling: Sampling
 }
@@ -97,7 +94,6 @@ const LFM2_5_1_2B = {
   supports: TOOLS,
   size: "1.2b",
   context: CONTEXT,
-  toolFormat: "lfm2",
   sampling: LFM2_5_SAMPLING
 } as const satisfies WllamaModelMeta
 
@@ -111,7 +107,6 @@ const LFM2_5_1_2B_THINKING = {
   size: "1.2b",
   context: CONTEXT,
   reasoning: ALWAYS_THINKS,
-  toolFormat: "lfm2",
   sampling: LFM2_5_THINKING_SAMPLING
 } as const satisfies WllamaModelMeta
 
@@ -127,7 +122,6 @@ const LFM2_5_350M = {
   supports: TOOLS,
   size: "350m",
   context: CONTEXT,
-  toolFormat: "lfm2",
   sampling: LFM2_5_SAMPLING
 } as const satisfies WllamaModelMeta
 

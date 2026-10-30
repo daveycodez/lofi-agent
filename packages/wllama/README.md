@@ -19,7 +19,7 @@ const stream = chat({
 
 ## Models
 
-`WLLAMA_TEXT_MODELS` lists the models this package knows, and `WLLAMA_MODEL_META` has each one's details: Hugging Face repository, pinned revision, GGUF file and its size, context, capabilities, tool format, reasoning levels and the sampling from its card. They're Liquid AI's official GGUF builds.
+`WLLAMA_TEXT_MODELS` lists the models this package knows, and `WLLAMA_MODEL_META` has each one's details: Hugging Face repository, pinned revision, GGUF file and its size, context, capabilities, reasoning levels and the sampling from its card. They're Liquid AI's official GGUF builds.
 
 | Model                                | Reasoning         | File            |
 | ------------------------------------ | ----------------- | --------------- |
@@ -29,24 +29,25 @@ const stream = chat({
 
 Every model is Q4_K_M: in llama.cpp's WebAssembly build it reads prompts and writes tokens about three times as fast as Q4_0, and faster than Q5_K_M, Q6_K or Q8_0. On an M3 Ultra (24 threads), LFM2.5 1.2B reads 231 prompt tokens/s and writes 112 tokens/s; on one thread, 10 and 7.6. LFM3 isn't listed yet: the llama.cpp in wllama 3.8.1 predates its architecture.
 
-**Tools** work as with any adapter: pass them to `chat({ tools })`, MCP tools included. LFM2.5 writes Pythonic calls between `<|tool_call_start|>` and `<|tool_call_end|>`; the adapter parses them into TanStack AI tool calls, and a reply ends at its calls.
+**Tools** work as with any adapter: pass them to `chat({ tools })`, MCP tools included. llama.cpp writes them into the prompt with the model's chat template and parses the model's calls back.
 
-**Reasoning:** LFM2.5 1.2B Thinking always thinks, and its thinking streams as reasoning events. `chat({ reasoning })` is a type error for the models that don't reason.
+**Reasoning:** LFM2.5 1.2B Thinking always thinks, and its thinking (llama.cpp's `reasoning_content`) streams as reasoning events. `chat({ reasoning })` is a type error for the models that don't reason.
 
-**Sampling** goes in `modelOptions` per call (`temperature`, `top_k`, `top_p`, `repeat_penalty`, `max_new_tokens`), over the model card's.
+**Sampling** goes in `modelOptions` per call (`temperature`, `top_k`, `top_p`, `repeat_penalty`, `max_new_tokens`), over the model card's. Without `max_new_tokens`, a reply may run to the context limit, as llama.cpp's default.
 
-**Usage** is in each call's `RUN_FINISHED` event, as with any TanStack AI adapter: `promptTokens`, `completionTokens`, `totalTokens`, and `promptTokensDetails.cachedTokens` for the start of the prompt the model reused from the previous call. Timings are in `usage.providerUsageDetails` (`WllamaProviderUsageDetails`: `firstTokenMs`, `promptMs`, `decodeMs`, `decodeTokens`).
+**Usage** is in each call's `RUN_FINISHED` event, as with any TanStack AI adapter: `promptTokens`, `completionTokens`, `totalTokens`, and `promptTokensDetails.cachedTokens` for the start of the prompt llama.cpp reused from an earlier call. Timings are in `usage.providerUsageDetails` (`WllamaProviderUsageDetails`: `firstTokenMs`, `promptMs`, `decodeMs`, `decodeTokens`).
 
 **Downloads:** `loadModel(model)` downloads and loads a model ahead of time, and `modelStatus(model)` is a store of its loading progress (with bytes downloaded and the total while it downloads).
 
 ## How it runs
 
-`chat()` runs tools and the agent loop; each model call is one completion in wllama's worker.
+`chat()` runs tools and the agent loop; each model call is one chat completion from llama.cpp's OpenAI-compatible API (`createChatCompletion`), in wllama's worker. llama.cpp writes the prompt with the model's chat template, reads thinking and tool calls back, and reuses whatever start of the prompt it has already read. wllama's defaults apply, except:
 
-- **Downloads once.** The GGUF file is saved to the Origin Private File System by wllama, and loads from there afterwards, offline too.
-- **Uses every core.** Where the page is cross-origin isolated (`Cross-Origin-Opener-Policy: same-origin` with `Cross-Origin-Embedder-Policy: require-corp` or `credentialless`), llama.cpp runs on as many threads as the browser reports cores; elsewhere, one. `wllamaText(model, { threads })` sets a number.
-- **Writes the prompt with the model's own chat template**, the Jinja template in its GGUF file, so tools and thinking appear as the template intends.
-- **Reuses what it has read.** llama.cpp keeps what it read last, and each reply goes back into the next prompt exactly as the model wrote it, thinking and tool calls included, so a follow-up or the step after a tool call only reads what's new. LFM2's convolution state can't be cut back to a shorter prefix, so llama.cpp saves it before the last 128 tokens of each prompt: a new chat with the same system prompt and tools rereads at most those.
+- **Context:** each model's own (8,192 tokens), not wllama's 1,024, which a system prompt with tools outgrows.
+- **On the CPU:** `n_gpu_layers: 0`, so it runs the same everywhere, without WebGPU. wllama would otherwise use WebGPU where the browser has it.
+- **Threads:** wllama's default, half the cores, where the page is cross-origin isolated (`Cross-Origin-Opener-Policy: same-origin` with `Cross-Origin-Embedder-Policy: require-corp` or `credentialless`); one elsewhere. `wllamaText(model, { threads })` sets a number.
+
+The GGUF file is saved to the Origin Private File System by wllama, and loads from there afterwards, offline too.
 
 ### Bundlers
 

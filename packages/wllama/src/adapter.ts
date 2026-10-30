@@ -2,7 +2,10 @@
  * A TanStack AI text adapter for GGUF models that run in the browser on the
  * CPU, with wllama (llama.cpp in WebAssembly). Hand it to `chat()` like any
  * hosted model's adapter: `chat()` runs tools and the agent loop, and each
- * `chatStream` call here is one generation, streamed back as AG-UI events.
+ * `chatStream` call here is one chat completion from llama.cpp's
+ * OpenAI-compatible API, streamed back as AG-UI events. llama.cpp writes
+ * the prompt with the model's chat template and reads its thinking and
+ * tool calls back.
  */
 import { buildBaseUsage, EventType, normalizeSystemPrompts } from "@tanstack/ai"
 import type {
@@ -17,26 +20,25 @@ import type {
   StructuredOutputOptions,
   StructuredOutputResult
 } from "@tanstack/ai/adapters"
+import type {
+  ChatCompletionMessage,
+  ChatCompletionTool,
+  ResultTimings
+} from "@wllama/wllama/esm/index.js"
 
-import { configureRuntime, generate, loadModel } from "./client.js"
-import type { RunTimings } from "./client.js"
-import { modelMeta, WLLAMA_MODEL_REASONING } from "./model-meta.js"
+import {
+  completeChat,
+  configureRuntime,
+  contextError,
+  streamChat
+} from "./client.js"
+import type { ChatRequest } from "./client.js"
+import { modelMeta } from "./model-meta.js"
 import type {
   Sampling,
   WllamaModelReasoningByName,
   WllamaTextModel
 } from "./model-meta.js"
-import { renderChat } from "./template.js"
-import type { ChatTurn, ToolSpec } from "./template.js"
-import { createThinkingSplitter, splitThinking } from "./thinking.js"
-import {
-  createToolCallSplitter,
-  formatLfm2ToolCalls,
-  parseToolCalls,
-  TOOL_CALL_END,
-  TOOL_CALL_START
-} from "./tool-calls.js"
-import type { ParsedToolCall } from "./tool-calls.js"
 
 export type WllamaTextConfig = {
   /**
@@ -49,7 +51,7 @@ export type WllamaTextConfig = {
    * `@wllama/wllama-compat` through the bundler.
    */
   compat?: { wasm: string; worker: string }
-  /** CPU threads: three quarters of the cores where the page is cross-origin isolated, else one. */
+  /** CPU threads. wllama's default otherwise: half the cores. */
   threads?: number
   /** wllama's and llama.cpp's logs, in the console. */
   debug?: boolean
@@ -57,7 +59,7 @@ export type WllamaTextConfig = {
 
 /** Per-call `modelOptions`: sampling over the model card's, and the most tokens to generate. */
 export type WllamaTextProviderOptions = Partial<Sampling> & {
-  /** Most tokens to generate: 4,096 for a model that thinks, else 1,024. */
+  /** Most tokens to generate. llama.cpp's default otherwise: up to the context limit. */
   max_new_tokens?: number
 }
 
@@ -90,32 +92,6 @@ type MetadataByModality = {
   document: unknown
 }
 
-/** Where the model's thinking starts and ends. */
-const THINK = { open: "<think>", close: "</think>" }
-
-/**
- * Each reply as the model wrote it (thinking and tool-call markup
- * included), by what the conversation keeps of it: its tool calls' ids, or
- * its answer. Written back into the next prompt as it was generated, the
- * prompt starts with exactly what llama.cpp has read, so it reads only
- * what's new.
- */
-const replies = new Map<string, string>()
-const MAX_REPLIES = 256
-
-const replyKey = (content: string, toolCallIds: Array<string>) =>
-  toolCallIds.length > 0
-    ? `tools:${toolCallIds.join(",")}`
-    : `text:${content.trim()}`
-
-function rememberReply(key: string, raw: string) {
-  replies.delete(key)
-  replies.set(key, raw)
-  if (replies.size > MAX_REPLIES) {
-    replies.delete(replies.keys().next().value as string)
-  }
-}
-
 function contentText(content: ModelMessage["content"]) {
   if (typeof content === "string") return content
   return (content ?? [])
@@ -130,100 +106,84 @@ function toolResultText(m: ModelMessage) {
   return text && text !== "null" ? text : "The tool returned nothing."
 }
 
-/** A tool call's JSON arguments, or {} if they aren't JSON. */
-function parseArguments(json: string): Record<string, unknown> {
-  try {
-    const args = JSON.parse(json) as unknown
-    return args && typeof args === "object"
-      ? (args as Record<string, unknown>)
-      : {}
-  } catch {
-    return {}
-  }
-}
-
-/**
- * The conversation as chat-template turns. Tool calls and results from
- * earlier turns are left out and their answers kept: small models copy the
- * shape of past calls badly and get lost in old results. The current turn's
- * calls and results stay, since the model answers from them. Replies are
- * written as the model wrote them, else rebuilt from their parts.
- */
-function toChatTurns(messages: Array<ModelMessage>): Array<ChatTurn> {
-  const chat: Array<ChatTurn> = []
-  const currentTurn = messages.map((m) => m.role).lastIndexOf("user")
-  for (const [i, m] of messages.entries()) {
-    const content = contentText(m.content)
-    const earlier = i < currentTurn
+/** The conversation as OpenAI-style chat messages, the system prompt first. */
+function toMessages(
+  systemPrompts: TextOptions["systemPrompts"],
+  messages: Array<ModelMessage>,
+  extraSystem?: string
+): Array<ChatCompletionMessage> {
+  const system = normalizeSystemPrompts(systemPrompts)
+    .map((p) => p.content)
+    .concat(extraSystem ?? [])
+    .join("\n\n")
+  const out: Array<ChatCompletionMessage> = system
+    ? [{ role: "system", content: system }]
+    : []
+  for (const m of messages) {
     if (m.role === "tool") {
-      if (!earlier) chat.push({ role: "tool", content: toolResultText(m) })
-      continue
+      out.push({
+        role: "tool",
+        tool_call_id: m.toolCallId ?? "",
+        content: toolResultText(m)
+      })
+    } else if (m.role === "assistant") {
+      const thinking = m.thinking?.map((t) => t.content).join("")
+      out.push({
+        role: "assistant",
+        content: contentText(m.content),
+        ...(m.toolCalls?.length && {
+          tool_calls: m.toolCalls.map((c) => ({
+            id: c.id,
+            type: "function" as const,
+            function: { name: c.function.name, arguments: c.function.arguments }
+          }))
+        }),
+        // llama.cpp hands it to the chat template, which keeps or drops it.
+        ...(thinking && { reasoning_content: thinking })
+      })
+    } else {
+      out.push({ role: m.role, content: contentText(m.content) })
     }
-    if (m.role !== "assistant") {
-      if (content) chat.push({ role: m.role, content })
-      continue
-    }
-    const calls = m.toolCalls ?? []
-    if (calls.length > 0 && earlier) {
-      if (content) chat.push({ role: "assistant", content })
-      continue
-    }
-    const raw = replies.get(
-      replyKey(
-        content,
-        calls.map((c) => c.id)
-      )
-    )
-    if (raw !== undefined) {
-      chat.push({ role: "assistant", content: raw })
-      continue
-    }
-    const thinking = m.thinking?.map((t) => t.content).join("") ?? ""
-    const parsed: Array<ParsedToolCall> = calls.map((c) => ({
-      name: c.function.name,
-      args: parseArguments(c.function.arguments)
-    }))
-    const text =
-      (thinking ? `${THINK.open}${thinking}${THINK.close}` : "") +
-      content +
-      (parsed.length > 0 ? formatLfm2ToolCalls(parsed) : "")
-    if (text) chat.push({ role: "assistant", content: text })
   }
-  return chat
+  return out
 }
 
-/** Tools as chat templates take them (OpenAI's function format). */
-function toToolSpecs(tools: Array<Tool> | undefined): Array<ToolSpec> {
+/** Tools in OpenAI's function format. */
+function toTools(tools: Array<Tool> | undefined): Array<ChatCompletionTool> {
   return (tools ?? []).map((tool) => ({
     type: "function",
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: tool.inputSchema ?? {
+      parameters: (tool.inputSchema ?? {
         type: "object",
-        properties: {},
-        required: []
-      }
+        properties: {}
+      }) as ChatCompletionTool["function"]["parameters"]
     }
   }))
 }
 
 /** A model call's counts as TanStack AI usage, its timings as provider details. */
-function usageOf(stats: RunTimings): TokenUsage {
+function usageOf(
+  timings: ResultTimings | undefined,
+  firstTokenMs: number | null
+): TokenUsage | undefined {
+  if (!timings) return undefined
+  const promptTokens = timings.prompt_n + timings.cache_n
   const usage = buildBaseUsage<WllamaProviderUsageDetails>({
-    promptTokens: stats.inputTokens,
-    completionTokens: stats.outputTokens,
-    totalTokens: stats.inputTokens + stats.outputTokens
+    promptTokens,
+    completionTokens: timings.predicted_n,
+    totalTokens: promptTokens + timings.predicted_n
   })
-  if (stats.cachedTokens > 0) {
-    usage.promptTokensDetails = { cachedTokens: stats.cachedTokens }
+  if (timings.cache_n > 0) {
+    usage.promptTokensDetails = { cachedTokens: timings.cache_n }
   }
   usage.providerUsageDetails = {
-    ...(stats.firstTokenMs !== null && { firstTokenMs: stats.firstTokenMs }),
-    ...(stats.promptMs !== null && { promptMs: stats.promptMs }),
-    ...(stats.decodeTokens > 0 && {
-      decodeMs: stats.decodeMs,
-      decodeTokens: stats.decodeTokens
+    ...(firstTokenMs !== null && { firstTokenMs }),
+    promptMs: timings.prompt_ms,
+    ...(timings.predicted_n > 0 && {
+      decodeMs: timings.predicted_ms,
+      decodeTokens: timings.predicted_n
     })
   }
   return usage
@@ -263,45 +223,14 @@ export class WllamaTextAdapter<
     })
   }
 
-  /** Sampling for a call: `modelOptions` over the model card's. */
-  private sampling(modelOptions: WllamaTextProviderOptions | undefined) {
-    const base = modelMeta(this.model).sampling
-    const top_p = modelOptions?.top_p ?? base.top_p
+  /** Sampling and length for a call: `modelOptions` over the model card's. */
+  private settings(modelOptions: WllamaTextProviderOptions | undefined) {
+    const { max_new_tokens, ...sampling } = modelOptions ?? {}
     return {
-      temperature: modelOptions?.temperature ?? base.temperature,
-      top_k: modelOptions?.top_k ?? base.top_k,
-      repeat_penalty: modelOptions?.repeat_penalty ?? base.repeat_penalty,
-      ...(top_p !== undefined && { top_p })
-    }
-  }
-
-  /** Most tokens to generate: thinking takes many before the answer starts. */
-  private maxTokens(modelOptions: WllamaTextProviderOptions | undefined) {
-    return (
-      modelOptions?.max_new_tokens ??
-      (WLLAMA_MODEL_REASONING[this.model] ? 4096 : 1024)
-    )
-  }
-
-  /** The prompt for a call, written by the model's chat template. */
-  private async prompt(
-    systemPrompts: TextOptions["systemPrompts"],
-    messages: Array<ModelMessage>,
-    tools: Array<ToolSpec>,
-    extraSystem?: string
-  ) {
-    const wllama = await loadModel(this.model)
-    const template = wllama.getChatTemplate()
-    if (!template) throw new Error(`${this.model} has no chat template.`)
-    const system = normalizeSystemPrompts(systemPrompts)
-      .map((p) => p.content)
-      .concat(extraSystem ?? [])
-      .join("\n\n")
-    const chat: Array<ChatTurn> = [
-      ...(system ? [{ role: "system" as const, content: system }] : []),
-      ...toChatTurns(messages)
-    ]
-    return renderChat(template, chat, tools)
+      ...modelMeta(this.model).sampling,
+      ...sampling,
+      ...(max_new_tokens !== undefined && { max_tokens: max_new_tokens })
+    } as Partial<ChatRequest>
   }
 
   async *chatStream(
@@ -316,6 +245,7 @@ export class WllamaTextAdapter<
       (options.request as RequestInit | undefined)?.signal ??
       undefined
     const model = this.model
+    const { context } = modelMeta(model)
     const timestamp = () => Date.now()
 
     yield {
@@ -326,176 +256,173 @@ export class WllamaTextAdapter<
       timestamp: timestamp(),
       ...(options.parentRunId && { parentRunId: options.parentRunId })
     }
-    let prompt: string
-    try {
-      prompt = await this.prompt(
-        options.systemPrompts,
-        options.messages,
-        toToolSpecs(options.tools)
-      )
-    } catch (error) {
-      const message = `Couldn't load ${model}: ${errorText(error)}`
-      yield {
-        type: EventType.RUN_ERROR,
-        model,
-        timestamp: timestamp(),
-        message,
-        error: { message }
-      }
-      return
-    }
 
-    // Thinking streams as reasoning events, then the answer as text up to
-    // any tool-call markup, which is held back and parsed at the end.
     let reasoning: "none" | "open" | "closed" = "none"
-    let textStarted = false
     let text = ""
-    let raw = ""
-    const thinkingSplitter = createThinkingSplitter(THINK)
-    const toolSplitter = createToolCallSplitter()
-    const events: Array<AdapterYieldChunk> = []
-    const endReasoning = () => {
+    let textStarted = false
+    /** Tool calls by their index in the stream. */
+    const toolCalls = new Map<
+      number,
+      { id: string; name: string; args: string; started: boolean }
+    >()
+    let finishReason: string | null = null
+    let timings: ResultTimings | undefined
+    let firstTokenMs: number | null = null
+    let failure: string | undefined
+    const requested = performance.now()
+
+    const endReasoning = function* () {
       if (reasoning !== "open") return
       reasoning = "closed"
-      events.push(
-        {
-          type: EventType.REASONING_MESSAGE_END,
-          messageId: reasoningId,
-          model,
-          timestamp: timestamp()
-        },
-        {
-          type: EventType.REASONING_END,
-          messageId: reasoningId,
-          model,
-          timestamp: timestamp()
-        }
-      )
-    }
-    const addText = (delta: string) => {
-      if (!delta) return
-      if (!textStarted) {
-        textStarted = true
-        events.push({
-          type: EventType.TEXT_MESSAGE_START,
-          messageId,
-          role: "assistant",
-          model,
-          timestamp: timestamp()
-        })
-      }
-      text += delta
-      events.push({
-        type: EventType.TEXT_MESSAGE_CONTENT,
-        messageId,
-        delta,
-        content: text,
+      yield {
+        type: EventType.REASONING_MESSAGE_END,
+        messageId: reasoningId,
         model,
         timestamp: timestamp()
-      })
+      } satisfies AdapterYieldChunk
+      yield {
+        type: EventType.REASONING_END,
+        messageId: reasoningId,
+        model,
+        timestamp: timestamp()
+      } satisfies AdapterYieldChunk
     }
-    const addPieces = (pieces: ReturnType<typeof thinkingSplitter.push>) => {
-      for (const piece of pieces) {
-        if (piece.kind === "thinking") {
+
+    try {
+      const stream = await streamChat(
+        model,
+        {
+          messages: toMessages(options.systemPrompts, options.messages),
+          ...(options.tools?.length && { tools: toTools(options.tools) }),
+          ...this.settings(options.modelOptions)
+        },
+        signal
+      ).catch((error: unknown) => {
+        throw new Error(`Couldn't load ${model}: ${errorText(error)}`)
+      })
+      for await (const chunk of stream) {
+        timings = chunk.timings ?? timings
+        const choice = chunk.choices?.[0]
+        if (!choice) continue
+        finishReason = choice.finish_reason ?? finishReason
+        const delta = choice.delta as typeof choice.delta & {
+          reasoning_content?: string | null
+        }
+        if (
+          firstTokenMs === null &&
+          (delta.reasoning_content || delta.content || delta.tool_calls)
+        ) {
+          firstTokenMs = performance.now() - requested
+        }
+
+        if (delta.reasoning_content) {
           if (reasoning === "none") {
-            events.push(
-              {
-                type: EventType.REASONING_START,
-                messageId: reasoningId,
-                model,
-                timestamp: timestamp()
-              },
-              {
-                type: EventType.REASONING_MESSAGE_START,
-                messageId: reasoningId,
-                role: "reasoning",
-                model,
-                timestamp: timestamp()
-              }
-            )
+            reasoning = "open"
+            yield {
+              type: EventType.REASONING_START,
+              messageId: reasoningId,
+              model,
+              timestamp: timestamp()
+            }
+            yield {
+              type: EventType.REASONING_MESSAGE_START,
+              messageId: reasoningId,
+              role: "reasoning",
+              model,
+              timestamp: timestamp()
+            }
           }
-          reasoning = "open"
-          events.push({
+          yield {
             type: EventType.REASONING_MESSAGE_CONTENT,
             messageId: reasoningId,
-            delta: piece.text,
+            delta: delta.reasoning_content,
             model,
             timestamp: timestamp()
-          })
-        } else {
-          endReasoning()
-          addText(toolSplitter.push(piece.text))
+          }
+        }
+
+        // The answer starts at its first visible character: the newlines
+        // after thinking, or before a tool call, aren't a reply.
+        const piece = textStarted
+          ? (delta.content ?? "")
+          : (delta.content ?? "").trimStart()
+        if (piece) {
+          yield* endReasoning()
+          if (!textStarted) {
+            textStarted = true
+            yield {
+              type: EventType.TEXT_MESSAGE_START,
+              messageId,
+              role: "assistant",
+              model,
+              timestamp: timestamp()
+            }
+          }
+          text += piece
+          yield {
+            type: EventType.TEXT_MESSAGE_CONTENT,
+            messageId,
+            delta: piece,
+            content: text,
+            model,
+            timestamp: timestamp()
+          }
+        }
+
+        for (const part of delta.tool_calls ?? []) {
+          yield* endReasoning()
+          let call = toolCalls.get(part.index)
+          if (!call) {
+            call = { id: part.id ?? nextId("tool"), name: "", args: "", started: false }
+            toolCalls.set(part.index, call)
+          }
+          if (part.function?.name) call.name += part.function.name
+          if (!call.started && call.name) {
+            call.started = true
+            yield {
+              type: EventType.TOOL_CALL_START,
+              toolCallId: call.id,
+              toolCallName: call.name,
+              parentMessageId: messageId,
+              index: part.index,
+              model,
+              timestamp: timestamp()
+            }
+          }
+          const args = part.function?.arguments ?? ""
+          if (args) {
+            call.args += args
+            yield {
+              type: EventType.TOOL_CALL_ARGS,
+              toolCallId: call.id,
+              delta: args,
+              args: call.args,
+              model,
+              timestamp: timestamp()
+            }
+          }
         }
       }
-    }
-
-    let failure: string | undefined
-    let stats: RunTimings | undefined
-    try {
-      const stream = generate({
-        model,
-        prompt,
-        sampling: this.sampling(options.modelOptions),
-        maxTokens: this.maxTokens(options.modelOptions),
-        // A reply ends with its tool calls: what LFM2.5 writes after them
-        // isn't shown, and the next step starts from their results.
-        stop: [TOOL_CALL_END],
-        signal
-      })
-      let next = await stream.next()
-      while (!next.done) {
-        raw += next.value
-        addPieces(thinkingSplitter.push(next.value))
-        yield* events.splice(0)
-        next = await stream.next()
-      }
-      stats = next.value
     } catch (error) {
-      failure = errorText(error)
+      // Stopped: the reply so far stands.
+      if (!signal?.aborted) failure = errorText(contextError(error, context))
     }
-    // It stopped at the end of its tool calls, which llama.cpp leaves out.
-    if (raw.includes(TOOL_CALL_START) && !raw.endsWith(TOOL_CALL_END)) {
-      if (!stats?.truncated) raw += TOOL_CALL_END
-    }
-    addPieces(thinkingSplitter.flush())
-    endReasoning()
-    const { text: rest, markup } = toolSplitter.flush()
-    addText(rest)
-    const parsed = markup ? parseToolCalls(markup) : []
-    // Markup that isn't any tool call is shown as the text it is.
-    if (markup && parsed.length === 0) addText(markup)
-    yield* events.splice(0)
 
-    const toolCallIds = parsed.map(() => nextId("tool"))
-    if (!failure && !signal?.aborted) {
-      rememberReply(replyKey(text, toolCallIds), raw)
-    }
-    for (const [index, call] of parsed.entries()) {
-      const toolCallId = toolCallIds[index]
-      const args = JSON.stringify(call.args)
-      yield {
-        type: EventType.TOOL_CALL_START,
-        toolCallId,
-        toolCallName: call.name,
-        parentMessageId: messageId,
-        index,
-        model,
-        timestamp: timestamp()
-      }
-      yield {
-        type: EventType.TOOL_CALL_ARGS,
-        toolCallId,
-        delta: args,
-        args,
-        model,
-        timestamp: timestamp()
+    yield* endReasoning()
+    for (const call of toolCalls.values()) {
+      if (!call.started) continue
+      let input: unknown = {}
+      try {
+        input = call.args ? JSON.parse(call.args) : {}
+      } catch {
+        // `chat()` reports arguments that aren't JSON to the model.
       }
       yield {
         type: EventType.TOOL_CALL_END,
-        toolCallId,
+        toolCallId: call.id,
         toolCallName: call.name,
-        args,
-        input: call.args,
+        args: call.args,
+        input,
         model,
         timestamp: timestamp()
       }
@@ -508,6 +435,16 @@ export class WllamaTextAdapter<
         timestamp: timestamp()
       }
     }
+
+    // Cut off by the context limit, not by a length the caller asked for.
+    if (
+      !failure &&
+      finishReason === "length" &&
+      timings &&
+      timings.prompt_n + timings.cache_n + timings.predicted_n >= context
+    ) {
+      failure = `The reply stopped at the model's limit of ${new Intl.NumberFormat("en-US").format(context)} tokens for a session. Start a new session to keep going.`
+    }
     if (failure) {
       yield {
         type: EventType.RUN_ERROR,
@@ -518,6 +455,7 @@ export class WllamaTextAdapter<
       }
       return
     }
+    const usage = usageOf(timings, firstTokenMs)
     yield {
       type: EventType.RUN_FINISHED,
       runId,
@@ -525,46 +463,42 @@ export class WllamaTextAdapter<
       model,
       timestamp: timestamp(),
       finishReason:
-        parsed.length > 0 ? "tool_calls" : stats?.truncated ? "length" : "stop",
-      ...(stats && { usage: usageOf(stats) })
+        toolCalls.size > 0
+          ? "tool_calls"
+          : finishReason === "length"
+            ? "length"
+            : "stop",
+      ...(usage && { usage })
     }
   }
 
   /**
-   * A JSON answer for `chat({ outputSchema })`: the model is asked for JSON
-   * matching the schema and its answer parsed. Small models follow schemas
-   * loosely; `chat()` validates the result.
+   * A JSON answer for `chat({ outputSchema })`, constrained to the schema
+   * by llama.cpp's JSON Schema grammar; `chat()` validates the result.
    */
   async structuredOutput(
     options: StructuredOutputOptions<WllamaTextProviderOptions>
   ): Promise<StructuredOutputResult<unknown>> {
     const { chatOptions, outputSchema } = options
-    const prompt = await this.prompt(
-      chatOptions.systemPrompts,
-      chatOptions.messages,
-      [],
-      `Answer with only a JSON value matching this JSON Schema:\n${JSON.stringify(outputSchema)}`
+    const response = await completeChat(
+      this.model,
+      {
+        messages: toMessages(chatOptions.systemPrompts, chatOptions.messages),
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "output", schema: outputSchema, strict: true }
+        },
+        ...this.settings(chatOptions.modelOptions)
+      },
+      chatOptions.abortController?.signal
     )
-    const stream = generate({
-      model: this.model,
-      prompt,
-      sampling: this.sampling(chatOptions.modelOptions),
-      maxTokens: this.maxTokens(chatOptions.modelOptions),
-      signal: chatOptions.abortController?.signal
-    })
-    let raw = ""
-    let next = await stream.next()
-    while (!next.done) {
-      raw += next.value
-      next = await stream.next()
-    }
-    const rawText = splitThinking(raw, THINK).answer.trim()
-    const json = rawText.replace(/^```(?:json)?\s*|\s*```$/g, "")
+    const rawText = response.choices[0]?.message.content?.trim() ?? ""
+    const timings = (response as { timings?: ResultTimings }).timings
     try {
       return {
-        data: JSON.parse(json) as unknown,
+        data: JSON.parse(rawText) as unknown,
         rawText,
-        usage: usageOf(next.value)
+        ...(usageOf(timings, null) && { usage: usageOf(timings, null) })
       }
     } catch {
       throw new Error(

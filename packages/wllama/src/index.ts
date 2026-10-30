@@ -22,4 +22,3 @@ export type {
 export { loadModel, modelStatus } from "./client.js"
 export type { ModelStatus } from "./client.js"
 export type { Store } from "./store.js"
-export { splitThinking } from "./thinking.js"
