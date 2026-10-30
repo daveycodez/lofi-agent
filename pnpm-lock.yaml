@@ -241,9 +241,15 @@ importers:
       '@tanstack-ai-browser/apfel':
         specifier: workspace:*
         version: link:../../packages/apfel
+      '@tanstack-ai-browser/prompt-api':
+        specifier: workspace:*
+        version: link:../../packages/prompt-api
       '@tanstack-ai-browser/transformers-js':
         specifier: workspace:*
         version: link:../../packages/transformers-js
+      '@tanstack-ai-browser/wllama':
+        specifier: workspace:*
+        version: link:../../packages/wllama
       '@tanstack/ai':
         specifier: 1.0.0
         version: 1.0.0(zod@4.6.7)
@@ -345,7 +351,26 @@ importers:
         specifier: 1.0.0
         version: 1.0.0(zod@4.6.7)
 
+  packages/prompt-api:
+    devDependencies:
+      '@tanstack/ai':
+        specifier: 1.0.0
+        version: 1.0.0(zod@4.6.7)
+
   packages/transformers-js:
+    devDependencies:
+      '@tanstack/ai':
+        specifier: 1.0.0
+        version: 1.0.0(zod@4.6.7)
+
+  packages/wllama:
+    dependencies:
+      '@huggingface/jinja':
+        specifier: 0.5.10
+        version: 0.5.10
+      '@wllama/wllama':
+        specifier: 3.8.1
+        version: 3.8.1
     devDependencies:
       '@tanstack/ai':
         specifier: 1.0.0
@@ -1255,6 +1280,10 @@ packages:
     resolution: {integrity: sha512-feKZUphVe5+QCXnUe8kpqT5T+pPeMI3LaQcSztx08PGVTkhz0dU0C6crKvA1G4HHIPFXXon68VeL8lPjvGHsWg==}
     peerDependencies:
       tailwindcss: '>=4.0.0'
+
+  '@huggingface/jinja@0.5.10':
+    resolution: {integrity: sha512-SgS1D1bglQ94ceD4ZCL6eayUDy9uV1xuyk61OjgSxU5GJh7upqZCKII0JoTYMc6wWsg3JUgaPRX0ElQzXPk3Cw==}
+    engines: {node: '>=18'}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -2808,6 +2837,9 @@ packages:
         optional: true
       oxc-transform-react:
         optional: true
+
+  '@wllama/wllama@3.8.1':
+    resolution: {integrity: sha512-Pl7BEJhPU8OHnV/yhn3DFZYhLLOdSHh+4TND79WCftHnlUAdQPAsyc/CfIOY+4mVxvf5VW3Xw3Uf7BBfotS1gw==}
 
   '@yarnpkg/lockfile@1.1.0':
     resolution: {integrity: sha512-GpSwvyXOcOOlV70vbnzjj4fW5xW/FdUF6nQEt1ENy7m4ZCczi1+/buVUPAqmGfqznsORNFzUMjctTIp8a9tuCQ==}
@@ -5868,6 +5900,8 @@ snapshots:
     transitivePeerDependencies:
       - tailwind-merge
 
+  '@huggingface/jinja@0.5.10': {}
+
   '@humanfs/core@0.19.2':
     dependencies:
       '@humanfs/types': 0.15.0
@@ -7351,6 +7385,8 @@ snapshots:
     dependencies:
       '@rolldown/pluginutils': 1.0.1
       vite: 8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
+
+  '@wllama/wllama@3.8.1': {}
 
   '@yarnpkg/lockfile@1.1.0': {}
 

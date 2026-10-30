@@ -8,6 +8,7 @@
 import type { TokenUsage } from "@tanstack/ai"
 import type { ApfelProviderUsageDetails } from "@tanstack-ai-browser/apfel"
 import type { TransformersJsProviderUsageDetails } from "@tanstack-ai-browser/transformers-js"
+import type { WllamaProviderUsageDetails } from "@tanstack-ai-browser/wllama"
 
 import { deleteIfPresent, replyStats, threads } from "#/lib/db"
 
@@ -29,8 +30,10 @@ export type GenerationStats = {
   decodeMs?: number
 }
 
-/** Timings both adapters report, under the same names. */
-type UsageTimings = TransformersJsProviderUsageDetails & ApfelProviderUsageDetails
+/** Timings the adapters report, under the same names. */
+type UsageTimings = TransformersJsProviderUsageDetails &
+  ApfelProviderUsageDetails &
+  WllamaProviderUsageDetails
 
 /** A model call's stats from its usage: token counts, and the adapter's timings. */
 export function statsFromUsage(usage: TokenUsage): GenerationStats {

@@ -8,6 +8,12 @@
     },
     {
       "path": "./packages/apfel"
+    },
+    {
+      "path": "./packages/wllama"
+    },
+    {
+      "path": "./packages/prompt-api"
     }
   ],
   "compilerOptions": {}

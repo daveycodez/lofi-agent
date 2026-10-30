@@ -13,6 +13,7 @@ import {
   hasWebGpuNow,
   isApplePlatform,
   offered,
+  useHasBuiltInModel,
   useHasWebGpu,
   useIsApplePlatform
 } from "./models"
@@ -31,8 +32,11 @@ const effortSetting = setting("effort", "high")
 export const selectedModel = () =>
   offered(modelSetting.get(), isApplePlatform(), hasWebGpuNow())
 
-export const useSelectedModel = () =>
-  offered(modelSetting.use(), useIsApplePlatform(), useHasWebGpu())
+export const useSelectedModel = () => {
+  // The built-in model is offered once the browser's check is back.
+  useHasBuiltInModel()
+  return offered(modelSetting.use(), useIsApplePlatform(), useHasWebGpu())
+}
 
 export const setSelectedModel = (id: ModelId) => modelSetting.set(id)
 

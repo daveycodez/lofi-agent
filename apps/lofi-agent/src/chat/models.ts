@@ -7,15 +7,24 @@ import {
   TRANSFORMERS_JS_MODEL_REASONING,
   transformersJsText
 } from "@tanstack-ai-browser/transformers-js"
-import type {
-  ModelStatus,
-  TransformersJsListedModel
-} from "@tanstack-ai-browser/transformers-js"
+import type { TransformersJsListedModel } from "@tanstack-ai-browser/transformers-js"
+import {
+  modelStatus as wllamaModelStatus,
+  WLLAMA_MODEL_REASONING,
+  wllamaText
+} from "@tanstack-ai-browser/wllama"
+import type { WllamaTextModel } from "@tanstack-ai-browser/wllama"
 import {
   APFEL_BASE_URL,
   apfelText,
   isApfelAvailable
 } from "@tanstack-ai-browser/apfel"
+import {
+  promptApiAvailability,
+  promptApiModel,
+  promptApiStatus,
+  promptApiText
+} from "@tanstack-ai-browser/prompt-api"
 import { useSyncExternalStore } from "react"
 
 import { createStore } from "#/lib/store"
@@ -31,10 +40,38 @@ export type ModelId =
   | "lfm2.5-thinking-web"
   | "lfm2-tool"
   | "lfm2.5-350m"
+  | "lfm2.5-gguf"
+  | "lfm2.5-thinking-gguf"
+  | "lfm2.5-350m-gguf"
+  | "built-in"
 
 /** Where the app reaches apfel on this Mac: its default address. */
 const APFEL_URL = APFEL_BASE_URL
 const APPLE_MODEL = "apple-foundationmodel"
+
+/**
+ * A local model's loading status, as each adapter package's store reports
+ * it: downloading (with bytes, where known), loading from storage, ready.
+ */
+export type ModelStatus =
+  | { state: "idle" }
+  | {
+      state: "loading"
+      /** 0-1 across the model's files. */
+      progress: number
+      /** True when the files come from the browser's storage, not the network. */
+      cached: boolean
+      loadedBytes?: number
+      totalBytes?: number
+    }
+  | { state: "ready" }
+  | { state: "error"; message: string }
+
+/** A store of a model's loading status, from its adapter package. */
+export type ModelStatusStore = {
+  get: () => ModelStatus
+  subscribe: (listener: () => void) => () => void
+}
 
 /** A Transformers.js model of the package's list, in the picker. */
 const local = (
@@ -46,13 +83,33 @@ const local = (
   name,
   icon: model.includes("gemma") ? "/icons/gemma.svg" : "/icons/liquid.svg",
   adapter: transformersJsText(model, { debug: import.meta.env.DEV }),
-  /** The model it downloads, for its loading status. */
-  download: model as string | null,
+  /** Its download and loading progress. */
+  status: modelStatus(model) as ModelStatusStore | null,
   /** No CPU weights: it can't run where there's no WebGPU. */
   needsWebGpu: !runsWithoutWebGpu(model),
   reasoning: TRANSFORMERS_JS_MODEL_REASONING[model] as
     ModelReasoning | undefined
 })
+
+/**
+ * A GGUF model of the wllama package's list, in the picker. llama.cpp runs
+ * it on the CPU, so it needs no WebGPU.
+ */
+const gguf = (id: ModelId, name: string, model: WllamaTextModel) => ({
+  id,
+  name,
+  icon: "/icons/liquid.svg",
+  adapter: wllamaText(model),
+  status: wllamaModelStatus(model) as ModelStatusStore | null,
+  needsWebGpu: false,
+  reasoning: WLLAMA_MODEL_REASONING[model] as ModelReasoning | undefined
+})
+
+/** The browser's built-in model by name and browser: "Gemini Nano (Chrome)". */
+function builtInName() {
+  const { name, browser } = promptApiModel()
+  return browser ? `${name} (${browser})` : name
+}
 
 export const MODELS = [
   {
@@ -62,7 +119,21 @@ export const MODELS = [
     icon: "/icons/apple.svg",
     adapter: apfelText(APPLE_MODEL, { baseURL: APFEL_URL }),
     /** Runs outside the browser: nothing to download. */
-    download: null,
+    status: null,
+    needsWebGpu: false,
+    reasoning: undefined
+  },
+  {
+    id: "built-in",
+    /** The browser's own model: "Gemini Nano (Chrome)", "Phi-4-mini (Edge)". */
+    name: builtInName(),
+    icon:
+      promptApiModel().id === "phi-4-mini"
+        ? "/icons/microsoft.svg"
+        : "/icons/gemini.svg",
+    adapter: promptApiText(),
+    /** The browser downloads it, once for every site, with progress. */
+    status: promptApiStatus() as ModelStatusStore | null,
     needsWebGpu: false,
     reasoning: undefined
   },
@@ -82,13 +153,24 @@ export const MODELS = [
     "daveycodez/LFM2.5-1.2B-Thinking-Web"
   ),
   local("lfm2-tool", "LFM2 1.2B Tool", "onnx-community/LFM2-1.2B-Tool-ONNX"),
-  local("lfm2.5-350m", "LFM2.5 350M", "LiquidAI/LFM2.5-350M-ONNX")
+  local("lfm2.5-350m", "LFM2.5 350M", "LiquidAI/LFM2.5-350M-ONNX"),
+  gguf("lfm2.5-gguf", "LFM2.5 1.2B GGUF", "LiquidAI/LFM2.5-1.2B-Instruct-GGUF"),
+  gguf(
+    "lfm2.5-thinking-gguf",
+    "LFM2.5 1.2B Thinking GGUF",
+    "LiquidAI/LFM2.5-1.2B-Thinking-GGUF"
+  ),
+  gguf("lfm2.5-350m-gguf", "LFM2.5 350M GGUF", "LiquidAI/LFM2.5-350M-GGUF")
 ] satisfies Array<{
   id: ModelId
   name: string
   icon: string
-  adapter: ReturnType<typeof transformersJsText> | ReturnType<typeof apfelText>
-  download: string | null
+  adapter:
+    | ReturnType<typeof transformersJsText>
+    | ReturnType<typeof apfelText>
+    | ReturnType<typeof wllamaText>
+    | ReturnType<typeof promptApiText>
+  status: ModelStatusStore | null
   needsWebGpu: boolean
   reasoning: ModelReasoning | undefined
 }>
@@ -99,7 +181,9 @@ export const MODELS = [
  */
 export const PROVIDERS = [
   { id: "apfel", name: "apfel" },
-  { id: "transformers-js", name: "Transformers.js" }
+  { id: "prompt-api", name: "Built-in" },
+  { id: "transformers-js", name: "Transformers.js" },
+  { id: "wllama", name: "wllama" }
 ] as const
 
 /**
@@ -211,10 +295,29 @@ export const hasWebGpuNow = webGpu.get
 export const useHasWebGpu = () =>
   useSyncExternalStore(webGpu.subscribe, webGpu.get, () => true)
 
-/** What this device can run: Apple's model on Apple devices, CPU models without WebGPU. */
+/**
+ * Whether the browser offers its built-in model: Chrome or Edge with the
+ * Prompt API, on a device that can run it (downloaded or not). No until
+ * the check is back. Other Chromium builds are left out: Chromium for
+ * Testing has the API but says "downloading" forever, with no model.
+ */
+const builtIn = createStore(false)
+if (typeof window !== "undefined" && promptApiModel().id !== "unknown") {
+  void promptApiAvailability().then((a) => builtIn.set(a !== "unavailable"))
+}
+
+/** Subscribes a component to the built-in model check. */
+export const useHasBuiltInModel = () =>
+  useSyncExternalStore(builtIn.subscribe, builtIn.get, () => false)
+
+/**
+ * What this device can run: Apple's model on Apple devices, CPU models
+ * without WebGPU, the built-in model where the browser has one.
+ */
 const canRun = (id: ModelId, isApple: boolean, hasGpu: boolean) =>
   isModelId(id) &&
   (id !== "apple-fm" || isApple) &&
+  (id !== "built-in" || builtIn.get()) &&
   (hasGpu || !modelInfo(id).needsWebGpu)
 
 /**
@@ -232,15 +335,15 @@ export const offered = (
 export function useModels() {
   const isApple = useIsApplePlatform()
   const hasGpu = useHasWebGpu()
+  useHasBuiltInModel()
   return MODELS.filter((m) => canRun(m.id, isApple, hasGpu))
 }
 
 const IDLE = createStore<ModelStatus>({ state: "idle" })
 
-/** Loading status of the model `id` downloads, if it downloads one. */
+/** Loading status of the model `id`, if it's one that downloads and loads. */
 export function useModelStatus(id: ModelId): ModelStatus {
-  const download = modelInfo(id).download
-  const store = download ? modelStatus(download) : IDLE
+  const store = modelInfo(id).status ?? IDLE
   return useSyncExternalStore(store.subscribe, store.get, store.get)
 }
 
