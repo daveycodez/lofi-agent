@@ -17,7 +17,7 @@ import type { ComponentPropsWithoutRef } from "react"
 import { mathExtension } from "tanstack-markdown-math"
 import { MathBlock, MathInline } from "tanstack-markdown-math/react"
 
-import { CitationChip } from "#/components/chat/sources"
+import { CitationChip } from "#/components/ai/sources"
 import { highlightMarkdownCode, highlightThemeCss } from "#/lib/highlight"
 import { normalizeMath } from "#/lib/math"
 import type { Source } from "#/lib/sources"

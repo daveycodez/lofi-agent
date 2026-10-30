@@ -2,14 +2,14 @@
  * Token counts and timings of each run of the model, by chat, for the stats
  * line under the composer. Each model call's usage is recorded when it ends
  * (`chat()`'s `onUsage`); a reply that calls tools runs the model more than
- * once. Each chat's latest reply's stats are kept in localStorage, by thread
- * id, until the chat is deleted.
+ * once. Each chat's latest reply's stats are kept in the replyStats
+ * collection, by thread id, until the chat is deleted.
  */
 import type { TokenUsage } from "@tanstack/ai"
 import type { ApfelProviderUsageDetails } from "@tanstack-ai-browser/apfel"
 import type { TransformersJsProviderUsageDetails } from "@tanstack-ai-browser/transformers-js"
 
-import { createStore } from "#/lib/store"
+import { deleteIfPresent, replyStats, threads } from "#/lib/db"
 
 /** One run of the model. Counts the source doesn't report are left out. */
 export type GenerationStats = {
@@ -54,26 +54,13 @@ export function statsFromUsage(usage: TokenUsage): GenerationStats {
 /** The current reply's runs in each chat, by key, in the order they started. */
 const runs = new Map<string, Map<string, GenerationStats>>()
 
-/** Each chat's current reply's stats as they come in (this session). */
-const live = createStore<Record<string, ReplyStats | null>>({})
-
-/** Each chat's latest reply's stats, kept across reloads. */
-const saved = createStore<Record<string, ReplyStats>>(
-  {},
-  "lofi-agent:reply-stats"
-)
-
-const without = <T>(record: Record<string, T>, ids: Array<string>) =>
-  Object.fromEntries(Object.entries(record).filter(([id]) => !ids.includes(id)))
-
 /**
  * Starts a new reply in a chat: its stats line empties until the model's
  * first run ends. Runs after tool calls are part of the same reply.
  */
 export function startReply(threadId: string) {
   runs.set(threadId, new Map())
-  live.set((all) => ({ ...all, [threadId]: null }))
-  if (threadId in saved.get()) saved.set((all) => without(all, [threadId]))
+  deleteIfPresent(replyStats(), threadId)
 }
 
 /** Records a finished run of the model in a chat's reply, and saves the reply's stats. */
@@ -88,37 +75,25 @@ export function recordGeneration(
     runs.set(threadId, list)
   }
   list.set(key, stats)
-  const reply = replyStats([...list.values()])
-  live.set((all) => ({ ...all, [threadId]: reply }))
-  if (reply) saved.set((all) => ({ ...all, [threadId]: reply }))
+  const reply = replyStatsOf([...list.values()])
+  // A session deleted while its reply ran keeps no stats.
+  if (!reply || !threads().has(threadId)) return
+  const collection = replyStats()
+  if (collection.has(threadId)) {
+    collection.update(threadId, (draft) => {
+      draft.stats = reply
+    })
+  } else {
+    collection.insert({ id: threadId, stats: reply })
+  }
 }
 
 /** Forgets deleted chats' stats. */
 export function forgetReplyStats(threadIds: Array<string>) {
-  for (const id of threadIds) runs.delete(id)
-  if (threadIds.some((id) => id in live.get())) {
-    live.set((all) => without(all, threadIds))
-  }
-  if (threadIds.some((id) => id in saved.get())) {
-    saved.set((all) => without(all, threadIds))
-  }
-}
-
-/** A chat's current or latest reply's stats, or null if it has none. */
-export function latestReplyStats(threadId: string) {
-  const current = live.get()
-  return threadId in current
-    ? current[threadId]
-    : (saved.get()[threadId] ?? null)
-}
-
-/** Calls `listener` whenever any chat's stats change. */
-export function subscribeReplyStats(listener: () => void) {
-  const stopLive = live.subscribe(listener)
-  const stopSaved = saved.subscribe(listener)
-  return () => {
-    stopLive()
-    stopSaved()
+  const collection = replyStats()
+  for (const id of threadIds) {
+    runs.delete(id)
+    deleteIfPresent(collection, id)
   }
 }
 
@@ -143,7 +118,7 @@ const sum = (values: Array<number | undefined>) =>
     : undefined
 
 /** A reply's stats from its runs, in the order they ran. */
-export function replyStats(
+export function replyStatsOf(
   generations: Array<GenerationStats>
 ): ReplyStats | null {
   if (generations.length === 0) return null

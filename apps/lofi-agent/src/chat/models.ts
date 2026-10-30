@@ -16,6 +16,7 @@ import {
 } from "@tanstack-ai-browser/apfel"
 import { useSyncExternalStore } from "react"
 
+import { setting } from "#/lib/settings"
 import { createStore } from "#/lib/store"
 
 export type ModelId =
@@ -30,10 +31,9 @@ export type ModelId =
 
 /**
  * Whether models with a thinking switch should reason before answering. On
- * by default: LFM3 answers much better with it. (A new key, so the old
- * default of off doesn't carry over.)
+ * by default: LFM3 answers much better with it.
  */
-export const thinkingStore = createStore<boolean>(true, "lofi-agent:think")
+export const thinkingSetting = setting("think", true)
 
 /** Where the app reaches apfel on this Mac: its default address. */
 const APFEL_URL = APFEL_BASE_URL
@@ -111,7 +111,7 @@ export function canThink(id: ModelId) {
 
 /**
  * The model to start with, and to fall back on: LFM3 Web runs anywhere,
- * iPhone Safari included, with thinking on (see `thinkingStore`).
+ * iPhone Safari included, with thinking on (see `thinkingSetting`).
  */
 export const DEFAULT_MODEL: ModelId = "lfm3-web"
 
@@ -121,10 +121,7 @@ export const modelInfo = (id: ModelId) =>
   MODELS[0]
 
 /** The model the user picked; saved only once they pick one. */
-export const modelStore = createStore<ModelId>(
-  DEFAULT_MODEL,
-  "lofi-agent:model"
-)
+export const modelSetting = setting("model", DEFAULT_MODEL)
 
 /** Apple's model only exists on macOS and iOS (iPadOS reports itself as a Mac). */
 const isApplePlatform = () =>
@@ -144,9 +141,9 @@ const offered = (id: ModelId, isApple: boolean): ModelId =>
     ? id
     : DEFAULT_MODEL
 
-export const currentModel = () => offered(modelStore.get(), isApplePlatform())
+export const currentModel = () => offered(modelSetting.get(), isApplePlatform())
 export const useCurrentModel = () =>
-  offered(modelStore.use(), useIsApplePlatform())
+  offered(modelSetting.use(), useIsApplePlatform())
 
 /** Models to offer in the picker on this device. */
 export function useModels() {

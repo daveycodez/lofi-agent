@@ -5,8 +5,6 @@
  */
 import type { MessagePart, UIMessage } from "@tanstack/ai"
 
-import { splitThinking } from "@tanstack-ai-browser/transformers-js"
-
 type ToolResult = Extract<MessagePart, { type: "tool-result" }>
 
 const ROLES: Record<UIMessage["role"], string> = {
@@ -63,17 +61,12 @@ function toolCallBlock(
 
 function partBlocks(
   part: MessagePart,
-  role: UIMessage["role"],
   results: Map<string, ToolResult>,
   shownResults: Set<string>
 ): Array<string> {
   switch (part.type) {
-    case "text": {
-      if (role !== "assistant") return part.content.trim() ? [part.content] : []
-      // Replies saved by earlier versions kept the thinking as <think> tags.
-      const { thinking, answer } = splitThinking(part.content)
-      return [thinking && thinkingBlock(thinking), answer].filter(Boolean)
-    }
+    case "text":
+      return part.content.trim() ? [part.content] : []
     case "thinking":
       return part.content.trim() ? [thinkingBlock(part.content.trim())] : []
     case "tool-call": {
@@ -104,7 +97,7 @@ export function formatChatLog(messages: ReadonlyArray<UIMessage>) {
   let lastRole: UIMessage["role"] | undefined
   for (const message of messages) {
     const blocks = message.parts.flatMap((part) =>
-      partBlocks(part, message.role, results, shownResults)
+      partBlocks(part, results, shownResults)
     )
     if (blocks.length === 0) continue
     // A reply that called tools spans several assistant messages: one section.

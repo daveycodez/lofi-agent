@@ -1,27 +1,11 @@
-import { indexedDBPersistence } from "@tanstack/ai-react"
-
-import { forgetReplyStats } from "#/lib/llm/generation-stats"
-import { createStore } from "#/lib/store"
-
-/** Messages for each thread live in IndexedDB, keyed by thread id. */
-export const chatPersistence = indexedDBPersistence({
-  databaseName: "lofi-agent"
-})
-
-export type ThreadMeta = {
-  id: string
-  title: string
-  createdAt: number
-  updatedAt: number
-  archived?: boolean
-  pinned?: boolean
-}
-
-/** The thread list itself is small metadata, kept in localStorage for a synchronous sidebar. */
-export const threadsStore = createStore<Array<ThreadMeta>>(
-  [],
-  "lofi-agent:threads"
-)
+/**
+ * Chat sessions: their metadata in the threads collection, and their
+ * messages in the chats collection (written by useChat through
+ * `chatPersistence`, in src/chat/persistence.ts).
+ */
+import { forgetReplyStats } from "#/chat/generation-stats"
+import { forgetChat } from "#/chat/persistence"
+import { deleteIfPresent, threads } from "#/lib/db"
 
 export function titleFrom(text: string) {
   const line = text.trim().split("\n")[0] ?? ""
@@ -30,68 +14,56 @@ export function titleFrom(text: string) {
 
 /** Records activity on a thread, creating it on first use. */
 export function touchThread(id: string, firstMessage?: string) {
-  threadsStore.set((threads) => {
-    const now = Date.now()
-    const existing = threads.find((t) => t.id === id)
-    if (existing) {
-      return threads.map((t) =>
-        t.id === id ? { ...t, updatedAt: now, archived: false } : t
-      )
-    }
-    return [
-      {
-        id,
-        title: titleFrom(firstMessage ?? ""),
-        createdAt: now,
-        updatedAt: now
-      },
-      ...threads
-    ]
+  const collection = threads()
+  const now = Date.now()
+  if (collection.has(id)) {
+    collection.update(id, (draft) => {
+      draft.updatedAt = now
+      draft.archived = false
+    })
+    return
+  }
+  collection.insert({
+    id,
+    title: titleFrom(firstMessage ?? ""),
+    createdAt: now,
+    updatedAt: now,
+    archived: false,
+    pinned: false
   })
 }
 
 export function renameThread(id: string, title: string) {
   const clean = title.trim()
-  if (!clean) return
-  threadsStore.set((threads) =>
-    threads.map((t) => (t.id === id ? { ...t, title: clean } : t))
-  )
+  if (!clean || !threads().has(id)) return
+  threads().update(id, (draft) => {
+    draft.title = clean
+  })
 }
 
 export function togglePinThread(id: string) {
-  threadsStore.set((threads) =>
-    threads.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t))
-  )
+  if (!threads().has(id)) return
+  threads().update(id, (draft) => {
+    draft.pinned = !draft.pinned
+  })
 }
 
 export function archiveThread(id: string) {
-  threadsStore.set((threads) =>
-    threads.map((t) => (t.id === id ? { ...t, archived: true } : t))
-  )
+  if (!threads().has(id)) return
+  threads().update(id, (draft) => {
+    draft.archived = true
+  })
 }
 
-export async function deleteThread(id: string) {
-  threadsStore.set((threads) => threads.filter((t) => t.id !== id))
+/** Deletes a session: its metadata, messages and stats. */
+export function deleteThread(id: string) {
+  deleteIfPresent(threads(), id)
+  forgetChat(id)
   forgetReplyStats([id])
-  try {
-    await chatPersistence.removeItem(id)
-  } catch {
-    // Storage unavailable: the metadata is gone, which is what the user sees.
-  }
 }
 
-/** Deletes every chat, archived ones included, with their messages. */
-export async function deleteAllThreads() {
-  const ids = threadsStore.get().map((t) => t.id)
-  threadsStore.set([])
-  forgetReplyStats(ids)
-  await Promise.all(
-    ids.map(async (id) => {
-      try {
-        await chatPersistence.removeItem(id)
-      } catch {
-        // Storage unavailable: the metadata is gone, which is what the user sees.
-      }
-    })
-  )
+/** Deletes every session, archived ones included, with their messages. */
+export function deleteAllThreads() {
+  const ids = threads().toArray.map((t) => t.id)
+  for (const id of ids) deleteThread(id)
 }

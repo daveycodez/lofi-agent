@@ -9,7 +9,7 @@ import {
 } from "@heroui/react"
 import { useState } from "react"
 
-import { systemPromptStore } from "#/lib/settings"
+import { systemPromptSetting } from "#/lib/settings"
 
 export function SettingsModal({
   isOpen,
@@ -35,7 +35,7 @@ export function SettingsModal({
  * from the saved values.
  */
 function SettingsForm({ onDone }: { onDone: () => void }) {
-  const [systemPrompt, setSystemPrompt] = useState(systemPromptStore.get)
+  const [systemPrompt, setSystemPrompt] = useState(systemPromptSetting.get)
   return (
     <>
       <Modal.CloseTrigger />
@@ -66,7 +66,7 @@ function SettingsForm({ onDone }: { onDone: () => void }) {
         </Button>
         <Button
           onPress={() => {
-            systemPromptStore.set(systemPrompt)
+            systemPromptSetting.set(systemPrompt)
             onDone()
           }}
         >

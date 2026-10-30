@@ -28,18 +28,19 @@ import {
   TextField,
   Tooltip
 } from "@heroui/react"
+import { eq, useLiveQuery } from "@tanstack/react-db"
 import { Link } from "@tanstack/react-router"
 import { Fragment, useEffect, useRef, useState } from "react"
 
+import { threadsCollection } from "#/lib/db"
+import type { Thread } from "#/lib/db"
 import {
   archiveThread,
   deleteAllThreads,
   deleteThread,
   renameThread,
-  threadsStore,
   togglePinThread
 } from "#/lib/threads"
-import type { ThreadMeta } from "#/lib/threads"
 
 type SidebarProps = {
   activeId: string
@@ -121,7 +122,11 @@ export function ThreadListSidebar(props: SidebarProps) {
 
 /** Actions for all chats at once, in the header: deleting them all. */
 function ChatsMenu({ onActiveRemoved }: { onActiveRemoved: () => void }) {
-  const count = threadsStore.use().length
+  // Every session, archived ones included.
+  const { data: allThreads } = useLiveQuery({
+    query: (q) => q.from({ thread: threadsCollection })
+  })
+  const count = allThreads.length
   const [isConfirming, setIsConfirming] = useState(false)
   return (
     <>
@@ -182,7 +187,7 @@ function ChatsMenu({ onActiveRemoved }: { onActiveRemoved: () => void }) {
                 slot="close"
                 variant="danger"
                 onPress={() => {
-                  void deleteAllThreads()
+                  deleteAllThreads()
                   onActiveRemoved()
                 }}
               >
@@ -214,10 +219,13 @@ function ThreadList({
   onNavigate,
   onActiveRemoved
 }: SidebarProps) {
-  const threads = threadsStore
-    .use()
-    .filter((t) => !t.archived)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+  const { data: threads } = useLiveQuery({
+    query: (q) =>
+      q
+        .from({ thread: threadsCollection })
+        .where(({ thread }) => eq(thread.archived, false))
+        .orderBy(({ thread }) => thread.updatedAt, "desc")
+  })
   const [search, setSearch] = useState("")
   const query = search.trim().toLowerCase()
   const filtered = query
@@ -225,7 +233,7 @@ function ThreadList({
     : threads
 
   // Pinned threads first, then the rest grouped by date.
-  const groups: Array<{ label: string; items: Array<ThreadMeta> }> = []
+  const groups: Array<{ label: string; items: Array<Thread> }> = []
   const pinned = filtered.filter((t) => t.pinned)
   if (pinned.length > 0) groups.push({ label: "Pinned", items: pinned })
   for (const thread of filtered.filter((t) => !t.pinned)) {
@@ -299,7 +307,7 @@ function ThreadListItem({
   onNavigate,
   onActiveRemoved
 }: {
-  thread: ThreadMeta
+  thread: Thread
   isActive: boolean
   onNavigate?: () => void
   onActiveRemoved: () => void
@@ -414,7 +422,7 @@ function ThreadListItem({
                 archiveThread(thread.id)
                 if (isActive) onActiveRemoved()
               } else if (key === "delete") {
-                void deleteThread(thread.id)
+                deleteThread(thread.id)
                 if (isActive) onActiveRemoved()
               }
             }}

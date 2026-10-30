@@ -9,6 +9,7 @@ import Plus from "@gravity-ui/icons/Plus"
 import Sun from "@gravity-ui/icons/Sun"
 import TrashBin from "@gravity-ui/icons/TrashBin"
 import { Button, Drawer, Dropdown, Header, Label, Tooltip } from "@heroui/react"
+import { DbProvider, eq, useLiveQuery } from "@tanstack/react-db"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useTheme } from "next-themes"
 import { useEffect, useState } from "react"
@@ -19,13 +20,10 @@ import { ThreadListSidebar } from "#/components/chat/thread-list-sidebar"
 import { McpServersModal } from "#/components/mcp/mcp-servers-modal"
 import { SettingsModal } from "#/components/settings/settings-modal"
 import { copyText, formatChatLog } from "#/lib/chat-log"
-import { createStore } from "#/lib/store"
-import {
-  archiveThread,
-  chatPersistence,
-  deleteThread,
-  threadsStore
-} from "#/lib/threads"
+import { dbClient, openDb, threadsCollection } from "#/lib/db"
+import { setting } from "#/lib/settings"
+import { threadMessages } from "#/chat/persistence"
+import { archiveThread, deleteThread } from "#/lib/threads"
 
 type Search = { thread?: string }
 
@@ -33,10 +31,18 @@ export const Route = createFileRoute("/")({
   validateSearch: (search: Record<string, unknown>): Search => ({
     thread: typeof search.thread === "string" ? search.thread : undefined
   }),
-  component: Assistant
+  // The app's data is in IndexedDB, which only the browser has: render this
+  // page in the browser, once its collections have loaded.
+  ssr: false,
+  loader: () => openDb().then(() => null),
+  component: () => (
+    <DbProvider client={dbClient()}>
+      <Assistant />
+    </DbProvider>
+  )
 })
 
-const sidebarOpenStore = createStore(true, "lofi-agent:sidebar-open")
+const sidebarOpenSetting = setting("sidebarOpen", true)
 
 const isDesktop = () => window.matchMedia("(min-width: 768px)").matches
 
@@ -48,11 +54,17 @@ function Assistant() {
   const [draftId, setDraftId] = useState(() => uuidv7())
   const threadId = thread ?? draftId
 
-  const sidebarOpen = sidebarOpenStore.use()
+  const sidebarOpen = sidebarOpenSetting.use()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const meta = threadsStore.use().find((t) => t.id === threadId)
+  const { data: meta } = useLiveQuery({
+    query: (q) =>
+      q
+        .from({ thread: threadsCollection })
+        .where(({ thread }) => eq(thread.id, threadId))
+        .findOne()
+  })
 
   const newThread = () => {
     setDraftId(uuidv7())
@@ -84,7 +96,7 @@ function Assistant() {
         <div className="h-full w-60">
           <ThreadListSidebar
             {...sidebarProps}
-            onCollapse={() => sidebarOpenStore.set(false)}
+            onCollapse={() => sidebarOpenSetting.set(false)}
           />
         </div>
       </aside>
@@ -116,7 +128,7 @@ function Assistant() {
               variant="ghost"
               aria-label="Open sessions"
               onPress={() => {
-                if (isDesktop()) sidebarOpenStore.set(true)
+                if (isDesktop()) sidebarOpenSetting.set(true)
                 else setDrawerOpen(true)
               }}
               // Shown on small screens, and on desktop once the sidebar is collapsed.
@@ -179,11 +191,7 @@ function HeaderMenu({
   }, [copied])
 
   const copyChat = (id: string) => {
-    // Started inside the tap, before any await, for Safari (see copyText).
-    const log = Promise.resolve()
-      .then(() => chatPersistence.getItem(id))
-      .then((state) => formatChatLog(state?.messages ?? []))
-    copyText(log).then(
+    copyText(formatChatLog(threadMessages(id))).then(
       () => setCopied(true),
       (error: unknown) => console.error("Couldn't copy the session", error)
     )
@@ -216,7 +224,7 @@ function HeaderMenu({
               archiveThread(threadId)
               onRemoved()
             } else if (key === "delete") {
-              void deleteThread(threadId)
+              deleteThread(threadId)
               onRemoved()
             }
           }}

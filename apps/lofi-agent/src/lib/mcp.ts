@@ -3,14 +3,17 @@
  * adds. The browser connects to each one directly with TanStack AI's MCP
  * client (Streamable HTTP), so a server only works if it allows requests
  * from this site (CORS). The list, on/off choices and any keys or tokens
- * stay in this browser's storage.
+ * stay in this browser, in the mcpServers collection.
  */
 import { toolDefinition } from "@tanstack/ai"
 import type { JSONSchema } from "@tanstack/ai"
 import type { MCPClient } from "@tanstack/ai-mcp"
+import { useLiveQuery } from "@tanstack/react-db"
 import { useMemo } from "react"
 import { v7 as uuidv7 } from "uuid"
 
+import { deleteIfPresent, mcpServers, mcpServersCollection } from "#/lib/db"
+import type { McpServerRecord } from "#/lib/db"
 import { compactToolResult, shorten } from "#/lib/sources"
 import { createStore } from "#/lib/store"
 
@@ -76,23 +79,34 @@ const BUILT_IN_SERVERS: Array<Omit<McpServer, "enabled" | "token">> = [
   }
 ]
 
-/** Servers the user added. */
-const customServersStore = createStore<Array<McpServer>>(
-  [],
-  "lofi-agent:mcp-servers"
-)
-
-/** On or off for each built-in server, by id. Missing means on. */
-const builtInEnabledStore = createStore<Record<string, boolean>>(
-  {},
-  "lofi-agent:mcp-built-in"
-)
-
-/** The key the user entered for each built-in server, by id. */
-const builtInTokensStore = createStore<Record<string, string>>(
-  {},
-  "lofi-agent:mcp-built-in-keys"
-)
+/** Built-in servers first, then the user's (minus copies of a built-in). */
+function allServers(records: ReadonlyArray<McpServerRecord>): Array<McpServer> {
+  const saved = new Map(records.map((r) => [r.id, r]))
+  const builtIns = BUILT_IN_SERVERS.map((s) => {
+    const record = saved.get(s.id)
+    return {
+      ...s,
+      enabled: record?.enabled ?? true,
+      ...(record?.token && { token: record.token })
+    }
+  })
+  const urls = new Set(builtIns.map((s) => sameUrl(s.url)))
+  const custom = records.flatMap((r): Array<McpServer> =>
+    r.url && !isBuiltIn(r.id) && !urls.has(sameUrl(r.url))
+      ? [
+          {
+            id: r.id,
+            name: r.name ?? serverNameFromUrl(r.url),
+            url: r.url,
+            enabled: r.enabled,
+            ...(r.headers && { headers: r.headers }),
+            ...(r.token && { token: r.token })
+          }
+        ]
+      : []
+  )
+  return [...builtIns, ...custom]
+}
 
 /** A URL in one form, to spot the same server added twice. */
 function sameUrl(url: string) {
@@ -104,39 +118,18 @@ function sameUrl(url: string) {
   }
 }
 
-/** Built-in servers first, then the user's (minus copies of a built-in). */
-function allServers(
-  custom: Array<McpServer>,
-  enabled: Record<string, boolean>,
-  tokens: Record<string, string>
-): Array<McpServer> {
-  const builtIns = BUILT_IN_SERVERS.map((s) => ({
-    ...s,
-    enabled: enabled[s.id] ?? true,
-    ...(tokens[s.id] && { token: tokens[s.id] })
-  }))
-  const urls = new Set(builtIns.map((s) => sameUrl(s.url)))
-  return [...builtIns, ...custom.filter((s) => !urls.has(sameUrl(s.url)))]
-}
-
-export const getMcpServers = () =>
-  allServers(
-    customServersStore.get(),
-    builtInEnabledStore.get(),
-    builtInTokensStore.get()
-  )
+export const getMcpServers = () => allServers(mcpServers().toArray)
 
 export function useMcpServers() {
-  const custom = customServersStore.use()
-  const enabled = builtInEnabledStore.use()
-  const tokens = builtInTokensStore.use()
-  return useMemo(
-    () => allServers(custom, enabled, tokens),
-    [custom, enabled, tokens]
-  )
+  const { data } = useLiveQuery({
+    query: (q) => q.from({ server: mcpServersCollection })
+  })
+  return useMemo(() => allServers(data), [data])
 }
 
-const isBuiltIn = (id: string) => BUILT_IN_SERVERS.some((s) => s.id === id)
+function isBuiltIn(id: string) {
+  return BUILT_IN_SERVERS.some((s) => s.id === id)
+}
 
 /** Whether a server with this URL is already in the list. */
 export const hasMcpServer = (url: string) =>
@@ -310,20 +303,27 @@ export function addMcpServer(input: {
     ...(Object.keys(headers).length > 0 && { headers }),
     enabled: true
   }
-  customServersStore.set((all) => [...all, server])
+  mcpServers().insert({
+    id: server.id,
+    name: server.name,
+    url: server.url,
+    enabled: true,
+    ...(server.headers && { headers: server.headers })
+  })
   void checkMcpServer(server)
   return server
 }
 
 export function setMcpServerEnabled(id: string, enabled: boolean) {
   if (!enabled) disconnect(id)
-  if (isBuiltIn(id)) {
-    builtInEnabledStore.set((all) => ({ ...all, [id]: enabled }))
-    return
+  const collection = mcpServers()
+  if (collection.has(id)) {
+    collection.update(id, (draft) => {
+      draft.enabled = enabled
+    })
+  } else if (isBuiltIn(id)) {
+    collection.insert({ id, enabled })
   }
-  customServersStore.set((all) =>
-    all.map((s) => (s.id === id ? { ...s, enabled } : s))
-  )
 }
 
 /**
@@ -332,9 +332,15 @@ export function setMcpServerEnabled(id: string, enabled: boolean) {
  */
 export function setBuiltInMcpToken(id: string, token: string) {
   const clean = token.trim()
-  builtInTokensStore.set(({ [id]: _old, ...rest }) =>
-    clean ? { ...rest, [id]: clean } : rest
-  )
+  const collection = mcpServers()
+  if (collection.has(id)) {
+    collection.update(id, (draft) => {
+      if (clean) draft.token = clean
+      else delete draft.token
+    })
+  } else if (clean) {
+    collection.insert({ id, enabled: true, token: clean })
+  }
   const server = getMcpServers().find((s) => s.id === id)
   if (server?.enabled) void checkMcpServer(server)
 }
@@ -343,6 +349,6 @@ export function setBuiltInMcpToken(id: string, token: string) {
 export function removeMcpServer(id: string) {
   if (isBuiltIn(id)) return
   disconnect(id)
-  customServersStore.set((all) => all.filter((s) => s.id !== id))
+  deleteIfPresent(mcpServers(), id)
   mcpStatusStore.set(({ [id]: _removed, ...rest }) => rest)
 }

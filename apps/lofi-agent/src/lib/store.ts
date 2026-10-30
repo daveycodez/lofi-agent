@@ -1,40 +1,17 @@
 import { useSyncExternalStore } from "react"
 
 /**
- * Tiny external store. Optionally persisted to localStorage under `key`.
- * SSR-safe: the server (and first client render) always see `initial`.
+ * Tiny in-memory store, for state that lasts only while the page is open
+ * (connection and loading status). Saved state lives in TanStack DB.
  */
-export function createStore<T>(initial: T, key?: string) {
+export function createStore<T>(initial: T) {
   let value = initial
-  let loaded = !key
   const listeners = new Set<() => void>()
 
-  const load = () => {
-    if (loaded || typeof window === "undefined") return
-    loaded = true
-    try {
-      const raw = key ? window.localStorage.getItem(key) : null
-      if (raw) value = JSON.parse(raw) as T
-    } catch {
-      // Storage blocked or corrupt: keep the default.
-    }
-  }
-
-  const get = () => {
-    load()
-    return value
-  }
+  const get = () => value
 
   const set = (next: T | ((prev: T) => T)) => {
-    load()
     value = typeof next === "function" ? (next as (prev: T) => T)(value) : next
-    if (key) {
-      try {
-        window.localStorage.setItem(key, JSON.stringify(value))
-      } catch {
-        // Ignore quota / private-mode failures; state still works in memory.
-      }
-    }
     listeners.forEach((l) => l())
   }
 

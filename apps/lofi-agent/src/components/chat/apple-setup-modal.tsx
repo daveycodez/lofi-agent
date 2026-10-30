@@ -6,7 +6,7 @@
 import { Button, Link, Modal } from "@heroui/react"
 import { useSyncExternalStore } from "react"
 
-import { Markdown } from "#/components/chat/markdown"
+import { Markdown } from "#/components/ai/markdown"
 
 /** iPhone or iPad (iPadOS reports itself as a Mac, but has touch). */
 const isIOS = () =>

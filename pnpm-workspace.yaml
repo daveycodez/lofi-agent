@@ -8,3 +8,7 @@ allowBuilds:
   nx: true
   sharp: true
   workerd: true
+minimumReleaseAgeExclude:
+  - '@tanstack/db-ivm@1.0.0-rc.1'
+  - '@tanstack/db@1.0.0-rc.1'
+  - '@tanstack/react-db@1.0.0-rc.1'

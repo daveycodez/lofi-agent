@@ -6,13 +6,13 @@ import {
   recordGeneration,
   startReply,
   statsFromUsage
-} from "#/lib/llm/generation-stats"
+} from "#/chat/generation-stats"
 import {
   canThink,
   currentModel,
   modelInfo,
-  thinkingStore
-} from "#/lib/llm/models"
+  thinkingSetting
+} from "#/chat/models"
 import { getMcpTools } from "#/lib/mcp"
 import { currentSystemPrompt } from "#/lib/settings"
 
@@ -63,7 +63,7 @@ async function* reply(
     // Think: the adapter reads any level but "off" as "think first". Models
     // without a thinking switch get none.
     ...(canThink(model) && {
-      reasoning: thinkingStore.get() ? "high" : "off"
+      reasoning: thinkingSetting.get() ? "high" : "off"
     }),
     middleware: [replyStats],
     abortController
