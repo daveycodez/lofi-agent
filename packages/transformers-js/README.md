@@ -25,10 +25,10 @@ const stream = chat({
 | Model                                 | Reasoning                  | Without WebGPU |
 | ------------------------------------- | -------------------------- | -------------- |
 | `onnx-community/gemma-4-E4B-it-ONNX`  | on/off                     | no             |
-| `daveycodez/LFM3-1.7B-Web`            | on/off (`"off"`, `"high"`) | no             |
+| `daveycodez/LFM3-1.7B-Web`            | on/off (`"off"`, `"high"`) | yes            |
 | `onnx-community/LFM3-1.7B-ONNX`       | on/off                     | yes            |
-| `daveycodez/LFM2.5-1.2B-Web`          | none                       | no             |
-| `daveycodez/LFM2.5-1.2B-Thinking-Web` | always (`"high"`)          | no             |
+| `daveycodez/LFM2.5-1.2B-Web`          | none                       | yes            |
+| `daveycodez/LFM2.5-1.2B-Thinking-Web` | always (`"high"`)          | yes            |
 | `LiquidAI/LFM2.5-1.2B-Instruct-ONNX`  | none                       | yes            |
 | `LiquidAI/LFM2.5-1.2B-Thinking-ONNX`  | always                     | yes            |
 | `onnx-community/LFM2-1.2B-Tool-ONNX`  | none                       | yes            |

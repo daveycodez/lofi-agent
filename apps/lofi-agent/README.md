@@ -47,7 +47,7 @@ The "Web" builds are published under [`daveycodez` on Hugging Face](https://hugg
 - Settings: a system prompt sent with every session (before the current date), and deleting every session
 - Light, dark and system themes
 - Add to Home Screen: installs as an app with its own icon, and keeps the downloaded model more reliably than a Safari tab
-- Without WebGPU (Firefox on Android, for one), models run on the CPU through WebAssembly, on their CPU (`q4`) weights, with nothing to set: the picker offers the models that can (LFM2 1.2B Tool, LFM3 1.7B, LFM2.5 1.2B and LFM2.5 1.2B Thinking) and starts on LFM2 1.2B Tool. Much slower than WebGPU, especially while generating.
+- Without WebGPU (Firefox on Android, for one), models run on the CPU through WebAssembly, on their CPU (`q4`) weights, with nothing to set: every model but Gemma 4 can, from its CPU weights, and the picker starts on LFM2 1.2B Tool. Much slower than WebGPU, especially while generating.
 - Pages render on the server (the home page is prerendered), with skeletons for what comes from IndexedDB until it opens
 - TanStack Devtools in development, with the AI and Router panels (no button: open them with Ctrl + ~)
 

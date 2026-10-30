@@ -124,13 +124,14 @@ const GEMMA_4_E4B = {
  */
 const LFM3_1_7B_WEB = {
   name: "daveycodez/LFM3-1.7B-Web",
-  revision: "3c75909fbf17af6f734263e9cee75625bcfd7523",
+  revision: "9cda8fa27706d239b9c58f53a867d398e313b961",
   supports: TOOLS_AND_THINKING,
   size: "1.7b",
   context: CONTEXT,
   reasoning: THINKING_SWITCH,
   toolFormat: "lfm3",
-  sampling: LFM3_SAMPLING
+  sampling: LFM3_SAMPLING,
+  cpu: true
 } as const satisfies TransformersJsModelMeta
 
 /** The onnx-community export of LFM3. */
@@ -189,23 +190,25 @@ const LFM2_1_2B_TOOL = {
  */
 const LFM2_5_1_2B_WEB = {
   name: "daveycodez/LFM2.5-1.2B-Web",
-  revision: "7cbec27ef76aac9be538a16dd5dd57d19328c654",
+  revision: "f8df717df1ee01ccb899484d7f25cddfa78dd49f",
   supports: TOOLS,
   size: "1.2b",
   context: CONTEXT,
   toolFormat: "lfm2",
-  sampling: LFM2_5_SAMPLING
+  sampling: LFM2_5_SAMPLING,
+  cpu: true
 } as const satisfies TransformersJsModelMeta
 
 const LFM2_5_1_2B_THINKING_WEB = {
   name: "daveycodez/LFM2.5-1.2B-Thinking-Web",
-  revision: "eac258e512896325899cf2be2bbd18b546c71706",
+  revision: "db6d0161174b69db3bd4ed789e9a1cb888344f32",
   supports: TOOLS_AND_THINKING,
   size: "1.2b",
   context: CONTEXT,
   reasoning: ALWAYS_THINKS,
   toolFormat: "lfm2",
-  sampling: LFM2_5_THINKING_SAMPLING
+  sampling: LFM2_5_THINKING_SAMPLING,
+  cpu: true
 } as const satisfies TransformersJsModelMeta
 
 export const TRANSFORMERS_JS_TEXT_MODELS = [
