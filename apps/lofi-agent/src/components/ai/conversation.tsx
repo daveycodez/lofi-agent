@@ -1,5 +1,5 @@
 import ArrowDown from "@gravity-ui/icons/ArrowDown"
-import { Spinner } from "@heroui/react"
+import { ScrollShadow, Spinner } from "@heroui/react"
 import type { ComponentProps, ReactNode } from "react"
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom"
 
@@ -20,21 +20,32 @@ export function Conversation({ className = "", ...props }: ConversationProps) {
   )
 }
 
-export type ConversationContentProps = ComponentProps<
-  typeof StickToBottom.Content
->
-
+/**
+ * The scrolling transcript: HeroUI's ScrollShadow, so messages fade out at
+ * whichever edge has more to scroll to. Stick-to-bottom drives it through
+ * its scroll and content refs.
+ */
 export function ConversationContent({
   className = "",
-  scrollClassName = "",
-  ...props
-}: ConversationContentProps) {
+  children
+}: {
+  className?: string
+  children: ReactNode
+}) {
+  const { scrollRef, contentRef } = useStickToBottomContext()
   return (
-    <StickToBottom.Content
-      scrollClassName={`px-6 pt-6 ${scrollClassName}`}
-      className={`mx-auto flex w-full max-w-[714px] flex-col px-4 ${className}`}
-      {...props}
-    />
+    <ScrollShadow
+      ref={scrollRef}
+      className="size-full px-6 pt-6"
+      style={{ scrollbarGutter: "stable both-edges" }}
+    >
+      <div
+        ref={contentRef}
+        className={`mx-auto flex w-full max-w-[714px] flex-col px-4 ${className}`}
+      >
+        {children}
+      </div>
+    </ScrollShadow>
   )
 }
 
