@@ -741,7 +741,7 @@ function load(modelId: string) {
   if (current?.modelId === modelId) return current.runtime
   const previous = current?.runtime
   const runtime = (async () => {
-    // The saved cache belongs to the previous model.
+    // The kept caches belong to the previous model.
     await discardSaved()
     await previous?.then((r) => r.model.dispose()).catch(() => undefined)
     void removeOldCopies(modelId)
@@ -873,15 +873,20 @@ function copyCacheTensor(
 }
 
 /*
- * Prompt caching. The model's cache from the last run is kept, so the next
- * run reads only what's new instead of the whole chat again: after a tool
- * call, the next prompt is the last one plus the call and its result; a
- * follow-up message repeats the chat up to the last reply. Keys/values can
- * be cut back to any length, but conv states hold only the latest position,
- * so they're also saved at points to go back to (checkpoints): where each
- * prompt ends, and where a prompt stopped matching the cache (in a new chat,
- * usually the end of the system prompt and tools, which the next chat
- * repeats). ~22 KB per token of GPU memory, plus 0.3 MB per checkpoint.
+ * Prompt caching. The model's cache from each run is kept, so the next run
+ * reads only what's new instead of the whole chat again: after a tool call,
+ * the next prompt is the last one plus the call and its result; a follow-up
+ * message repeats the chat up to the last reply. Keys/values can be cut back
+ * to any length, but conv states hold only the latest position, so they're
+ * also saved at points to go back to (checkpoints): where each prompt ends,
+ * and where a prompt stopped matching the cache (in a new chat, usually the
+ * end of the system prompt and tools, which the next chat repeats).
+ *
+ * Several caches are kept, and each run takes the one its prompt matches
+ * best, so agents that take turns on the model keep one each: the deck
+ * builder's agent and the sub-agents it runs have different system prompts
+ * and tools, and with one cache each would wipe out the other's.
+ * ~22 KB per token of GPU memory, plus 0.3 MB per checkpoint.
  */
 type Checkpoint = { length: number; states: Record<string, Tensor> }
 type SavedCache = {
@@ -892,21 +897,47 @@ type SavedCache = {
   /** Ascending by length. */
   checkpoints: Array<Checkpoint>
 }
-let saved: SavedCache | null = null
-/** Checkpoints kept: the oldest (shortest) and the latest ones. */
+/** Most recently used first. */
+let savedCaches: Array<SavedCache> = []
+/** Caches kept between runs, at most. */
+const MAX_SAVED = 4
+/**
+ * Tokens all kept caches may hold together (~180 MB); the least recently
+ * used go first. The latest is always kept, whatever its length.
+ */
+const SAVED_TOKENS = 8192
+/** Checkpoints kept per cache: the oldest (shortest) and the latest ones. */
 const MAX_CHECKPOINTS = 6
 
 const disposeCheckpoint = (checkpoint: Checkpoint) => {
   for (const tensor of Object.values(checkpoint.states)) tensor.dispose()
 }
 
-/** Frees the saved cache, if any. */
+const disposeSaved = async (entry: SavedCache) => {
+  entry.checkpoints.forEach(disposeCheckpoint)
+  await entry.cache.dispose().catch(() => undefined)
+}
+
+/** Frees every kept cache. */
 async function discardSaved() {
-  const previous = saved
-  saved = null
-  if (!previous) return
-  previous.checkpoints.forEach(disposeCheckpoint)
-  await previous.cache.dispose().catch(() => undefined)
+  const all = savedCaches
+  savedCaches = []
+  await Promise.all(all.map(disposeSaved))
+}
+
+/** Keeps a run's cache, dropping the least recently used past the limits. */
+function keepSaved(entry: SavedCache) {
+  savedCaches.unshift(entry)
+  let tokens = savedCaches.reduce((sum, e) => sum + e.ids.length, 0)
+  while (
+    savedCaches.length > 1 &&
+    (savedCaches.length > MAX_SAVED || tokens > SAVED_TOKENS)
+  ) {
+    const dropped = savedCaches.pop()
+    if (!dropped) break
+    tokens -= dropped.ids.length
+    void disposeSaved(dropped)
+  }
 }
 
 /** The conv (and other non-attention) states of a cache, copied. */
@@ -919,58 +950,58 @@ function checkpoint(tf: TransformersModule, cache: Cache, length: number) {
 }
 
 /**
- * Takes the saved cache for a prompt: as is when the prompt continues what
- * it read, cut back to the latest checkpoint the prompt matches otherwise,
- * or none. Always leaves at least the prompt's last token to read. `common`
- * is how far the prompt matched the cache.
+ * Takes the kept cache that saves the most reading for a prompt: as is when
+ * the prompt continues what it read, cut back to the latest checkpoint the
+ * prompt matches otherwise. None if no cache helps; the others stay kept.
+ * Always leaves at least the prompt's last token to read. `common` is how
+ * far the prompt matched a cache.
  */
 function reuseSaved(
   tf: TransformersModule,
   modelId: string,
   ids: Array<number>
 ) {
-  const previous = saved
-  saved = null
-  if (!previous) {
+  let best: { index: number; usable: number; common: number } | null = null
+  let longestMatch = 0
+  for (const [index, entry] of savedCaches.entries()) {
+    if (entry.modelId !== modelId) continue
+    const limit = Math.min(entry.ids.length, ids.length - 1)
+    let common = 0
+    while (common < limit && entry.ids[common] === ids[common]) common++
+    longestMatch = Math.max(longestMatch, common)
+    const usable =
+      entry.ids.length === common
+        ? common
+        : (entry.checkpoints.filter((c) => c.length <= common).at(-1)?.length ??
+          0)
+    if (usable > 0 && (!best || usable > best.usable)) {
+      best = { index, usable, common }
+    }
+  }
+  if (!best) {
     return {
       cache: null,
       cached: 0,
       checkpoints: [] as Array<Checkpoint>,
-      common: 0
+      common: longestMatch
     }
   }
-  const limit = Math.min(previous.ids.length, ids.length - 1)
-  let common = 0
-  if (previous.modelId === modelId) {
-    while (common < limit && previous.ids[common] === ids[common]) common++
+  const [entry] = savedCaches.splice(best.index, 1)
+  const { common } = best
+  const checkpoints = entry.checkpoints.filter((c) => c.length <= common)
+  entry.checkpoints.filter((c) => c.length > common).forEach(disposeCheckpoint)
+  if (entry.ids.length === common) {
+    return { cache: entry.cache, cached: common, checkpoints, common }
   }
-  const none = {
-    cache: null,
-    cached: 0,
-    checkpoints: [] as Array<Checkpoint>,
-    common
-  }
-  const checkpoints = previous.checkpoints.filter((c) => c.length <= common)
-  previous.checkpoints
-    .filter((c) => c.length > common)
-    .forEach(disposeCheckpoint)
-  if (previous.modelId === modelId && previous.ids.length === common) {
-    return { cache: previous.cache, cached: common, checkpoints, common }
-  }
-  const back = checkpoints.at(-1)
-  if (!back) {
-    checkpoints.forEach(disposeCheckpoint)
-    void previous.cache.dispose().catch(() => undefined)
-    return none
-  }
+  const back = checkpoints[checkpoints.length - 1]
   const entries: Record<string, Tensor> = {}
-  for (const [name, tensor] of cacheTensors(previous.cache)) {
+  for (const [name, tensor] of cacheTensors(entry.cache)) {
     entries[name] = isKeysValues(name)
       ? copyCacheTensor(tf, tensor, back.length)
       : copyCacheTensor(tf, back.states[name])
   }
-  previous.cache.update(entries)
-  return { cache: previous.cache, cached: back.length, checkpoints, common }
+  entry.cache.update(entries)
+  return { cache: entry.cache, cached: back.length, checkpoints, common }
 }
 
 /**
@@ -1184,12 +1215,12 @@ async function generate(
     // (the last token generated isn't read until the next step).
     if (cache && current === loaded) {
       const length = cache.get_seq_length()
-      saved = {
+      keepSaved({
         modelId: loaded.modelId,
         ids: sequence.slice(0, length),
         cache,
         checkpoints
-      }
+      })
     } else if (cache) {
       checkpoints.forEach(disposeCheckpoint)
       await cache.dispose().catch(() => undefined)
