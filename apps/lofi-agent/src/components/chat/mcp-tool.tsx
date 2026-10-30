@@ -12,46 +12,48 @@ import {
   ToolInput,
   ToolOutput
 } from "#/components/ai/tool"
+import type { ToolStatus } from "#/components/ai/tool"
 import { ReplyContext } from "./thread-context"
 import { useChatContext } from "./ui-components"
 
 const asText = (value: unknown) =>
   typeof value === "string" ? value : JSON.stringify(value, null, 2)
 
-/** How a tool call ended: its output, its error, or neither yet. */
-function outcomeOf(part: ToolCallPart, result?: ToolResultPart) {
-  const error =
-    result && (result.error || result.state === "error")
-      ? (result.error ?? asText(result.content))
-      : part.state === "error"
-        ? "The tool failed."
-        : undefined
-  const output =
-    part.output !== undefined
-      ? asText(part.output)
-      : result && typeof result.content === "string"
-        ? result.content
-        : undefined
-  return { error, output }
+/** Why a call failed, if it did. */
+function errorOf(part: ToolCallPart, result?: ToolResultPart) {
+  if (result && (result.error || result.state === "error")) {
+    return result.error ?? asText(result.content)
+  }
+  return part.state === "error" ? "The tool failed." : undefined
 }
 
-/** Any MCP server's tool: its name, with its arguments and result inside. */
+/** Where a call is, from its state, as TanStack's example reads it. */
+function statusOf(
+  part: ToolCallPart,
+  result: ToolResultPart | undefined,
+  isRunning: boolean
+): ToolStatus {
+  if (errorOf(part, result)) return "error"
+  if (part.state === "approval-requested") return "approval"
+  if (part.output !== undefined || result) return "done"
+  if (part.state === "awaiting-input" || part.state === "input-streaming") {
+    return isRunning ? "preparing" : "stopped"
+  }
+  return isRunning ? "running" : "stopped"
+}
+
+/** Any MCP server's tool: its name and status, its arguments and result inside. */
 export function McpTool({ part, result }: ToolProps<typeof chatOptions>) {
   const { isRunning } = useContext(ReplyContext)
-  const { error, output } = outcomeOf(part, result)
-  const status = error
-    ? "error"
-    : part.state === "approval-requested"
-      ? "approval"
-      : output === undefined && isRunning
-        ? "running"
-        : "done"
+  const errorText = errorOf(part, result)
+  const output =
+    part.output ?? (typeof result?.content === "string" ? result.content : undefined)
   return (
     <Tool>
-      <ToolHeader name={part.name} status={status} />
+      <ToolHeader name={part.name} status={statusOf(part, result, isRunning)} />
       <ToolContent>
-        <ToolInput input={part.arguments} />
-        <ToolOutput output={output} errorText={error} />
+        <ToolInput input={part.input ?? part.arguments} />
+        <ToolOutput output={output} errorText={errorText} />
       </ToolContent>
     </Tool>
   )
@@ -70,7 +72,7 @@ export function McpToolApproval({
   return (
     <ToolApproval
       name={interrupt.toolName}
-      input={JSON.stringify(interrupt.originalArgs ?? {})}
+      input={interrupt.originalArgs}
       status={interrupt.status}
       isDisabled={!interrupt.canResolve || resuming}
       onApprove={() => interrupt.resolveInterrupt(true)}

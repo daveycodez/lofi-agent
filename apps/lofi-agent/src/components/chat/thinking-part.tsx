@@ -16,8 +16,8 @@ export function ThinkingPart({
   const thinking = part.content.trim()
   if (!thinking) return null
   return (
-    <Reasoning>
-      <ReasoningTrigger isStreaming={isRunning && !hasAnswer} />
+    <Reasoning isStreaming={isRunning && !hasAnswer}>
+      <ReasoningTrigger />
       <ReasoningContent>{thinking}</ReasoningContent>
     </Reasoning>
   )

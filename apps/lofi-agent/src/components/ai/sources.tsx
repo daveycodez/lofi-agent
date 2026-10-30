@@ -3,6 +3,7 @@
  * Styled after HeroUI Pro's chat sources (a "N sources" toggle above favicon
  * chips), built from HeroUI OSS parts.
  */
+import BookOpen from "@gravity-ui/icons/BookOpen"
 import Globe from "@gravity-ui/icons/Globe"
 import { Disclosure, Link, Tooltip } from "@heroui/react"
 import { useState } from "react"
@@ -46,7 +47,7 @@ function SourceChip({ source, label }: { source: Source; label?: string }) {
   )
 }
 
-/** The sources an answer drew on, under a "N sources" toggle. */
+/** The sources an answer drew on, under a "Used N sources" toggle. */
 export function SourceList({ sources }: { sources: Array<Source> }) {
   return (
     // 12px from the answer: the reply's 8px gap plus mt-1.
@@ -54,7 +55,8 @@ export function SourceList({ sources }: { sources: Array<Source> }) {
       <Disclosure.Heading>
         {/* The divider under the toggle shows only while the list is open. */}
         <Disclosure.Trigger className="flex w-full items-center gap-2 border-separator pb-2 text-sm text-muted aria-expanded:border-b">
-          {sources.length === 1 ? "1 source" : `${sources.length} sources`}
+          <BookOpen aria-hidden className="size-4" />
+          {sources.length === 1 ? "Used 1 source" : `Used ${sources.length} sources`}
           {/* Right after the label, not pushed to the far end. */}
           <Disclosure.Indicator className="ms-0" />
         </Disclosure.Trigger>

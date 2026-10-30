@@ -1,16 +1,50 @@
+import Check from "@gravity-ui/icons/Check"
 import Hand from "@gravity-ui/icons/Hand"
 import TriangleExclamation from "@gravity-ui/icons/TriangleExclamation"
 import Wrench from "@gravity-ui/icons/Wrench"
 import { Button, Card, Disclosure, Spinner } from "@heroui/react"
 import type { ReactNode } from "react"
 
-/** A tool call, collapsed under its name. */
+/** A tool call, in a card, collapsed under its name. */
 export function Tool({ children }: { children: ReactNode }) {
-  return <Disclosure>{children}</Disclosure>
+  return (
+    <Card className="gap-0 p-0">
+      <Disclosure>{children}</Disclosure>
+    </Card>
+  )
 }
 
-/** `approval`: the call waits for the user to approve or deny it. */
-export type ToolStatus = "running" | "approval" | "error" | "done"
+/**
+ * Where a call is: `preparing` while the model writes its arguments,
+ * `running` while the tool runs, `approval` while it waits for the user,
+ * `stopped` when the reply ended before it did.
+ */
+export type ToolStatus =
+  | "preparing"
+  | "running"
+  | "approval"
+  | "error"
+  | "done"
+  | "stopped"
+
+const STATUS_LABELS: Record<ToolStatus, string> = {
+  preparing: "Preparing",
+  running: "Running",
+  approval: "Waiting for approval",
+  error: "Failed",
+  done: "Done",
+  stopped: "Not run"
+}
+
+function StatusIcon({ status }: { status: ToolStatus }) {
+  if (status === "preparing" || status === "running") {
+    return <Spinner size="sm" color="current" />
+  }
+  if (status === "approval") return <Hand className="text-warning" />
+  if (status === "error") return <TriangleExclamation className="text-danger" />
+  if (status === "done") return <Check className="text-success" />
+  return <Wrench />
+}
 
 export function ToolHeader({
   name,
@@ -23,22 +57,17 @@ export function ToolHeader({
     <Disclosure.Heading>
       <Button
         slot="trigger"
-        size="sm"
         variant="ghost"
-        className="-ms-3 text-muted"
+        size="sm"
+        fullWidth
+        className="justify-start rounded-3xl px-3 text-muted"
       >
-        {status === "running" ? (
-          <Spinner size="sm" color="current" />
-        ) : status === "approval" ? (
-          <Hand className="text-warning" />
-        ) : status === "error" ? (
-          <TriangleExclamation className="text-danger" />
-        ) : (
-          <Wrench />
-        )}
-        <span className="font-mono text-xs">{name}</span>
-        {/* Buttons pull icons in by 2px; keep the caret 8px from the label. */}
-        <Disclosure.Indicator className="ms-0" />
+        <StatusIcon status={status} />
+        <span className="min-w-0 truncate font-mono text-xs text-foreground">
+          {name}
+        </span>
+        <span className="shrink-0 text-xs">{STATUS_LABELS[status]}</span>
+        <Disclosure.Indicator className="ms-auto" />
       </Button>
     </Disclosure.Heading>
   )
@@ -47,29 +76,30 @@ export function ToolHeader({
 export function ToolContent({ children }: { children: ReactNode }) {
   return (
     <Disclosure.Content>
-      <Disclosure.Body className="flex flex-col gap-2 border-s-2 border-separator ps-3 text-xs">
+      <Disclosure.Body className="flex flex-col gap-2 border-t border-separator px-3 py-3 text-xs">
         {children}
       </Disclosure.Body>
     </Disclosure.Content>
   )
 }
 
-/** Pretty-prints JSON, or returns the text as it is. */
-function prettyJson(json: string) {
+/** A value as readable text: JSON pretty-printed, text as it is. */
+function asText(value: unknown) {
+  if (typeof value !== "string") return JSON.stringify(value, null, 2)
   try {
-    return JSON.stringify(JSON.parse(json), null, 2)
+    return JSON.stringify(JSON.parse(value), null, 2)
   } catch {
-    return json
+    return value
   }
 }
 
-/** The arguments the model wrote, as JSON. */
-export function ToolInput({ input }: { input: string }) {
+/** The arguments the model wrote. */
+export function ToolInput({ input }: { input: unknown }) {
   return (
     <>
       <p className="text-muted">Arguments</p>
       <pre className="max-h-48 overflow-auto rounded-xl bg-surface-secondary p-3 font-mono whitespace-pre-wrap">
-        {prettyJson(input)}
+        {asText(input ?? {})}
       </pre>
     </>
   )
@@ -80,7 +110,7 @@ export function ToolOutput({
   output,
   errorText
 }: {
-  output?: string
+  output?: unknown
   errorText?: string
 }) {
   if (output === undefined && !errorText) return null
@@ -90,7 +120,7 @@ export function ToolOutput({
       <pre
         className={`max-h-60 overflow-auto rounded-xl bg-surface-secondary p-3 font-mono whitespace-pre-wrap ${errorText ? "text-danger" : ""}`}
       >
-        {errorText ?? output}
+        {errorText ?? asText(output)}
       </pre>
     </>
   )
@@ -109,8 +139,7 @@ export function ToolApproval({
   onDeny
 }: {
   name: string
-  /** The arguments, as JSON. */
-  input: string
+  input: unknown
   status: "pending" | "validating" | "staged" | "submitting" | "error"
   isDisabled: boolean
   onApprove: () => void

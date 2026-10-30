@@ -8,7 +8,16 @@ import { ChatPromptInput } from "./input"
 import { ChatLayout } from "./layout"
 import { everyTool, McpTool, McpToolApproval } from "./mcp-tool"
 import { ChatMessage } from "./message"
+import {
+  AudioPart,
+  DocumentPart,
+  ImagePart,
+  ToolResultPart,
+  UIResourcePart,
+  VideoPart
+} from "./media-parts"
 import { ChatQueueItem } from "./queue-item"
+import { StructuredOutputPart } from "./structured-output"
 import { TextPart } from "./text-part"
 import { ThinkingPart } from "./thinking-part"
 
@@ -34,8 +43,13 @@ export const ChatUI = createChatUI(chatOptions, {
   partsComponents: {
     text: TextPart,
     thinking: ThinkingPart,
-    // A tool result shows with its call, in the tool's widget.
-    toolResult: FallbackPart,
+    structuredOutput: StructuredOutputPart,
+    image: ImagePart,
+    audio: AudioPart,
+    video: VideoPart,
+    document: DocumentPart,
+    toolResult: ToolResultPart,
+    uiResource: UIResourcePart,
     fallback: FallbackPart
   },
   // MCP tools are only known at runtime: one widget for every tool name.
