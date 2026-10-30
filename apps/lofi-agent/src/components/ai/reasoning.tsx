@@ -1,4 +1,4 @@
-import { Button, Disclosure } from "@heroui/react"
+import { Disclosure } from "@heroui/react"
 import { createContext, useContext } from "react"
 import type { ReactNode } from "react"
 
@@ -30,20 +30,14 @@ export function ReasoningTrigger() {
   const label = isStreaming ? "Thinking…" : "Thoughts"
   return (
     <Disclosure.Heading>
-      {/* Like the sources toggle: only as wide as its label and chevron. */}
-      {/* As in HeroUI Pro's ChainOfThought: a small ghost button with no
-          padding, as wide as its label and chevron. */}
-      <Button
-        slot="trigger"
-        size="sm"
-        variant="ghost"
-        className="h-8 gap-2 p-0 text-sm font-normal text-muted data-[hovered=true]:bg-transparent data-[hovered=true]:text-foreground"
-      >
+      {/* The sources toggle's design at text-sm: only as wide as its label
+          and chevron, and only the text color changes on hover. */}
+      <Disclosure.Trigger className="flex min-h-8 w-fit items-center gap-2 py-1 text-sm text-muted transition-colors hover:text-foreground">
         <span className={isStreaming ? "text-shimmer" : undefined}>
           {label}
         </span>
-        <Disclosure.Indicator className="size-3.5 text-muted" />
-      </Button>
+        <Disclosure.Indicator className="ms-0 size-3.5 shrink-0 text-muted" />
+      </Disclosure.Trigger>
     </Disclosure.Heading>
   )
 }

@@ -1,4 +1,5 @@
 import ArrowDown from "@gravity-ui/icons/ArrowDown"
+import { Spinner } from "@heroui/react"
 import type { ComponentProps, ReactNode } from "react"
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom"
 
@@ -55,8 +56,15 @@ export function ConversationEmptyState({
   )
 }
 
-/** Jumps back to the newest message; hidden while already there. */
-export function ConversationScrollButton() {
+/**
+ * Jumps back to the newest message; hidden while already there. Shows a
+ * spinner instead of the arrow while a reply is being written.
+ */
+export function ConversationScrollButton({
+  isLoading = false
+}: {
+  isLoading?: boolean
+}) {
   const { isAtBottom, scrollToBottom } = useStickToBottomContext()
   return (
     <div
@@ -65,10 +73,12 @@ export function ConversationScrollButton() {
       <Action
         label="Scroll to bottom"
         variant="outline"
-        className=""
+        // An opaque page-colored fill, so text scrolling under it doesn't
+        // show through, including on hover.
+        className="[--button-bg-hover:color-mix(in_srgb,var(--default)_60%,var(--background))] [--button-bg:var(--background)]"
         onPress={() => void scrollToBottom()}
       >
-        <ArrowDown />
+        {isLoading ? <Spinner size="sm" color="current" /> : <ArrowDown />}
       </Action>
     </div>
   )

@@ -304,8 +304,7 @@ function ReplyActions({
   onDelete?: () => void
 }) {
   return (
-    // 8px under the reply, not the 16px between its parts.
-    <Actions className="-mt-2">
+    <Actions>
       {text && <CopyAction text={text} />}
       {text && <ReadAloudAction text={text} />}
       {canRegenerate && (

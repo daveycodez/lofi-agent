@@ -17,7 +17,7 @@ export function Message({ from, className = "", ...props }: MessageProps) {
     <div
       data-role={from}
       className={`group flex flex-col ${
-        from === "user" ? "items-end gap-2" : "gap-4"
+        from === "user" ? "items-end gap-2" : "gap-2"
       } ${className}`}
       {...props}
     />

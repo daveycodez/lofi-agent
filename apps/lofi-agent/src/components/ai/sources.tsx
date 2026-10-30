@@ -4,7 +4,7 @@
  * chips), built from HeroUI OSS parts.
  */
 import Globe from "@gravity-ui/icons/Globe"
-import { Chip, Disclosure, Link, Tooltip } from "@heroui/react"
+import { Disclosure, Link, Tooltip } from "@heroui/react"
 import { useState } from "react"
 
 import type { Source } from "#/lib/sources"
@@ -28,7 +28,10 @@ function Favicon({ url }: { url: string }) {
   )
 }
 
-/** A source as a small chip: icon and site name, with a preview on hover. */
+/**
+ * A source as a 20px pill like HeroUI Pro's ChatSource: 14px icon and the
+ * muted site name, with a preview card on hover.
+ */
 function SourceChip({ source, label }: { source: Source; label?: string }) {
   return (
     <Tooltip delay={300}>
@@ -36,31 +39,31 @@ function SourceChip({ source, label }: { source: Source; label?: string }) {
         href={source.url}
         target="_blank"
         rel="noopener noreferrer"
-        className="no-underline"
+        className="inline-flex h-5 max-w-32 items-center gap-1 overflow-hidden rounded-full bg-default px-1.5 py-0 text-xs leading-none font-normal text-muted no-underline transition-colors duration-150 hover:bg-default-hover hover:text-foreground"
       >
-        {/* A 20px pill like HeroUI Pro's ChatSource: 14px icon, muted title. */}
-        <Chip
-          size="sm"
-          className="h-5 max-w-48 gap-1 px-1.5 text-muted hover:text-foreground"
-        >
-          <Favicon url={source.url} />
-          <Chip.Label className="truncate px-0 text-xs leading-3">
-            {label ?? source.site}
-          </Chip.Label>
-        </Chip>
+        <Favicon url={source.url} />
+        <span className="min-w-0 truncate text-start">
+          {label ?? source.site}
+        </span>
       </Link>
       {/* The site, the page's title, and an excerpt when there is one. */}
-      <Tooltip.Content className="flex max-w-80 flex-col gap-2 rounded-3xl p-4">
-        <span className="flex min-w-0 items-center gap-2 text-sm">
-          <Favicon url={source.url} />
-          <span className="truncate">{source.site}</span>
-        </span>
-        <span className="text-sm font-medium">{source.title}</span>
-        {source.snippet && (
-          <span className="line-clamp-3 text-sm text-muted">
-            {source.snippet}
+      <Tooltip.Content className="w-80 rounded-2xl p-4">
+        <span className="flex flex-col gap-1.5 p-1">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Favicon url={source.url} />
+            <span className="truncate text-sm text-foreground">
+              {source.site}
+            </span>
           </span>
-        )}
+          <span className="line-clamp-2 text-sm font-medium">
+            {source.title}
+          </span>
+          {source.snippet && (
+            <span className="line-clamp-2 text-sm text-muted">
+              {source.snippet}
+            </span>
+          )}
+        </span>
       </Tooltip.Content>
     </Tooltip>
   )
@@ -79,9 +82,9 @@ export function SourceList({ sources }: { sources: Array<Source> }) {
         </Disclosure.Trigger>
       </Disclosure.Heading>
       {/* A divider, then the chips, in HeroUI's default body padding. */}
-      <Disclosure.Content className="border-border data-[expanded=true]:border-t">
+      <Disclosure.Content className="border-default data-[expanded=true]:border-t">
         <Disclosure.Body>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2 pt-2">
             {sources.map((source) => (
               <SourceChip key={source.url} source={source} />
             ))}

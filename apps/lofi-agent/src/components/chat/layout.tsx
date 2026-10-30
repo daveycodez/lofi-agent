@@ -54,7 +54,7 @@ export function ChatLayout({
   Queue,
   Input
 }: LayoutProps<typeof chatOptions>) {
-  const { messages, isHydrating, queue } = useChatContext()
+  const { messages, isHydrating, isLoading, queue } = useChatContext()
   const { threadId } = useThread()
 
   if (messages.length === 0 && !isHydrating) {
@@ -71,7 +71,7 @@ export function ChatLayout({
         )}
       </ConversationContent>
       <div className="relative mx-auto flex w-full max-w-[calc(714px+3rem)] flex-col px-6 pb-2">
-        <ConversationScrollButton />
+        <ConversationScrollButton isLoading={isLoading} />
         {queue.length > 0 && (
           <div className="mb-2 flex flex-col gap-1">
             <p className="px-1 text-xs font-medium text-muted">Queued</p>
@@ -110,15 +110,18 @@ function Transcript({
           stops following the bottom first, so what was opened stays put
           rather than being scrolled up as the transcript grows. */}
       <div
-        className="mb-6 flex flex-col gap-y-4"
+        className="mb-6 flex flex-col gap-y-8"
         onPointerDownCapture={(e) => releaseOnToggle(e.target, stopScroll)}
         onKeyDownCapture={(e) => releaseOnToggle(e.target, stopScroll)}
       >
         <Messages />
         {/* The reply before its first token, or a run that failed. */}
         {last?.role === "user" && (isLoading || error) && <PendingReply />}
-        {/* Approvals and other pauses waiting for an answer. */}
-        <Interrupts />
+        {/* Approvals and other pauses waiting for an answer, 8px under the
+            reply they belong to, as a part of it would be. */}
+        <div className="-mt-6 flex flex-col gap-2 empty:hidden">
+          <Interrupts />
+        </div>
       </div>
     </TranscriptContext.Provider>
   )

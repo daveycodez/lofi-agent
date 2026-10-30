@@ -27,7 +27,7 @@ function ToolBox({
     <Disclosure
       defaultExpanded={defaultExpanded}
       className={`overflow-hidden rounded-xl border ${
-        tone === "warning" ? "border-warning/40" : "border-border"
+        tone === "warning" ? "border-warning/40" : "border-default"
       }`}
     >
       {children}
@@ -39,7 +39,7 @@ function ToolBox({
 function ToolTrigger({ children }: { children: ReactNode }) {
   return (
     <Disclosure.Heading>
-      <Disclosure.Trigger className="flex w-full items-center gap-2 px-3 py-2 text-start text-xs">
+      <Disclosure.Trigger className="flex min-h-9 w-full items-center gap-2 px-3 py-2 text-start text-xs hover:bg-default data-[pressed=true]:bg-default">
         {children}
         <Disclosure.Indicator className="ms-auto size-3.5 shrink-0 text-muted" />
       </Disclosure.Trigger>
