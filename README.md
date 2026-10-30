@@ -1,5 +1,7 @@
 # tanstack-ai-browser
 
+[Demo](https://lofi-agent.daveycodez.workers.dev)
+
 [TanStack AI](https://tanstack.com/ai) adapters for language models that run in the browser. Hand one to `chat()` like any hosted model, and tools, sub-agents and `useChat` work the same, with the model on the user's device.
 
 | Package                                                            | What it runs                                                                                                                       |
