@@ -25,7 +25,7 @@ export const threadsStore = createStore<Array<ThreadMeta>>(
 
 export function titleFrom(text: string) {
   const line = text.trim().split("\n")[0] ?? ""
-  return line.length > 48 ? `${line.slice(0, 47)}…` : line || "New chat"
+  return line.length > 48 ? `${line.slice(0, 47)}…` : line || "New session"
 }
 
 /** Records activity on a thread, creating it on first use. */

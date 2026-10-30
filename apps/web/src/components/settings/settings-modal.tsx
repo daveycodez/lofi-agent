@@ -71,7 +71,7 @@ function SettingsForm({ onDone }: { onDone: () => void }) {
             className="resize-y"
           />
           <Description>
-            Sent to every model at the start of each chat, after today&apos;s
+            Sent to every model at the start of each session, after today&apos;s
             date. Kept in this browser only.
           </Description>
         </TextField>

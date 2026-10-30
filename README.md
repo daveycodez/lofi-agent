@@ -4,10 +4,10 @@ A chat app that runs small language models entirely in your browser. Models are 
 
 ## Why it's different
 
-- **Private.** In-browser models run on your device. The app has no backend and no accounts: the Cloudflare Worker only serves prerendered pages. Chats, settings and MCP server details stay in your browser's storage.
-- **Runs on iPhone.** The default model is a custom build made for iPhone Safari, and the runtime is tuned to stay inside its memory and GPU limits. In-browser models hold up to 8,192 tokens per chat, prompt and reply together.
+- **Private.** In-browser models run on your device. The app has no backend and no accounts: the Cloudflare Worker only serves prerendered pages. Sessions, settings and MCP server details stay in your browser's storage.
+- **Runs on iPhone.** The default model is a custom build made for iPhone Safari, and the runtime is tuned to stay inside its memory and GPU limits. In-browser models hold up to 8,192 tokens per session, prompt and reply together.
 - **Download once.** Model weights (about 0.8 to 1.1 GB per model) are saved to the browser's Origin Private File System and loaded from disk on later visits.
-- **Reuses work between runs.** The model keeps what it has already read, so a follow-up message, the next step after a tool call, or a new chat with the same system prompt only reads what's new. The system prompt and tools are also saved to disk, so they aren't read again after a reload.
+- **Reuses work between runs.** The model keeps what it has already read, so a follow-up message, the next step after a tool call, or a new session with the same system prompt only reads what's new. The system prompt and tools are also saved to disk, so they aren't read again after a reload.
 
 What does leave your device: web search queries (if web search is on), calls to MCP servers you add, and the downloads of model files (Hugging Face) and the runtime (jsDelivr).
 
@@ -28,14 +28,14 @@ The "Web" builds are published under [`daveycodez` on Hugging Face](https://hugg
 - Streaming replies with collapsible thinking, Markdown, math (KaTeX) and syntax-highlighted code
 - Web search tool, on by default: tries Exa, then Parallel, then Firecrawl through their public MCP endpoints. No API keys needed. Results show as numbered source chips the reply can cite.
 - MCP servers: add any Streamable HTTP server by URL, with an optional bearer token. The browser connects directly, so the server must allow this site (CORS).
-- Chats saved in the browser (messages in IndexedDB, the chat list in localStorage)
-- Sidebar with search, pinned chats and date groups; rename, pin, archive and delete chats, or delete them all
+- Sessions saved in the browser (messages in IndexedDB, the session list in localStorage)
+- Sidebar with search, pinned sessions and date groups; rename, pin, archive and delete sessions, or delete them all
 - Edit a sent message and resend it, even while the model is still replying
 - Per reply: copy, regenerate, read aloud, export as Markdown, delete
-- Copy a whole chat as plain text, including thinking, tool calls and their results
+- Copy a whole session as plain text, including thinking, tool calls and their results
 - A stats line under the composer for the latest reply: tokens in, cached, out and total, prompt reading and generation speed, and time to first token
 - Voice input through the browser's speech recognition, where available
-- Settings: turn web search on or off, and write a system prompt sent with every chat (after the current date)
+- Settings: turn web search on or off, and write a system prompt sent with every session (before the current date)
 - Light, dark and system themes
 - Add to Home Screen: installs as an app with its own icon, and keeps the downloaded model more reliably than a Safari tab
 

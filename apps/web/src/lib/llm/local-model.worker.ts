@@ -1645,7 +1645,7 @@ async function generate(
   const room = CONTEXT_LIMIT - gpu.promptTokens
   if (room < MIN_REPLY_TOKENS) {
     throw new ContextLimitError(
-      `This chat is too long for the model: ${gpu.promptTokens.toLocaleString("en-US")} tokens, and it can read ${CONTEXT_LIMIT.toLocaleString("en-US")} at most, reply included. Start a new chat to keep going.`
+      `This session is too long for the model: ${gpu.promptTokens.toLocaleString("en-US")} tokens, and it can read ${CONTEXT_LIMIT.toLocaleString("en-US")} at most, reply included. Start a new session to keep going.`
     )
   }
   // Thinking takes many more tokens before the answer starts.
@@ -1835,7 +1835,7 @@ async function generate(
   ) {
     report()
     throw new ContextLimitError(
-      `The reply stopped at the model's limit of ${CONTEXT_LIMIT.toLocaleString("en-US")} tokens for a chat. Start a new chat to keep going.`
+      `The reply stopped at the model's limit of ${CONTEXT_LIMIT.toLocaleString("en-US")} tokens for a session. Start a new session to keep going.`
     )
   }
   return timings()

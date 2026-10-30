@@ -67,13 +67,13 @@ export function ThreadListSidebar(props: SidebarProps) {
             isIconOnly
             size="sm"
             variant="ghost"
-            aria-label="Collapse chats"
+            aria-label="Collapse sessions"
             onPress={props.onCollapse}
             className="-me-2"
           >
             <LayoutSideContentLeft />
           </Button>
-          <Tooltip.Content>Collapse chats</Tooltip.Content>
+          <Tooltip.Content>Collapse sessions</Tooltip.Content>
         </Tooltip>
       </div>
 
@@ -130,7 +130,7 @@ function ChatsMenu({ onActiveRemoved }: { onActiveRemoved: () => void }) {
           isIconOnly
           size="sm"
           variant="ghost"
-          aria-label="Chat options"
+          aria-label="Session options"
           className="ms-auto"
         >
           <Ellipsis />
@@ -144,11 +144,11 @@ function ChatsMenu({ onActiveRemoved }: { onActiveRemoved: () => void }) {
           >
             <Dropdown.Item
               id="delete-all"
-              textValue="Delete all chats"
+              textValue="Delete all sessions"
               variant="danger"
             >
               <TrashBin className="size-4 text-danger" />
-              <Label>Delete all chats</Label>
+              <Label>Delete all sessions</Label>
             </Dropdown.Item>
           </Dropdown.Menu>
         </Dropdown.Popover>
@@ -165,13 +165,13 @@ function ChatsMenu({ onActiveRemoved }: { onActiveRemoved: () => void }) {
               <AlertDialog.Icon status="danger">
                 <TrashBin className="size-5" />
               </AlertDialog.Icon>
-              <AlertDialog.Heading>Delete all chats?</AlertDialog.Heading>
+              <AlertDialog.Heading>Delete all sessions?</AlertDialog.Heading>
             </AlertDialog.Header>
             <AlertDialog.Body>
               <p>
                 This permanently deletes{" "}
-                {count === 1 ? "your chat" : `all ${count} chats`}, including
-                archived ones. This can't be undone.
+                {count === 1 ? "your session" : `all ${count} sessions`},
+                including archived ones. This can't be undone.
               </p>
             </AlertDialog.Body>
             <AlertDialog.Footer>
@@ -248,26 +248,26 @@ function ThreadList({
         }}
       >
         <Plus className="text-muted" />
-        New chat
+        New session
       </Button>
 
       <SearchField
         fullWidth
-        aria-label="Search chats"
+        aria-label="Search sessions"
         value={search}
         onChange={setSearch}
         className="mt-2 shrink-0"
       >
         <SearchField.Group>
           <SearchField.SearchIcon />
-          <SearchField.Input placeholder="Search chats" />
+          <SearchField.Input placeholder="Search sessions" />
           <SearchField.ClearButton />
         </SearchField.Group>
       </SearchField>
 
-      <nav aria-label="Chats" className="mt-6 flex flex-col gap-0.5">
+      <nav aria-label="Sessions" className="mt-6 flex flex-col gap-0.5">
         {query && filtered.length === 0 ? (
-          <p className="px-2 py-2 text-sm text-muted">No chats found</p>
+          <p className="px-2 py-2 text-sm text-muted">No sessions found</p>
         ) : (
           groups.map((group, i) => (
             <Fragment key={group.label}>
@@ -330,7 +330,7 @@ function ThreadListItem({
     }
     // Same footprint as the row: the title becomes an input with save/cancel inside.
     return (
-      <TextField fullWidth aria-label="Rename chat">
+      <TextField fullWidth aria-label="Rename session">
         <InputGroup
           fullWidth
           onBlur={(e) => {
@@ -389,7 +389,7 @@ function ThreadListItem({
         })}
       >
         <span className="min-w-0 flex-1 truncate">
-          {thread.title || "New chat"}
+          {thread.title || "New session"}
         </span>
       </Link>
       <Dropdown>
@@ -397,7 +397,7 @@ function ThreadListItem({
           isIconOnly
           size="sm"
           variant="ghost"
-          aria-label="Chat actions"
+          aria-label="Session actions"
           className="absolute end-1 top-1/2 z-10 -translate-y-1/2"
         >
           <Ellipsis />

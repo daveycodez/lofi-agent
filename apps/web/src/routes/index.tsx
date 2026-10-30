@@ -77,7 +77,7 @@ function Assistant() {
     <div className="flex h-dvh w-full bg-background">
       {/* Desktop: collapsible sidebar. */}
       <aside
-        aria-label="Chats"
+        aria-label="Sessions"
         data-open={sidebarOpen || undefined}
         className="hidden w-0 shrink-0 overflow-hidden border-separator transition-[width] duration-200 ease-linear data-open:w-60 data-open:border-r md:block"
       >
@@ -93,7 +93,7 @@ function Assistant() {
       <Drawer.Backdrop isOpen={drawerOpen} onOpenChange={setDrawerOpen}>
         <Drawer.Content placement="left" className="w-60 max-w-[85vw] p-0">
           <Drawer.Dialog
-            aria-label="Chats"
+            aria-label="Sessions"
             className="h-full bg-background p-0"
           >
             <ThreadListSidebar
@@ -114,7 +114,7 @@ function Assistant() {
             <Button
               isIconOnly
               variant="ghost"
-              aria-label="Open chats"
+              aria-label="Open sessions"
               onPress={() => {
                 if (isDesktop()) sidebarOpenStore.set(true)
                 else setDrawerOpen(true)
@@ -125,22 +125,22 @@ function Assistant() {
             >
               <LayoutSideContentLeft />
             </Button>
-            <Tooltip.Content placement="bottom">Open chats</Tooltip.Content>
+            <Tooltip.Content placement="bottom">Open sessions</Tooltip.Content>
           </Tooltip>
           <h1 className="min-w-0 flex-1 truncate text-sm font-medium">
-            {meta?.title ?? "New chat"}
+            {meta?.title ?? "New session"}
           </h1>
           <Tooltip delay={300}>
             <Button
               isIconOnly
               variant="ghost"
               size="sm"
-              aria-label="New chat"
+              aria-label="New session"
               onPress={newThread}
             >
               <Plus />
             </Button>
-            <Tooltip.Content placement="bottom">New chat</Tooltip.Content>
+            <Tooltip.Content placement="bottom">New session</Tooltip.Content>
           </Tooltip>
           <HeaderMenu
             threadId={meta ? threadId : undefined}
@@ -185,7 +185,7 @@ function HeaderMenu({
       .then((state) => formatChatLog(state?.messages ?? []))
     copyText(log).then(
       () => setCopied(true),
-      (error: unknown) => console.error("Couldn't copy the chat", error)
+      (error: unknown) => console.error("Couldn't copy the session", error)
     )
   }
 
@@ -253,18 +253,22 @@ function HeaderMenu({
             </Dropdown.Item>
           </Dropdown.Section>
           <Dropdown.Section>
-            <Header>Chat</Header>
-            <Dropdown.Item id="copy" textValue="Copy chat">
+            <Header>Session</Header>
+            <Dropdown.Item id="copy" textValue="Copy session">
               <Copy className="size-4" />
-              <Label>Copy chat</Label>
+              <Label>Copy session</Label>
             </Dropdown.Item>
-            <Dropdown.Item id="archive" textValue="Archive chat">
+            <Dropdown.Item id="archive" textValue="Archive session">
               <Archive className="size-4" />
-              <Label>Archive chat</Label>
+              <Label>Archive session</Label>
             </Dropdown.Item>
-            <Dropdown.Item id="delete" textValue="Delete chat" variant="danger">
+            <Dropdown.Item
+              id="delete"
+              textValue="Delete session"
+              variant="danger"
+            >
               <TrashBin className="size-4 text-danger" />
-              <Label>Delete chat</Label>
+              <Label>Delete session</Label>
             </Dropdown.Item>
           </Dropdown.Section>
         </Dropdown.Menu>
