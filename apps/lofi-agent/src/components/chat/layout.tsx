@@ -73,7 +73,7 @@ function Transcript({
   const last = messages.at(-1)
 
   // Sending a message jumps back to the bottom, to follow the reply.
-  const { scrollToBottom, stopScroll } = useStickToBottomContext()
+  const { scrollToBottom } = useStickToBottomContext()
   const lastUserId = messages.filter((m) => m.role === "user").at(-1)?.id
   useEffect(() => {
     if (lastUserId) void scrollToBottom()
@@ -81,14 +81,10 @@ function Transcript({
 
   return (
     <TranscriptContext.Provider value={sources}>
-      {/* Opening or closing something (thoughts, a tool call, sources)
-          stops following the bottom first, so what was opened stays put
-          rather than being scrolled up as the transcript grows. */}
-      <div
-        className="mb-6 flex flex-col gap-y-8"
-        onPointerDownCapture={(e) => releaseOnToggle(e.target, stopScroll)}
-        onKeyDownCapture={(e) => releaseOnToggle(e.target, stopScroll)}
-      >
+      {/* Opening something (thoughts, a tool call, sources) keeps
+          following the bottom while it's followed, and moves nothing once
+          scrolled up. */}
+      <div className="mb-6 flex flex-col gap-y-8">
         <Messages />
         {/* The reply before its first token, or a run that failed. */}
         {last?.role === "user" && (isLoading || error) && <PendingReply />}
@@ -100,13 +96,6 @@ function Transcript({
       </div>
     </TranscriptContext.Provider>
   )
-}
-
-/** Stops following the bottom when `target` is inside a toggle. */
-function releaseOnToggle(target: EventTarget, stopScroll: () => void) {
-  if (target instanceof Element && target.closest("[aria-expanded]")) {
-    stopScroll()
-  }
 }
 
 function EmptyState({ Input }: { Input: ComponentType }) {
