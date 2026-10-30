@@ -173,21 +173,19 @@ function asJson(value: unknown): { json: unknown } | null {
   }
 }
 
-/** Code in a small rounded block: JSON highlighted, anything else as text. */
+/**
+ * Code in a small rounded block: JSON indented and highlighted, anything
+ * else as text.
+ */
 function CodeBlock({
   value,
-  pretty,
   isError = false
 }: {
   value: unknown
-  /** Indented JSON, rather than on one line. */
-  pretty: boolean
   isError?: boolean
 }) {
   const parsed = asJson(value)
-  const code = parsed
-    ? JSON.stringify(parsed.json, null, pretty ? 2 : undefined)
-    : String(value)
+  const code = parsed ? JSON.stringify(parsed.json, null, 2) : String(value)
   return (
     // `.markdown` scopes the highlight theme's token colors.
     <div className="markdown my-1 overflow-hidden rounded-xl bg-surface-secondary">
@@ -213,9 +211,9 @@ function CodeBlock({
   )
 }
 
-/** The arguments the model wrote, on one line. */
+/** The arguments the model wrote, indented. */
 export function ToolInput({ input }: { input: unknown }) {
-  return <CodeBlock value={input ?? {}} pretty={false} />
+  return <CodeBlock value={input ?? {}} />
 }
 
 /** What the tool returned, or why it failed. Nothing until either. */
@@ -226,9 +224,9 @@ export function ToolOutput({
   output?: unknown
   errorText?: string
 }) {
-  if (errorText) return <CodeBlock value={errorText} pretty isError />
+  if (errorText) return <CodeBlock value={errorText} isError />
   if (output === undefined) return null
-  return <CodeBlock value={output} pretty />
+  return <CodeBlock value={output} />
 }
 
 /**
