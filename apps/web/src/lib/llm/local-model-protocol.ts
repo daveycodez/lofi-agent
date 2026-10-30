@@ -35,6 +35,11 @@ export type RunTimings = {
   outputTokens: number
   /** From the request to the first generated token, in ms; null if none. */
   firstTokenMs: number | null
+  /**
+   * From starting to read the prompt (the model loaded) to the first
+   * generated token, in ms; null if none.
+   */
+  promptMs: number | null
   /** From the first generated token to the last, in ms. */
   decodeMs: number
 }

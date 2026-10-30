@@ -385,11 +385,13 @@ function generationStats({
   cachedTokens,
   outputTokens,
   firstTokenMs,
+  promptMs,
   decodeMs
 }: RunTimings): GenerationStats {
   return {
     inputTokens,
     ...(cachedTokens > 0 && { cachedTokens }),
+    ...(promptMs !== null && { promptMs }),
     outputTokens,
     ...(firstTokenMs !== null && {
       firstTokenMs,

@@ -17,6 +17,8 @@ export type GenerationStats = {
   outputTokens?: number
   /** From sending the prompt to the first generated token, in ms. */
   firstTokenMs?: number
+  /** From starting to read the prompt to the first generated token, in ms. */
+  promptMs?: number
   /** Tokens generated after the first one. */
   decodeTokens?: number
   /** From the first generated token to the last, in ms. */
@@ -127,6 +129,8 @@ export type ReplyStats = {
   cachedTokens?: number
   outputTokens?: number
   totalTokens?: number
+  /** Prompt tokens read per second, those served from a cache left out. */
+  promptTokensPerSecond?: number
   tokensPerSecond?: number
   firstTokenSeconds?: number
 }
@@ -157,11 +161,27 @@ export function replyStats(
       ? last.inputTokens + last.outputTokens
       : undefined
   const firstTokenMs = generations[0].firstTokenMs
+  // Prompt reading across the reply's runs, sub-agents' included: what each
+  // read fresh, and how long until its first token.
+  const read = generations.filter(
+    (g) => g.inputTokens !== undefined && g.promptMs !== undefined
+  )
+  const readTokens = sum(
+    read.map((g) => (g.inputTokens ?? 0) - (g.cachedTokens ?? 0))
+  )
+  const readMs = sum(read.map((g) => g.promptMs)) ?? 0
+  const cached = generations.filter((g) => g.cachedTokens !== undefined)
   return {
     inputTokens: last?.inputTokens,
-    cachedTokens: last?.cachedTokens,
+    // Tokens every run of the reply took from a cache instead of reading.
+    cachedTokens:
+      cached.length > 0 ? sum(cached.map((g) => g.cachedTokens)) : undefined,
     outputTokens: sum(generations.map((g) => g.outputTokens)),
     totalTokens: lastTotal,
+    promptTokensPerSecond:
+      readTokens !== undefined && readTokens > 0 && readMs >= MIN_DECODE_MS
+        ? readTokens / (readMs / 1000)
+        : undefined,
     tokensPerSecond:
       decodeMs >= MIN_DECODE_MS ? decodeTokens / (decodeMs / 1000) : undefined,
     firstTokenSeconds:
@@ -175,7 +195,7 @@ const oneDecimal = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1
 })
 
-/** ["In 868", "Cached 512", "Out 214", "Total 1,082", "18.4 tok/s", "TTFT 2.1s"] */
+/** ["In 868", "Cached 512", "Out 214", "Total 1,082", "95.2 pp/s", "18.4 tok/s", "TTFT 2.1s"] */
 export function replyStatsItems(stats: ReplyStats) {
   const n = (value: number | undefined, label: string) =>
     value !== undefined ? `${label} ${count.format(value)}` : null
@@ -184,6 +204,9 @@ export function replyStatsItems(stats: ReplyStats) {
     n(stats.cachedTokens, "Cached"),
     n(stats.outputTokens, "Out"),
     n(stats.totalTokens, "Total"),
+    stats.promptTokensPerSecond !== undefined
+      ? `${oneDecimal.format(stats.promptTokensPerSecond)} pp/s`
+      : null,
     stats.tokensPerSecond !== undefined
       ? `${oneDecimal.format(stats.tokensPerSecond)} tok/s`
       : null,
@@ -193,6 +216,6 @@ export function replyStatsItems(stats: ReplyStats) {
   ].filter((item) => item !== null)
 }
 
-/** "In 868 · Cached 512 · Out 214 · Total 1,082 · 18.4 tok/s · TTFT 2.1s" */
+/** "In 868 · Cached 512 · Out 214 · Total 1,082 · 95.2 pp/s · 18.4 tok/s · TTFT 2.1s" */
 export const formatReplyStats = (stats: ReplyStats) =>
   replyStatsItems(stats).join(" · ")

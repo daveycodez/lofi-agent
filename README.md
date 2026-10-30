@@ -13,13 +13,13 @@ What does leave your device: web search queries (if web search is on), calls to 
 
 ## Models
 
-| Model | Notes |
-| --- | --- |
+| Model                       | Notes                                                                                                                                                                                                 |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **LFM3 1.7B Web** (default) | Liquid AI's LFM3, in a custom ONNX build for iPhone Safari: 4-bit weights (about 900 MB), a smaller vocabulary, and flash attention in its sliding-window layers to keep memory down on long prompts. |
-| LFM3 1.7B | The `onnx-community` ONNX export of LFM3. |
-| LFM2.5 1.2B | Liquid AI's ONNX builds. With Think on, it runs the separate LFM2.5 1.2B Thinking model. |
-| LFM2.5 1.2B Web | The same weights, re-exported so reading a prompt computes output for the last token only. Long prompts (for example, with web search results) crashed iPhone Safari without this. |
-| Apple Foundation Model | Apple's on-device model, served on your Mac by [apfel](https://apfel.franzai.com). Shown on Apple devices only; needs a Mac (see Requirements). |
+| LFM3 1.7B                   | The `onnx-community` ONNX export of LFM3.                                                                                                                                                             |
+| LFM2.5 1.2B                 | Liquid AI's ONNX builds. With Think on, it runs the separate LFM2.5 1.2B Thinking model.                                                                                                              |
+| LFM2.5 1.2B Web             | The same weights, re-exported so reading a prompt computes output for the last token only. Long prompts (for example, with web search results) crashed iPhone Safari without this.                    |
+| Apple Foundation Model      | Apple's on-device model, served on your Mac by [apfel](https://apfel.franzai.com). Shown on Apple devices only; needs a Mac (see Requirements).                                                       |
 
 The "Web" builds are published under [`daveycodez` on Hugging Face](https://huggingface.co/daveycodez) and pinned to a commit. Models that can reason before answering have a Think toggle in the composer, on by default.
 
@@ -33,7 +33,7 @@ The "Web" builds are published under [`daveycodez` on Hugging Face](https://hugg
 - Edit a sent message and resend it, even while the model is still replying
 - Per reply: copy, regenerate, read aloud, export as Markdown, delete
 - Copy a whole chat as plain text, including thinking, tool calls and their results
-- A stats line under the composer for the latest reply: tokens in, cached, out and total, tokens per second, and time to first token
+- A stats line under the composer for the latest reply: tokens in, cached, out and total, prompt reading and generation speed, and time to first token
 - Voice input through the browser's speech recognition, where available
 - Settings: turn web search on or off, and write a system prompt sent with every chat (after the current date)
 - Light, dark and system themes

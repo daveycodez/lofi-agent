@@ -47,6 +47,10 @@ type Cache = Record<string, Tensor> & {
   dispose: () => Promise<void>
 }
 type Tokenizer = {
+  decode: (
+    ids: Array<bigint>,
+    options: { skip_special_tokens: boolean }
+  ) => string
   apply_chat_template: (
     messages: Array<ChatTurn>,
     options: Record<string, unknown>
@@ -883,9 +887,9 @@ function copyCacheTensor(
  * end of the system prompt and tools, which the next chat repeats).
  *
  * Several caches are kept, and each run takes the one its prompt matches
- * best, so agents that take turns on the model keep one each: the deck
- * builder's agent and the sub-agents it runs have different system prompts
- * and tools, and with one cache each would wipe out the other's.
+ * best, so agents that take turns on the model keep one each: an agent and
+ * the sub-agents it runs have different system prompts and tools, and with
+ * one cache each would wipe out the other's.
  * ~22 KB per token of GPU memory, plus 0.3 MB per checkpoint.
  */
 type Checkpoint = { length: number; states: Record<string, Tensor> }
@@ -900,10 +904,12 @@ type SavedCache = {
 /** Most recently used first. */
 let savedCaches: Array<SavedCache> = []
 /** Caches kept between runs, at most. */
-const MAX_SAVED = 4
+const MAX_SAVED = 6
 /**
- * Tokens all kept caches may hold together (~180 MB); the least recently
- * used go first. The latest is always kept, whatever its length.
+ * Tokens all kept caches may hold together (~180 MB). Past that, the least
+ * recently used are first cut back to their first checkpoint (usually the
+ * end of their system prompt and tools, all a finished sub-agent run leaves
+ * for the next), then dropped. The latest is always kept whole.
  */
 const SAVED_TOKENS = 8192
 /** Checkpoints kept per cache: the oldest (shortest) and the latest ones. */
@@ -925,10 +931,43 @@ async function discardSaved() {
   await Promise.all(all.map(disposeSaved))
 }
 
-/** Keeps a run's cache, dropping the least recently used past the limits. */
-function keepSaved(entry: SavedCache) {
+/** Cuts a kept cache back to its first checkpoint; false if it can't. */
+function trimSaved(tf: TransformersModule, entry: SavedCache) {
+  const first = entry.checkpoints.at(0)
+  if (!first || first.length >= entry.ids.length) return false
+  try {
+    const entries: Record<string, Tensor> = {}
+    for (const [name, tensor] of cacheTensors(entry.cache)) {
+      entries[name] = isKeysValues(name)
+        ? copyCacheTensor(tf, tensor, first.length)
+        : copyCacheTensor(tf, first.states[name])
+    }
+    entry.cache.update(entries)
+  } catch {
+    return false
+  }
+  entry.checkpoints.slice(1).forEach(disposeCheckpoint)
+  entry.checkpoints = [first]
+  entry.ids = entry.ids.slice(0, first.length)
+  return true
+}
+
+/** Keeps a run's cache, trimming or dropping others past the limits. */
+function keepSaved(tf: TransformersModule, entry: SavedCache) {
   savedCaches.unshift(entry)
   let tokens = savedCaches.reduce((sum, e) => sum + e.ids.length, 0)
+  for (let i = savedCaches.length - 1; i >= 1 && tokens > SAVED_TOKENS; i--) {
+    const before = savedCaches[i].ids.length
+    if (trimSaved(tf, savedCaches[i])) {
+      tokens -= before - savedCaches[i].ids.length
+      if (import.meta.env.DEV) {
+        ctx.postMessage({
+          type: "log",
+          text: `[cache] cut a ${before}-token cache to ${savedCaches[i].ids.length}`
+        })
+      }
+    }
+  }
   while (
     savedCaches.length > 1 &&
     (savedCaches.length > MAX_SAVED || tokens > SAVED_TOKENS)
@@ -1157,6 +1196,130 @@ async function readPrompt(
   return cache
 }
 
+/*
+ * Sampling, in one pass over the logits each token. Transformers.js's own
+ * sampling does the same steps but runs a separate ONNX Runtime session per
+ * token for top-k and rebuilds a set of every token so far for the
+ * repetition penalty.
+ */
+
+/**
+ * A logits processor that applies the model card's repetition penalty (to
+ * every token in the prompt and reply, as Transformers.js does), keeps the
+ * top_k likeliest tokens, draws one at the given temperature, and leaves
+ * only it possible.
+ */
+function createSampler({ temperature, top_k, repetition_penalty }: Sampling) {
+  const seen = new Set<number>()
+  let counted = 0
+  return (inputIds: Array<Array<bigint>>, logits: Tensor) => {
+    const ids = inputIds[0]
+    const data = logits.data as Float32Array
+    for (; counted < ids.length; counted++) seen.add(Number(ids[counted]))
+    if (repetition_penalty !== 1) {
+      for (const token of seen) {
+        const x = data[token]
+        data[token] = x < 0 ? x * repetition_penalty : x / repetition_penalty
+      }
+    }
+    // The k largest, in no order: replace the smallest kept when beaten.
+    const k = Math.max(
+      1,
+      Math.min(top_k > 0 ? top_k : data.length, data.length)
+    )
+    const keptIds = new Int32Array(k)
+    const kept = new Float32Array(k).fill(-Infinity)
+    let smallest = 0
+    for (let i = 0; i < data.length; i++) {
+      const x = data[i]
+      if (x <= kept[smallest]) continue
+      kept[smallest] = x
+      keptIds[smallest] = i
+      smallest = 0
+      for (let j = 1; j < k; j++) if (kept[j] < kept[smallest]) smallest = j
+    }
+    let best = 0
+    for (let j = 1; j < k; j++) if (kept[j] > kept[best]) best = j
+    let chosen = keptIds[best]
+    if (temperature > 0) {
+      const max = kept[best]
+      let total = 0
+      for (let j = 0; j < k; j++) {
+        kept[j] = Math.exp((kept[j] - max) / temperature)
+        total += kept[j]
+      }
+      let draw = Math.random() * total
+      for (let j = 0; j < k; j++) {
+        draw -= kept[j]
+        if (draw <= 0) {
+          chosen = keptIds[j]
+          break
+        }
+      }
+    }
+    data.fill(-Infinity)
+    data[chosen] = 0
+    return logits
+  }
+}
+
+/**
+ * Streams a reply's text as it's generated, decoding only the last few
+ * tokens each time. Transformers.js's TextStreamer decodes the whole line so
+ * far for every token, which slows down on long lines (thinking is often
+ * one long paragraph). Text is held back while it ends in a partial
+ * character.
+ */
+function createStreamer(
+  tokenizer: Tokenizer,
+  options: {
+    skipSpecial: boolean
+    onTokens: (tokens: Array<bigint>) => void
+    onText: (text: string) => void
+  }
+) {
+  let prompt = true
+  let tokens: Array<bigint> = []
+  // Text up to `read` has been sent; decoding from `prefix` keeps the
+  // spacing of the token before it right.
+  let prefix = 0
+  let read = 0
+  const decode = (from: number, to: number) =>
+    from >= to
+      ? ""
+      : tokenizer.decode(tokens.slice(from, to), {
+          skip_special_tokens: options.skipSpecial
+        })
+  const flush = (final: boolean) => {
+    const before = decode(prefix, read)
+    const text = decode(prefix, tokens.length)
+    if (text.length <= before.length) return
+    if (!final && text.endsWith("\uFFFD")) return
+    options.onText(text.slice(before.length))
+    prefix = read
+    read = tokens.length
+  }
+  return {
+    put(value: Array<Array<bigint>>) {
+      // generate() first passes the prompt.
+      if (prompt) {
+        prompt = false
+        return
+      }
+      options.onTokens(value[0])
+      tokens.push(...value[0])
+      flush(false)
+    },
+    end() {
+      flush(true)
+      prompt = true
+      tokens = []
+      prefix = 0
+      read = 0
+    }
+  }
+}
+
 /** How often a reply's counts go to the page while it generates. */
 const STATS_INTERVAL_MS = 250
 
@@ -1206,6 +1369,7 @@ async function generate(
   let outputTokens = 0
   let firstToken: number | null = null
   let lastToken = 0
+  let readStarted = performance.now()
   // What the last run left in the cache that this prompt starts with.
   const systemEnd = systemLength(tokenizer, chat, tools, thinking, ids)
   const reused = reuseSaved(tf, loaded.modelId, ids, systemEnd)
@@ -1214,6 +1378,7 @@ async function generate(
     cachedTokens: reused.cached,
     outputTokens,
     firstTokenMs: firstToken === null ? null : firstToken - requested,
+    promptMs: firstToken === null ? null : firstToken - readStarted,
     decodeMs: firstToken === null ? 0 : lastToken - firstToken
   })
   // Counts so far for the stats line: the prompt's now, then the reply's at
@@ -1224,10 +1389,9 @@ async function generate(
     ctx.postMessage({ type: "stats", id, stats: timings() })
   }
   report()
-  const streamer = new tf.TextStreamer(tokenizer, {
-    skip_prompt: true,
-    skip_special_tokens: !keepSpecial,
-    token_callback_function: (tokens: Array<bigint>) => {
+  const streamer = createStreamer(tokenizer, {
+    skipSpecial: !keepSpecial,
+    onTokens: (tokens: Array<bigint>) => {
       lastToken = performance.now()
       firstToken ??= lastToken
       outputTokens += tokens.length
@@ -1242,7 +1406,7 @@ async function generate(
         logMemory(`reply ${outputTokens} tokens (prompt ${gpu.promptTokens})`)
       }
     },
-    callback_function: (raw: string) => {
+    onText: (raw: string) => {
       const text = keepSpecial ? raw.replace(END_TOKENS, "") : raw
       if (text) ctx.postMessage({ type: "token", id, text })
     }
@@ -1257,6 +1421,8 @@ async function generate(
       text: `[cache] ${reused.cached} of ${ids.length} prompt tokens already read`
     })
   }
+  // Prompt reading starts here, for its speed (the model is loaded).
+  readStarted = performance.now()
   try {
     const addCheckpoint = (at: Cache, length: number) => {
       checkpoints.push(checkpoint(tf, at, length))
@@ -1298,8 +1464,12 @@ async function generate(
           attention_mask: tf.ones(inputs.input_ids.dims)
         }),
         max_new_tokens: maxNewTokens,
-        do_sample: true,
-        ...sampling,
+        // The sampler below picks each token and leaves only it possible,
+        // so the greedy pick takes it; Transformers.js's own penalty and
+        // sampling stay off.
+        do_sample: false,
+        repetition_penalty: 1,
+        logits_processor: [createSampler(sampling)],
         streamer,
         stopping_criteria: [stopping]
       })
@@ -1319,7 +1489,7 @@ async function generate(
     // (the last token generated isn't read until the next step).
     if (cache && current === loaded) {
       const length = cache.get_seq_length()
-      keepSaved({
+      keepSaved(tf, {
         modelId: loaded.modelId,
         ids: sequence.slice(0, length),
         cache,
