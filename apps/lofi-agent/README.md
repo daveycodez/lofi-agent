@@ -6,7 +6,7 @@ A chat app that runs small language models entirely in your browser. Models are 
 
 ## Why it's different
 
-- **Private.** In-browser models run on your device. The app has no backend and no accounts: the Cloudflare Worker only serves prerendered pages. Sessions, settings and MCP server details stay in your browser's storage.
+- **Private.** In-browser models run on your device. The app has no backend and no accounts: the Cloudflare Worker only serves the pages, prerendered or rendered without any of your data. Sessions, settings and MCP server details stay in your browser's IndexedDB.
 - **Runs on iPhone.** The default model is a custom build made for iPhone Safari, and the runtime is tuned to stay inside its memory and GPU limits. In-browser models hold up to 8,192 tokens per session, prompt and reply together.
 - **Download once.** Model weights (about 0.8 to 1.1 GB per model) are saved to the browser's Origin Private File System and loaded from disk on later visits.
 - **Reuses work between runs.** The model keeps what it has already read, so a follow-up message, the next step after a tool call, or a new session with the same system prompt only reads what's new. The system prompt and tools are also saved to disk, so they aren't read again after a reload.
@@ -26,23 +26,28 @@ What does leave your device: calls to MCP servers (Exa's web search, if it's on,
 | LFM2.5 1.2B Thinking Web    | LFM2.5 Thinking, re-exported the same way.                                                                                                                                                                    |
 | Apple Foundation Model      | Apple's on-device model, served on your Mac by [apfel](https://apfel.franzai.com), through `@tanstack-ai-browser/apfel`. Shown on Apple devices only; needs a Mac (see Requirements).                         |
 
-The "Web" builds are published under [`daveycodez` on Hugging Face](https://huggingface.co/daveycodez) and pinned to a commit. Models whose reasoning can be switched on and off (LFM3) have a Think toggle in the composer, on by default.
+The "Web" builds are published under [`daveycodez` on Hugging Face](https://huggingface.co/daveycodez) and pinned to a commit. Models whose thinking can be switched on and off (LFM3 and Gemma 4) get a Thinking row in the model picker, Off or On, on by default; the picker's button says "Thinking" while it's on. A model that declared more reasoning levels would offer each of them by name.
 
 ## Features
 
 - Streaming replies with collapsible thinking, Markdown, math (KaTeX) and syntax-highlighted code
 - Web search through Exa's MCP server, built in and on by default: works without a key at a free rate limit, or with your Exa API key. Results show as numbered source chips the reply can cite.
 - MCP servers: add any Streamable HTTP server by URL, with optional HTTP headers for its key (for example `Authorization: Bearer …` or `x-api-key`). The browser connects directly, so the server must allow this site (CORS).
-- Sessions saved in the browser (messages in IndexedDB, the session list in localStorage)
-- Sidebar with search, pinned sessions and date groups; rename, pin, archive and delete sessions, or delete them all
+- Tool approval: every MCP tool asks before it runs, with Approve and Reject, except the built-in server's read-only ones (Exa's search). A session left waiting for an answer still asks after a reload.
+- Sessions, settings and MCP servers saved in IndexedDB as TanStack DB collections, kept in step across open tabs. Each session has its own URL, `/sessions/<id>`.
+- Sidebar with search, pinned sessions and date groups; rename, pin, archive and delete sessions. A session's title shimmers while it writes a reply.
+- Send another message while the model replies and it waits in a queue
 - Edit a sent message and resend it, even while the model is still replying
 - Per reply: copy, regenerate, read aloud, export as Markdown, delete
 - Copy a whole session as plain text, including thinking, tool calls and their results
+- A model downloads when the first message is sent to it, and the reply shows its progress: "Downloading LFM3 1.7B Web… 412 MB of 1.10 GB"
 - A stats line under the composer for the latest reply: tokens in, cached, out and total, prompt reading and generation speed, and time to first token
 - Voice input through the browser's speech recognition, where available
-- Settings: a system prompt sent with every session (before the current date)
+- Settings: a system prompt sent with every session (before the current date), and deleting every session
 - Light, dark and system themes
 - Add to Home Screen: installs as an app with its own icon, and keeps the downloaded model more reliably than a Safari tab
+- Pages render on the server (the home page is prerendered), with skeletons for what comes from IndexedDB until it opens
+- TanStack Devtools in development, with the AI and Router panels (no button: open them with Ctrl + ~)
 
 ## Requirements
 
@@ -85,32 +90,40 @@ Deploying needs a Cloudflare account (`wrangler login`). No environment variable
 
 ```
 apps/lofi-agent/           the app (Nx project "lofi-agent")
-  src/routes/              pages (TanStack Router file routes)
-  src/components/chat/     thread, composer, sidebar, model picker, Apple setup
+  src/routes/              pages: the chat layout (_chat.tsx) around
+                           / and /sessions/$sessionId
+  src/chat/                TanStack AI setup: chat options, the connection
+                           running chat() in the page, models, persistence,
+                           reply stats
+  src/components/ai/       HeroUI building blocks: conversation, messages,
+                           prompt input, model picker, tools, sources
+  src/components/chat/     the chat kit's widgets (layout, message, input,
+                           parts, tools, approvals), thread, sidebar,
+                           Apple setup
   src/components/mcp/      MCP servers dialog
   src/components/settings/ settings dialog
-  src/lib/llm/             models and their adapters, the chat() connection,
-                           reply stats
-  src/lib/                 MCP (with the built-in Exa server), sources, chat
-                           storage, settings, dictation,
-                           Markdown helpers
+  src/lib/                 TanStack DB collections, settings, sessions, MCP
+                           (with the built-in Exa server), sources,
+                           dictation, Markdown helpers
   wrangler.jsonc           Cloudflare Worker config
 ```
 
 ## Tech stack
 
 - [TanStack Start](https://tanstack.com/start) and TanStack Router with React 19, on Vite
-- [TanStack AI](https://tanstack.com/ai): `chat()` in the browser with the adapters from this repo, `useChat`, IndexedDB persistence and the MCP client
+- [TanStack AI](https://tanstack.com/ai): `chat()` in the browser with the adapters from this repo, the headless chat kit (`@tanstack/ai-react/ui`) with `useChat`, and the MCP client
+- [TanStack DB](https://tanstack.com/db): IndexedDB collections for everything the app saves, chat persistence included
 - [`@tanstack-ai-browser/transformers-js`](../../packages/transformers-js): Transformers.js 4.3.2 and onnxruntime-web on WebGPU, loaded from jsDelivr at runtime
 - [`@tanstack-ai-browser/apfel`](../../packages/apfel): Apple's on-device model through apfel
 - [HeroUI](https://heroui.com) v3, Tailwind CSS v4 and Gravity UI icons
 - TanStack Markdown, tanstack-markdown-math (KaTeX) and TanStack Highlight
+- use-stick-to-bottom for following the reply, and TanStack Devtools in development
 - Cloudflare Workers for hosting
 - Nx and pnpm workspace
 
 ## Credits
 
-- The chat and sidebar layout follows [assistant-ui](https://github.com/assistant-ui/assistant-ui) (MIT).
+- The chat follows TanStack AI's [ts-react-ui-chatbot example](https://github.com/TanStack/ai/tree/main/examples/ts-react-ui-chatbot), styled after HeroUI Pro's chat with HeroUI's open-source components. The sidebar layout and the thinking effort picker follow [assistant-ui](https://github.com/assistant-ui/assistant-ui) (MIT).
 - Provider icons are from [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT).
 - LFM3 and LFM2.5 are models by [Liquid AI](https://huggingface.co/LiquidAI); Gemma 4 is by [Google DeepMind](https://deepmind.google/models/gemma/).
 - Apple's model is reached through [apfel](https://apfel.franzai.com).

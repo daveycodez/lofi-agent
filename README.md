@@ -7,7 +7,7 @@
 | [`@tanstack-ai-browser/transformers-js`](packages/transformers-js) | [Transformers.js](https://huggingface.co/docs/transformers.js) models on WebGPU in a Web Worker, tuned to work in Safari on iPhone |
 | [`@tanstack-ai-browser/apfel`](packages/apfel)                     | Apple's on-device Foundation Model, served on a Mac by [apfel](https://apfel.franzai.com)                                          |
 
-**Status:** early (0.0.x); the API may change. The [lofi-agent](apps/lofi-agent) demo app runs on them.
+**Status:** early (0.x); the API may change. The [lofi-agent](apps/lofi-agent) demo app runs on them.
 
 ## Usage
 
