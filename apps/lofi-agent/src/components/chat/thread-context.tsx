@@ -20,8 +20,6 @@ export type ThreadActions = {
   resend: (index: number, text: string) => void
   /** Removes one message, stopping the reply first if one is running. */
   remove: (messageId: string) => void
-  /** Seconds each reply took, by its last message id (this page load only). */
-  timings: Record<string, number>
 }
 
 export const ThreadContext = createContext<ThreadActions | null>(null)

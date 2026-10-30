@@ -66,3 +66,7 @@ export const highlightThemeCss = createThemeCss({
   darkSelector: ".dark .markdown",
   codeBlockSelector: ".markdown pre.tm-code"
 })
+
+/** JSON as highlighted tokens, for code shown outside Markdown. */
+export const highlightJson = (code: string) =>
+  highlighter.tokenize(code, { lang: "json" }).tokens

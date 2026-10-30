@@ -59,7 +59,6 @@ function ThreadChat({ threadId, onSend }: ThreadProps) {
   // accept an approval (src/lib/mcp.ts).
   const tools = useMcpApprovalTools()
   const chat = useChat({ ...chatOptions, threadId, forwardedProps, tools })
-  const timings = useReplyTimings(chat.isLoading, chat.messages)
 
   // Actions read the latest chat through refs, so they stay the same
   // functions and widgets that use them don't re-render on every chunk.
@@ -70,7 +69,7 @@ function ThreadChat({ threadId, onSend }: ThreadProps) {
     onSendRef.current = onSend
   })
 
-  const actions = useMemo(
+  const actions: ThreadActions = useMemo(
     () => ({
       threadId,
       send(text: string) {
@@ -94,39 +93,12 @@ function ThreadChat({ threadId, onSend }: ThreadProps) {
     }),
     [threadId]
   )
-  const value: ThreadActions = useMemo(
-    () => ({ ...actions, timings }),
-    [actions, timings]
-  )
 
   return (
-    <ThreadContext.Provider value={value}>
+    <ThreadContext.Provider value={actions}>
       <ComposerProvider>
         <ChatUI.Chat chat={chat} />
       </ComposerProvider>
     </ThreadContext.Provider>
   )
-}
-
-/** How long each reply took, by its last message id (this page load only). */
-function useReplyTimings(
-  isLoading: boolean,
-  messages: ReadonlyArray<{ id: string; role: string }>
-) {
-  const [timings, setTimings] = useState<Record<string, number>>({})
-  const runStart = useRef<number | null>(null)
-  const wasLoading = useRef(false)
-  useEffect(() => {
-    if (isLoading && !wasLoading.current) runStart.current = performance.now()
-    if (!isLoading && wasLoading.current && runStart.current !== null) {
-      const last = messages.at(-1)
-      if (last?.role === "assistant") {
-        const seconds = (performance.now() - runStart.current) / 1000
-        setTimings((t) => ({ ...t, [last.id]: seconds }))
-      }
-      runStart.current = null
-    }
-    wasLoading.current = isLoading
-  }, [isLoading, messages])
-  return timings
 }

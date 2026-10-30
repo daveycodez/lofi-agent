@@ -74,7 +74,7 @@ function CopyCodeButton({ getText }: { getText: () => string }) {
         size="sm"
         variant="ghost"
         aria-label={copied ? "Copied" : "Copy code"}
-        className="text-muted"
+        className="size-6 min-w-6 text-muted"
         onPress={() => {
           void navigator.clipboard.writeText(getText())
           setCopied(true)
@@ -96,8 +96,9 @@ function CodeBlock(props: ComponentPropsWithoutRef<"pre">) {
       ? (LANGUAGE_NAMES[language] ?? language)
       : "Code"
   return (
-    <div className="code-block not-prose my-3 overflow-hidden rounded-2xl bg-surface-secondary">
-      <div className="flex h-9 items-center justify-between ps-3.5 pe-1 text-xs text-muted">
+    // Sized like HeroUI Pro's CodeBlock: a 32px header, then the code.
+    <div className="code-block not-prose my-2 overflow-hidden rounded-2xl bg-surface-secondary">
+      <div className="flex h-8 items-center justify-between gap-2 px-3 pt-2 text-xs text-muted">
         <span>{label}</span>
         <CopyCodeButton
           getText={() => (pre.current?.textContent ?? "").replace(/\n$/, "")}

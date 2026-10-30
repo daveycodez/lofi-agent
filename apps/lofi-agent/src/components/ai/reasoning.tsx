@@ -1,6 +1,5 @@
-import Bulb from "@gravity-ui/icons/Bulb"
-import { Button, Card, Disclosure, Spinner } from "@heroui/react"
-import { createContext, useContext, useState } from "react"
+import { Button, Disclosure } from "@heroui/react"
+import { createContext, useContext } from "react"
 import type { ReactNode } from "react"
 
 import { Markdown } from "#/components/ai/markdown"
@@ -8,8 +7,8 @@ import { Markdown } from "#/components/ai/markdown"
 const StreamingContext = createContext(false)
 
 /**
- * A model's thinking, in a card that opens while it thinks and closes when
- * it's done (as TanStack AI's `ThinkingPart` does). It can be opened again.
+ * A model's thinking under a "Thoughts" toggle, collapsed until opened.
+ * While it thinks, the toggle reads "Thinking…".
  */
 export function Reasoning({
   isStreaming = false,
@@ -18,48 +17,48 @@ export function Reasoning({
   isStreaming?: boolean
   children: ReactNode
 }) {
-  const [isExpanded, setIsExpanded] = useState(isStreaming)
-  // Follow the stream: open when thinking starts, close when it ends.
-  const [wasStreaming, setWasStreaming] = useState(isStreaming)
-  if (isStreaming !== wasStreaming) {
-    setWasStreaming(isStreaming)
-    setIsExpanded(isStreaming)
-  }
   return (
     <StreamingContext.Provider value={isStreaming}>
-      <Card className="gap-0 p-0">
-        <Disclosure isExpanded={isExpanded} onExpandedChange={setIsExpanded}>
-          {children}
-        </Disclosure>
-      </Card>
+      <Disclosure>{children}</Disclosure>
     </StreamingContext.Provider>
   )
 }
 
+/** "Thinking…" with a shimmer while it thinks, then "Thoughts". */
 export function ReasoningTrigger() {
   const isStreaming = useContext(StreamingContext)
+  const label = isStreaming ? "Thinking…" : "Thoughts"
   return (
     <Disclosure.Heading>
+      {/* Like the sources toggle: only as wide as its label and chevron. */}
+      {/* As in HeroUI Pro's ChainOfThought: a small ghost button with no
+          padding, as wide as its label and chevron. */}
       <Button
         slot="trigger"
-        variant="ghost"
         size="sm"
-        fullWidth
-        className="justify-start rounded-3xl px-3 text-muted"
+        variant="ghost"
+        className="h-8 gap-2 p-0 text-sm font-normal text-muted data-[hovered=true]:bg-transparent data-[hovered=true]:text-foreground"
       >
-        {isStreaming ? <Spinner size="sm" color="current" /> : <Bulb />}
-        {isStreaming ? "Thinking…" : "Thoughts"}
-        <Disclosure.Indicator className="ms-auto" />
+        <span className={isStreaming ? "text-shimmer" : undefined}>
+          {label}
+        </span>
+        <Disclosure.Indicator className="size-3.5 text-muted" />
       </Button>
     </Disclosure.Heading>
   )
 }
 
+/**
+ * The thinking, muted, set off by a line down its left side, in HeroUI's
+ * default body padding (as HeroUI Pro's ChainOfThought steps are).
+ */
 export function ReasoningContent({ children }: { children: string }) {
   return (
     <Disclosure.Content>
-      <Disclosure.Body className="markdown prose prose-sm max-w-none px-3 pt-0 pb-3 text-muted wrap-break-word">
-        <Markdown>{children}</Markdown>
+      <Disclosure.Body>
+        <div className="markdown markdown-muted prose prose-sm max-w-none border-s border-border ps-3 wrap-break-word">
+          <Markdown>{children}</Markdown>
+        </div>
       </Disclosure.Body>
     </Disclosure.Content>
   )

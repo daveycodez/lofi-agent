@@ -11,13 +11,17 @@ export type Source = {
   title: string
   /** The site's host, without "www.". */
   site: string
+  /** An excerpt of the page, when the tool returned one. */
+  snippet?: string
 }
 
 /** Results kept from one search, and snippet length per result. */
 const MAX_RESULTS = 8
 const MAX_SNIPPET = 400
 
-const LINE = /^\[(\d+)\] (.+?) — (https?:\/\/\S+)\s*$/gm
+/** A `[n] Title — URL` line, and the excerpt line under it, if any. */
+const LINE =
+  /^\[(\d+)\] (.+?) — (https?:\/\/\S+)[ \t]*$(?:\n(?!\[\d+\] )(\S[^\n]*))?/gm
 
 export function siteOf(url: string) {
   try {
@@ -163,7 +167,8 @@ export function parseSources(text: string): Array<Source> {
     n: Number(m[1]),
     title: m[2],
     url: m[3],
-    site: siteOf(m[3])
+    site: siteOf(m[3]),
+    ...(m[4] && { snippet: m[4] })
   }))
 }
 

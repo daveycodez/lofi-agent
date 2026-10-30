@@ -31,7 +31,7 @@ export function ConversationContent({
   return (
     <StickToBottom.Content
       scrollClassName={`px-6 pt-6 ${scrollClassName}`}
-      className={`mx-auto flex w-full max-w-2xl flex-col ${className}`}
+      className={`mx-auto flex w-full max-w-[714px] flex-col px-4 ${className}`}
       {...props}
     />
   )
@@ -47,7 +47,7 @@ export function ConversationEmptyState({
 }) {
   return (
     <div className="flex h-full flex-col items-center justify-center px-6 pb-16">
-      <div className="flex w-full max-w-2xl flex-col items-center">
+      <div className="flex w-full max-w-[714px] flex-col items-center">
         <h2 className="mb-8 text-center text-2xl font-semibold">{title}</h2>
         {children}
       </div>

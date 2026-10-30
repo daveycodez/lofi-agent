@@ -17,30 +17,32 @@ import { Alert, Button, Dropdown, Label, Spinner } from "@heroui/react"
 import type { UIMessage } from "@tanstack/ai"
 import type { MessageProps } from "@tanstack/ai-react/ui"
 import { useContext, useEffect, useMemo, useState } from "react"
-import type { ComponentType } from "react"
 
 import { useSelectedModel } from "#/chat/model"
 import { useModelStatus } from "#/chat/models"
 import type { chatOptions } from "#/chat/options"
 import { Action, Actions } from "#/components/ai/actions"
 import { Message, MessageContent } from "#/components/ai/message"
+import { ToolGroup } from "#/components/ai/tool"
 import {
   PromptInput,
   PromptInputTextarea,
   PromptInputToolbar
 } from "#/components/ai/prompt-input"
 import { SourceList } from "#/components/ai/sources"
+import { TimeAgo } from "#/components/ai/time-ago"
 import { messageText } from "#/lib/reply-sources"
 import { ReplyContext, TranscriptContext, useThread } from "./thread-context"
-import { useChatContext } from "./ui-components"
+import { ChatUI, useChatContext } from "./ui-components"
 
-export function ChatMessage({
-  message,
-  Parts
-}: MessageProps<typeof chatOptions>) {
+/**
+ * The `message` widget. An assistant message lays out its parts itself
+ * (see MessageParts), so the kit's `Parts` isn't used.
+ */
+export function ChatMessage({ message }: MessageProps<typeof chatOptions>) {
   if (message.role === "user") return <UserMessage message={message} />
   if (message.role === "assistant") {
-    return <AssistantMessage message={message} Parts={Parts} />
+    return <AssistantMessage message={message} />
   }
   return null
 }
@@ -73,12 +75,24 @@ function UserMessage({ message }: { message: UIMessage }) {
 
   return (
     <Message from="user">
-      <div>
-        <Action label="Edit message" onPress={() => setIsEditing(true)}>
+      <MessageContent>{text}</MessageContent>
+      <Actions>
+        <CopyAction text={text} />
+        <Action
+          label="Regenerate"
+          onPress={() =>
+            resend(
+              messages.findIndex((m) => m.id === message.id),
+              text
+            )
+          }
+        >
+          <ArrowRotateRight />
+        </Action>
+        <Action label="Edit" onPress={() => setIsEditing(true)}>
           <Pencil />
         </Action>
-      </div>
-      <MessageContent>{text}</MessageContent>
+      </Actions>
     </Message>
   )
 }
@@ -131,21 +145,13 @@ function EditMessage({
   )
 }
 
-function AssistantMessage({
-  message,
-  Parts
-}: {
-  message: UIMessage
-  Parts: ComponentType
-}) {
+function AssistantMessage({ message }: { message: UIMessage }) {
   const { messages, isLoading, error, reload } = useChatContext()
-  const { remove, timings } = useThread()
+  const { remove } = useThread()
   const sources = useContext(TranscriptContext).get(message.id)
   const index = messages.findIndex((m) => m.id === message.id)
   const isLast = index === messages.length - 1
   const isRunning = isLoading && isLast
-  // After a tool call, the reply goes on in a new message.
-  const continues = messages[index - 1]?.role === "assistant"
   const text = messageText(message)
   const hasTools = message.parts.some((p) => p.type === "tool-call")
   const hasThinking = message.parts.some(
@@ -160,11 +166,9 @@ function AssistantMessage({
   )
 
   return (
-    // A continued reply sits as close as the parts within a message
-    // (gap-2), not the gap between messages (gap-y-6).
-    <Message from="assistant" className={continues ? "-mt-4" : ""}>
+    <Message from="assistant">
       <ReplyContext.Provider value={reply}>
-        <Parts />
+        <MessageParts message={message} />
       </ReplyContext.Provider>
       {isRunning && !hasAnswer && !hasThinking && <Working />}
       {text && sources && sources.all.length > 0 && (
@@ -175,12 +179,53 @@ function AssistantMessage({
         <ReplyActions
           text={text}
           canRegenerate={isLast}
-          seconds={timings[message.id]}
+          createdAt={message.createdAt}
           onReload={() => void reload()}
           onDelete={() => remove(message.id)}
         />
       )}
     </Message>
+  )
+}
+
+type SelectedPart = Parameters<typeof ChatUI.Part>[0]["part"] & {
+  key: string
+}
+
+/**
+ * An assistant message's parts, as the kit renders them, with each run of
+ * two or more tool calls gathered under one "N tool calls" accordion. A tool result
+ * that belongs to a call shows in the call, as the kit's own `Parts` does.
+ */
+function MessageParts({ message }: { message: UIMessage }) {
+  return (
+    <ChatUI.Message message={message}>
+      {(parts) => {
+        const shown = (parts as Array<SelectedPart>).filter(
+          (p) => !(p.key === "toolResult" && "matched" in p && p.matched)
+        )
+        const groups: Array<Array<SelectedPart>> = []
+        for (const part of shown) {
+          const last = groups.at(-1)
+          if (part.key === "toolCall" && last?.[0]?.key === "toolCall") {
+            last.push(part)
+          } else {
+            groups.push([part])
+          }
+        }
+        return groups.map((group, i) =>
+          group[0]?.key === "toolCall" && group.length > 1 ? (
+            <ToolGroup key={i} count={group.length}>
+              {group.map((part, j) => (
+                <ChatUI.Part key={j} part={part} />
+              ))}
+            </ToolGroup>
+          ) : (
+            group.map((part, j) => <ChatUI.Part key={`${i}-${j}`} part={part} />)
+          )
+        )
+      }}
+    </ChatUI.Message>
   )
 }
 
@@ -204,7 +249,7 @@ export function PendingReply() {
 }
 
 /**
- * "Thinking…" until the reply starts. A model downloads when the first
+ * A spinner until the reply starts. A model downloads when the first
  * message is sent to it; its progress shows here until it's done.
  */
 function Working() {
@@ -213,12 +258,22 @@ function Working() {
     status.state === "loading" && !status.cached && status.progress < 1
       ? status.progress
       : null
+  // Not every model thinks: a spinner until the reply starts, and
+  // "Thinking…" only on the thinking itself.
+  if (downloading === null) {
+    return (
+      <Spinner
+        size="sm"
+        color="current"
+        aria-label="Waiting for the reply"
+        className="text-muted"
+      />
+    )
+  }
   return (
     <div className="flex items-center gap-2 text-sm text-muted">
       <Spinner size="sm" color="current" />
-      {downloading === null
-        ? "Thinking…"
-        : `Downloading ${Math.round(downloading * 100)}%`}
+      {`Downloading ${Math.round(downloading * 100)}%`}
     </div>
   )
 }
@@ -237,28 +292,30 @@ function ErrorAlert({ error }: { error: Error }) {
 function ReplyActions({
   text,
   canRegenerate,
-  seconds,
+  createdAt,
   onReload,
   onDelete
 }: {
   text: string
   canRegenerate: boolean
-  seconds?: number
+  /** When the reply was written, shown as "N minutes ago". */
+  createdAt?: Date | string
   onReload: () => void
   onDelete?: () => void
 }) {
   return (
-    <Actions>
+    // 8px under the reply, not the 16px between its parts.
+    <Actions className="-mt-2">
       {text && <CopyAction text={text} />}
       {text && <ReadAloudAction text={text} />}
       {canRegenerate && (
-        <Action label="Regenerate response" onPress={onReload}>
+        <Action label="Regenerate" onPress={onReload}>
           <ArrowRotateRight />
         </Action>
       )}
       {text && (
         <Dropdown>
-          <Action label="More actions">
+          <Action label="More">
             <Ellipsis />
           </Action>
           <Dropdown.Popover placement="bottom start">
@@ -280,11 +337,7 @@ function ReplyActions({
           </Dropdown.Popover>
         </Dropdown>
       )}
-      {seconds !== undefined && (
-        <span className="px-1 text-xs text-muted tabular-nums">
-          {Number(seconds.toFixed(1))}s
-        </span>
-      )}
+      {createdAt && <TimeAgo date={new Date(createdAt)} />}
     </Actions>
   )
 }
@@ -298,7 +351,7 @@ function CopyAction({ text }: { text: string }) {
   }, [copied])
   return (
     <Action
-      label={copied ? "Copied" : "Copy response"}
+      label={copied ? "Copied" : "Copy"}
       onPress={() => {
         void navigator.clipboard.writeText(text)
         setCopied(true)
@@ -318,7 +371,7 @@ function ReadAloudAction({ text }: { text: string }) {
   }
   return (
     <Action
-      label={speaking ? "Stop reading" : "Read aloud"}
+      label={speaking ? "Stop" : "Read"}
       onPress={() => {
         window.speechSynthesis.cancel()
         if (speaking) {

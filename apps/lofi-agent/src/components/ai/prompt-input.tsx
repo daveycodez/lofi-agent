@@ -24,7 +24,7 @@ export function PromptInput({
     <TextField fullWidth aria-label={label} name={name} className={className}>
       <InputGroup
         fullWidth
-        className="flex flex-col gap-2 rounded-3xl pt-3.5 pb-2"
+        className="flex flex-col gap-3 rounded-3xl pt-3.5 pb-2"
       >
         {children}
       </InputGroup>
@@ -54,7 +54,7 @@ export function PromptInputTextarea({
       ref={ref}
       rows={1}
       value={value}
-      className="min-h-0 w-full flex-none resize-none px-3.5 py-0 text-base"
+      className="min-h-0 w-full flex-none resize-none px-3.5 py-0"
       {...props}
     />
   )

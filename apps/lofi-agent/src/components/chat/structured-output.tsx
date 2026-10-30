@@ -1,4 +1,3 @@
-import { Card } from "@heroui/react"
 import type { PartProps } from "@tanstack/ai-react/ui"
 
 import type { chatOptions } from "#/chat/options"
@@ -15,15 +14,12 @@ export function StructuredOutputPart({
   }
   const data = part.partial ?? part.raw
   return (
-    <Card className="gap-2 p-3">
-      <Card.Header className="p-0">
-        <Card.Description className="text-xs">Structured output</Card.Description>
-      </Card.Header>
-      <Card.Content className="p-0">
-        <pre className="max-h-80 overflow-auto font-mono text-xs whitespace-pre-wrap">
-          {typeof data === "string" ? data : JSON.stringify(data, null, 2)}
-        </pre>
-      </Card.Content>
-    </Card>
+    // The same bordered box as a tool call.
+    <div className="flex flex-col gap-2 rounded-xl border border-border p-3">
+      <p className="text-xs text-muted">Structured output</p>
+      <pre className="max-h-80 overflow-auto font-mono text-[11px] leading-5 whitespace-pre-wrap">
+        {typeof data === "string" ? data : JSON.stringify(data, null, 2)}
+      </pre>
+    </div>
   )
 }

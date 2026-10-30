@@ -9,17 +9,15 @@ export type MessageProps = HTMLAttributes<HTMLDivElement> & {
 }
 
 /**
- * One message. A user message sits on the right, its actions beside it; an
- * assistant message stacks its parts, then its sources and actions.
+ * One message. A user message sits on the right with its actions under it;
+ * an assistant message stacks its parts, then its sources and actions.
  */
 export function Message({ from, className = "", ...props }: MessageProps) {
   return (
     <div
       data-role={from}
-      className={`group ${
-        from === "user"
-          ? "flex items-end justify-end gap-2"
-          : "flex flex-col gap-2"
+      className={`group flex flex-col ${
+        from === "user" ? "items-end gap-2" : "gap-4"
       } ${className}`}
       {...props}
     />
@@ -33,7 +31,7 @@ export function MessageContent({
 }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={`max-w-[80%] rounded-2xl bg-default px-4 py-2 wrap-break-word whitespace-pre-wrap text-default-foreground ${className}`}
+      className={`max-w-[80%] rounded-2xl bg-default px-4 py-2 text-sm wrap-break-word whitespace-pre-wrap text-default-foreground ${className}`}
       {...props}
     />
   )
@@ -49,7 +47,7 @@ export const MessageResponse = memo(function MessageResponse({
   sources?: Array<Source>
 }) {
   return (
-    <div className="markdown prose max-w-none wrap-break-word">
+    <div className="markdown prose prose-sm max-w-none wrap-break-word">
       <Markdown sources={sources}>{children}</Markdown>
     </div>
   )

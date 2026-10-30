@@ -1,17 +1,90 @@
-import Check from "@gravity-ui/icons/Check"
+/**
+ * Tool calls, built from HeroUI's Disclosure and sized like HeroUI Pro's
+ * ChatTool: a 12px-rounded bordered box, a `text-xs` trigger with a 14px
+ * status icon, and the arguments and result as small code blocks.
+ */
+import CircleCheck from "@gravity-ui/icons/CircleCheck"
+import CircleDashed from "@gravity-ui/icons/CircleDashed"
+import CircleExclamation from "@gravity-ui/icons/CircleExclamation"
+import CircleXmark from "@gravity-ui/icons/CircleXmark"
 import Hand from "@gravity-ui/icons/Hand"
-import TriangleExclamation from "@gravity-ui/icons/TriangleExclamation"
-import Wrench from "@gravity-ui/icons/Wrench"
-import { Button, Card, Disclosure, Spinner } from "@heroui/react"
+import { Button, Disclosure, Spinner } from "@heroui/react"
 import type { ReactNode } from "react"
 
-/** A tool call, in a card, collapsed under its name. */
-export function Tool({ children }: { children: ReactNode }) {
+import { highlightJson, highlightThemeCss } from "#/lib/highlight"
+
+/** The bordered, collapsible box every tool piece sits in. */
+function ToolBox({
+  tone = "default",
+  defaultExpanded,
+  children
+}: {
+  tone?: "default" | "warning"
+  defaultExpanded?: boolean
+  children: ReactNode
+}) {
   return (
-    <Card className="gap-0 p-0">
-      <Disclosure>{children}</Disclosure>
-    </Card>
+    <Disclosure
+      defaultExpanded={defaultExpanded}
+      className={`overflow-hidden rounded-xl border ${
+        tone === "warning" ? "border-warning/40" : "border-border"
+      }`}
+    >
+      {children}
+    </Disclosure>
   )
+}
+
+/** The trigger row: whatever leads it, then the chevron at the far end. */
+function ToolTrigger({ children }: { children: ReactNode }) {
+  return (
+    <Disclosure.Heading>
+      <Disclosure.Trigger className="flex w-full items-center gap-2 px-3 py-2 text-start text-xs">
+        {children}
+        <Disclosure.Indicator className="ms-auto size-3.5 shrink-0 text-muted" />
+      </Disclosure.Trigger>
+    </Disclosure.Heading>
+  )
+}
+
+/** The open box's contents, in HeroUI's default body padding. */
+function ToolBody({
+  gap = "gap-1",
+  children
+}: {
+  gap?: string
+  children: ReactNode
+}) {
+  return (
+    <Disclosure.Content>
+      <Disclosure.Body>
+        <div className={`flex flex-col p-1 ${gap}`}>{children}</div>
+      </Disclosure.Body>
+    </Disclosure.Content>
+  )
+}
+
+/** Two or more tool calls in a row, under one "N tool calls" box. */
+export function ToolGroup({
+  count,
+  children
+}: {
+  count: number
+  children: ReactNode
+}) {
+  return (
+    <ToolBox>
+      <ToolTrigger>
+        {count === 1 ? "1 tool call" : `${count} tool calls`}
+      </ToolTrigger>
+      <ToolBody gap="gap-1.5">{children}</ToolBody>
+    </ToolBox>
+  )
+}
+
+/** One tool call, collapsed under its status and name. */
+export function Tool({ children }: { children: ReactNode }) {
+  return <ToolBox>{children}</ToolBox>
 }
 
 /**
@@ -28,22 +101,44 @@ export type ToolStatus =
   | "stopped"
 
 const STATUS_LABELS: Record<ToolStatus, string> = {
-  preparing: "Preparing",
-  running: "Running",
-  approval: "Waiting for approval",
-  error: "Failed",
-  done: "Done",
-  stopped: "Not run"
+  preparing: "Using tool:",
+  running: "Using tool:",
+  approval: "Waiting to use:",
+  error: "Tool failed:",
+  done: "Used tool:",
+  stopped: "Didn't use:"
 }
 
 function StatusIcon({ status }: { status: ToolStatus }) {
+  const icon = "size-3.5 shrink-0"
   if (status === "preparing" || status === "running") {
-    return <Spinner size="sm" color="current" />
+    return <Spinner size="sm" color="current" className={`${icon} text-muted`} />
   }
-  if (status === "approval") return <Hand className="text-warning" />
-  if (status === "error") return <TriangleExclamation className="text-danger" />
-  if (status === "done") return <Check className="text-success" />
-  return <Wrench />
+  if (status === "approval") return <Hand className={`${icon} text-warning`} />
+  if (status === "error") return <CircleXmark className={`${icon} text-danger`} />
+  if (status === "stopped") {
+    return <CircleDashed className={`${icon} text-muted`} />
+  }
+  return <CircleCheck className={`${icon} text-muted`} />
+}
+
+/** "Used tool: name", led by its status icon. */
+function ToolLabel({
+  icon,
+  label,
+  name
+}: {
+  icon: ReactNode
+  label: string
+  name: string
+}) {
+  return (
+    <>
+      {icon}
+      <span className="shrink-0 text-muted">{label}</span>
+      <span className="min-w-0 truncate font-medium">{name}</span>
+    </>
+  )
 }
 
 export function ToolHeader({
@@ -54,55 +149,73 @@ export function ToolHeader({
   status: ToolStatus
 }) {
   return (
-    <Disclosure.Heading>
-      <Button
-        slot="trigger"
-        variant="ghost"
-        size="sm"
-        fullWidth
-        className="justify-start rounded-3xl px-3 text-muted"
-      >
-        <StatusIcon status={status} />
-        <span className="min-w-0 truncate font-mono text-xs text-foreground">
-          {name}
-        </span>
-        <span className="shrink-0 text-xs">{STATUS_LABELS[status]}</span>
-        <Disclosure.Indicator className="ms-auto" />
-      </Button>
-    </Disclosure.Heading>
+    <ToolTrigger>
+      <ToolLabel
+        icon={<StatusIcon status={status} />}
+        label={STATUS_LABELS[status]}
+        name={name}
+      />
+    </ToolTrigger>
   )
 }
 
 export function ToolContent({ children }: { children: ReactNode }) {
-  return (
-    <Disclosure.Content>
-      <Disclosure.Body className="flex flex-col gap-2 border-t border-separator px-3 py-3 text-xs">
-        {children}
-      </Disclosure.Body>
-    </Disclosure.Content>
-  )
+  return <ToolBody>{children}</ToolBody>
 }
 
-/** A value as readable text: JSON pretty-printed, text as it is. */
-function asText(value: unknown) {
-  if (typeof value !== "string") return JSON.stringify(value, null, 2)
+/** A value parsed as JSON, if it is JSON (or a string holding JSON). */
+function asJson(value: unknown): { json: unknown } | null {
+  if (typeof value !== "string") return { json: value }
   try {
-    return JSON.stringify(JSON.parse(value), null, 2)
+    return { json: JSON.parse(value) }
   } catch {
-    return value
+    return null
   }
 }
 
-/** The arguments the model wrote. */
-export function ToolInput({ input }: { input: unknown }) {
+/** Code in a small rounded block: JSON highlighted, anything else as text. */
+function CodeBlock({
+  value,
+  pretty,
+  isError = false
+}: {
+  value: unknown
+  /** Indented JSON, rather than on one line. */
+  pretty: boolean
+  isError?: boolean
+}) {
+  const parsed = asJson(value)
+  const code = parsed
+    ? JSON.stringify(parsed.json, null, pretty ? 2 : undefined)
+    : String(value)
   return (
-    <>
-      <p className="text-muted">Arguments</p>
-      <pre className="max-h-48 overflow-auto rounded-xl bg-surface-secondary p-3 font-mono whitespace-pre-wrap">
-        {asText(input ?? {})}
+    // `.markdown` scopes the highlight theme's token colors.
+    <div className="markdown my-1 overflow-hidden rounded-xl bg-surface-secondary">
+      <style href="markdown-highlight" precedence="default">
+        {highlightThemeCss}
+      </style>
+      <pre
+        className={`max-h-72 overflow-auto px-2.5 py-1.5 font-mono text-[11px] leading-5 whitespace-pre-wrap ${isError ? "text-danger" : ""}`}
+      >
+        {parsed && !isError
+          ? highlightJson(code).map((token, i) =>
+              token.className ? (
+                <span key={i} className={`th-token th-${token.className}`}>
+                  {token.value}
+                </span>
+              ) : (
+                token.value
+              )
+            )
+          : code}
       </pre>
-    </>
+    </div>
   )
+}
+
+/** The arguments the model wrote, on one line. */
+export function ToolInput({ input }: { input: unknown }) {
+  return <CodeBlock value={input ?? {}} pretty={false} />
 }
 
 /** What the tool returned, or why it failed. Nothing until either. */
@@ -113,22 +226,14 @@ export function ToolOutput({
   output?: unknown
   errorText?: string
 }) {
-  if (output === undefined && !errorText) return null
-  return (
-    <>
-      <p className="text-muted">{errorText ? "Error" : "Result"}</p>
-      <pre
-        className={`max-h-60 overflow-auto rounded-xl bg-surface-secondary p-3 font-mono whitespace-pre-wrap ${errorText ? "text-danger" : ""}`}
-      >
-        {errorText ?? asText(output)}
-      </pre>
-    </>
-  )
+  if (errorText) return <CodeBlock value={errorText} pretty isError />
+  if (output === undefined) return null
+  return <CodeBlock value={output} pretty />
 }
 
 /**
- * Asks before a tool runs: its name and arguments, with Approve and Deny.
- * Once answered, only the answer's status shows.
+ * Asks before a tool runs: a tool box with a warning border, open on the
+ * arguments, with Reject and Approve. Once answered, only its status shows.
  */
 export function ToolApproval({
   name,
@@ -149,32 +254,35 @@ export function ToolApproval({
     return <p className="text-xs text-muted">{status}</p>
   }
   return (
-    <Card variant="secondary" className="gap-3 rounded-2xl p-4">
-      <Card.Header className="gap-1 p-0">
-        <Card.Title className="flex items-center gap-2 text-sm">
-          <Hand className="text-warning" />
-          Run <span className="font-mono text-xs">{name}</span>?
-        </Card.Title>
-        <Card.Description className="text-xs">
-          This tool asks before it runs.
-        </Card.Description>
-      </Card.Header>
-      <Card.Content className="p-0 text-xs">
+    <ToolBox tone="warning" defaultExpanded>
+      <ToolTrigger>
+        <ToolLabel
+          icon={<CircleExclamation className="size-3.5 shrink-0 text-muted" />}
+          label="Approval needed:"
+          name={name}
+        />
+      </ToolTrigger>
+      <ToolBody>
         <ToolInput input={input} />
-      </Card.Content>
-      <Card.Footer className="gap-2 p-0">
-        <Button size="sm" isDisabled={isDisabled} onPress={onApprove}>
-          Approve
-        </Button>
-        <Button
-          size="sm"
-          variant="tertiary"
-          isDisabled={isDisabled}
-          onPress={onDeny}
-        >
-          Deny
-        </Button>
-      </Card.Footer>
-    </Card>
+        <div className="flex justify-end gap-2 pt-3">
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={isDisabled}
+            onPress={onDeny}
+          >
+            Reject
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            isDisabled={isDisabled}
+            onPress={onApprove}
+          >
+            Approve
+          </Button>
+        </div>
+      </ToolBody>
+    </ToolBox>
   )
 }

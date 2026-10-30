@@ -3,7 +3,8 @@
  * images, audio, video, documents, an MCP App's UI, and a tool result with
  * no call to show it in. Laid out as in TanStack's example.
  */
-import { Card, Link } from "@heroui/react"
+import FileText from "@gravity-ui/icons/FileText"
+import { Chip, Link } from "@heroui/react"
 import type { PartProps } from "@tanstack/ai-react/ui"
 
 import type { chatOptions } from "#/chat/options"
@@ -35,7 +36,7 @@ export function ImagePart({ part }: PartProps<typeof chatOptions, "image">) {
     <img
       alt=""
       src={src}
-      className="max-h-64 max-w-full rounded-2xl object-cover"
+      className="max-h-[341px] max-w-full self-start rounded-2xl object-cover"
     />
   )
 }
@@ -50,7 +51,7 @@ export function VideoPart({ part }: PartProps<typeof chatOptions, "video">) {
   const src = sourceHref(part.source)
   if (!src) return <UnrenderableSource label="Video" />
   return (
-    <video controls src={src} className="max-h-64 max-w-full rounded-2xl" />
+    <video controls src={src} className="max-h-[341px] max-w-full self-start rounded-2xl" />
   )
 }
 
@@ -61,9 +62,19 @@ export function DocumentPart({
   if (!href) return <UnrenderableSource label="Document" />
   const mime = part.source.type === "data" ? part.source.mimeType : undefined
   return (
-    <Link href={href} target="_blank" rel="noopener noreferrer" className="text-sm">
-      Document{mime ? ` (${mime})` : ""}
-      <Link.Icon />
+    // A pill like the source chips: file icon, then what it is.
+    <Link
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="w-fit no-underline"
+    >
+      <Chip size="sm" className="h-5 gap-1 px-1.5 text-muted hover:text-foreground">
+        <FileText className="size-3.5 shrink-0" />
+        <Chip.Label className="px-0 text-xs leading-3">
+          {mime ? `Document (${mime})` : "Document"}
+        </Chip.Label>
+      </Chip>
     </Link>
   )
 }
@@ -85,22 +96,23 @@ export function UIResourcePart({
 }: PartProps<typeof chatOptions, "uiResource">) {
   const html = part.resource.text
   return (
-    <Card className="gap-2 p-3">
-      <Card.Header className="p-0">
-        <Card.Title className="font-mono text-xs">{part.toolName}</Card.Title>
-      </Card.Header>
-      <Card.Content className="p-0">
+    // The same bordered box as a tool call.
+    <div className="flex flex-col gap-2 rounded-xl border border-border p-3">
+      <p className="text-xs text-muted">
+        <span className="font-medium text-foreground">{part.toolName}</span>
+      </p>
+      <div>
         {html ? (
           <iframe
             title={part.resource.uri}
             sandbox=""
             srcDoc={html}
-            className="h-48 w-full rounded-xl bg-background"
+            className="h-48 w-full rounded-lg bg-background"
           />
         ) : (
           <p className="text-xs text-muted">{part.resource.uri}</p>
         )}
-      </Card.Content>
-    </Card>
+      </div>
+    </div>
   )
 }
