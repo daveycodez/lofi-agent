@@ -1,0 +1,58 @@
+{
+  "name": "@tanstack-ai-browser/prompt-api",
+  "version": "0.0.0",
+  "description": "TanStack AI adapter for the browser's built-in language model (the Prompt API: Gemini Nano in Chrome, Phi-4-mini in Edge)",
+  "license": "MIT",
+  "author": "daveycodez",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daveycodez/tanstack-ai-browser.git",
+    "directory": "packages/prompt-api"
+  },
+  "homepage": "https://github.com/daveycodez/tanstack-ai-browser/tree/main/packages/prompt-api#readme",
+  "bugs": "https://github.com/daveycodez/tanstack-ai-browser/issues",
+  "keywords": [
+    "tanstack-ai",
+    "tanstack",
+    "ai",
+    "llm",
+    "prompt-api",
+    "gemini-nano",
+    "phi-4-mini",
+    "built-in-ai",
+    "browser",
+    "on-device",
+    "local-ai"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "@tanstack-ai-browser/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "nx": {
+    "name": "prompt-api"
+  },
+  "peerDependencies": {
+    "@tanstack/ai": "^1.0.0"
+  },
+  "devDependencies": {
+    "@tanstack/ai": "1.0.0"
+  }
+}
