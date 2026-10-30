@@ -19,7 +19,8 @@ import type { MessageProps } from "@tanstack/ai-react/ui"
 import { useContext, useEffect, useMemo, useState } from "react"
 import type { ComponentType } from "react"
 
-import { useCurrentModel, useModelStatus } from "#/chat/models"
+import { useSelectedModel } from "#/chat/model"
+import { useModelStatus } from "#/chat/models"
 import type { chatOptions } from "#/chat/options"
 import { Action, Actions } from "#/components/ai/actions"
 import { Message, MessageContent } from "#/components/ai/message"
@@ -207,7 +208,7 @@ export function PendingReply() {
  * message is sent to it; its progress shows here until it's done.
  */
 function Working() {
-  const status = useModelStatus(useCurrentModel())
+  const status = useModelStatus(useSelectedModel())
   const downloading =
     status.state === "loading" && !status.cached && status.progress < 1
       ? status.progress

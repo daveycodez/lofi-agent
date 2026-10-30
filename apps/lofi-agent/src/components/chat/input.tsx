@@ -8,13 +8,16 @@ import { ToggleButton, Tooltip } from "@heroui/react"
 import { useRef, useState } from "react"
 
 import {
+  setSelectedModel,
+  setThinking,
+  useSelectedModel,
+  useThinking
+} from "#/chat/model"
+import {
   afmStatus,
   canThink,
   checkAfm,
-  modelSetting,
   PROVIDERS,
-  thinkingSetting,
-  useCurrentModel,
   useModels
 } from "#/chat/models"
 import type { ModelId } from "#/chat/models"
@@ -36,8 +39,9 @@ export function ChatPromptInput() {
   const { value, setValue } = useComposer()
   const { send } = useThread()
   const { isLoading, stop } = useChatContext()
-  const model = useCurrentModel()
-  const canSend = !!value.trim() && !isLoading
+  const model = useSelectedModel()
+  // A message sent while a reply runs waits in the queue.
+  const canSend = !!value.trim()
 
   // Dictation adds to whatever was already typed when it started.
   const dictation = useDictation()
@@ -89,7 +93,8 @@ export function ChatPromptInput() {
             </Action>
           )}
           <PromptInputSubmit
-            status={isLoading ? "streaming" : "ready"}
+            // Stop while a reply runs, until there's a message to queue.
+            status={isLoading && !canSend ? "streaming" : "ready"}
             isDisabled={!canSend}
             onSubmit={submit}
             onStop={stop}
@@ -106,7 +111,7 @@ export function ChatPromptInput() {
  * can't be reached.
  */
 function ChatModelSelector() {
-  const model = useCurrentModel()
+  const model = useSelectedModel()
   const models = useModels()
   const afm = afmStatus.use()
   // Models by provider, each a section; a provider this device offers no
@@ -133,12 +138,12 @@ function ChatModelSelector() {
       setPending(null)
       afmStatus.set(isAvailable ? "idle" : "unavailable")
       setSetupOpen(!isAvailable)
-      if (isAvailable) modelSetting.set(key)
+      if (isAvailable) setSelectedModel(key)
       return
     }
     setPending(null)
     afmStatus.set("idle")
-    modelSetting.set(key)
+    setSelectedModel(key)
   }
 
   return (
@@ -167,7 +172,7 @@ function ChatModelSelector() {
 
 /** Turns on reasoning before answering, for models that can think. */
 function ThinkToggle() {
-  const isThinking = thinkingSetting.use()
+  const isThinking = useThinking()
   return (
     <Tooltip delay={300}>
       <ToggleButton
@@ -175,9 +180,7 @@ function ThinkToggle() {
         size="sm"
         variant="ghost"
         isSelected={isThinking}
-        onChange={(on) => {
-          thinkingSetting.set(on)
-        }}
+        onChange={setThinking}
         aria-label="Think before answering"
         className={isThinking ? "shrink-0" : "shrink-0 text-muted"}
       >

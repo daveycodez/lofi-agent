@@ -1,17 +1,19 @@
 import type { ToolCallPart, ToolResultPart } from "@tanstack/ai"
-import type { ToolProps } from "@tanstack/ai-react/ui"
+import type { InterruptProps, ToolProps } from "@tanstack/ai-react/ui"
 import { useContext } from "react"
 import type { ComponentType } from "react"
 
 import type { chatOptions } from "#/chat/options"
 import {
   Tool,
+  ToolApproval,
   ToolContent,
   ToolHeader,
   ToolInput,
   ToolOutput
 } from "#/components/ai/tool"
 import { ReplyContext } from "./thread-context"
+import { useChatContext } from "./ui-components"
 
 const asText = (value: unknown) =>
   typeof value === "string" ? value : JSON.stringify(value, null, 2)
@@ -39,9 +41,11 @@ export function McpTool({ part, result }: ToolProps<typeof chatOptions>) {
   const { error, output } = outcomeOf(part, result)
   const status = error
     ? "error"
-    : output === undefined && isRunning
-      ? "running"
-      : "done"
+    : part.state === "approval-requested"
+      ? "approval"
+      : output === undefined && isRunning
+        ? "running"
+        : "done"
   return (
     <Tool>
       <ToolHeader name={part.name} status={status} />
@@ -50,6 +54,28 @@ export function McpTool({ part, result }: ToolProps<typeof chatOptions>) {
         <ToolOutput output={output} errorText={error} />
       </ToolContent>
     </Tool>
+  )
+}
+
+/**
+ * Asks before an MCP tool runs (src/lib/mcp.ts decides which do). It shows
+ * in the layout's `Interrupts` list, as in TanStack's example; the tool's
+ * card above shows the call waiting.
+ */
+export function McpToolApproval({
+  interrupt
+}: InterruptProps<typeof chatOptions>) {
+  const { resuming } = useChatContext()
+  if (interrupt.kind !== "tool-approval") return null
+  return (
+    <ToolApproval
+      name={interrupt.toolName}
+      input={JSON.stringify(interrupt.originalArgs ?? {})}
+      status={interrupt.status}
+      isDisabled={!interrupt.canResolve || resuming}
+      onApprove={() => interrupt.resolveInterrupt(true)}
+      onDeny={() => interrupt.resolveInterrupt(false)}
+    />
   )
 }
 

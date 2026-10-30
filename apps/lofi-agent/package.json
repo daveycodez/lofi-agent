@@ -43,6 +43,7 @@
     "@cloudflare/vite-plugin": "^1.26.0",
     "@tailwindcss/typography": "^0.5.20",
     "@tanstack/devtools-vite": "0.8.5",
+    "@tanstack/react-ai-devtools": "1.0.0",
     "@tanstack/router-cli": "^1.132.0",
     "@types/node": "^22.10.2",
     "@types/react": "^19.2.0",

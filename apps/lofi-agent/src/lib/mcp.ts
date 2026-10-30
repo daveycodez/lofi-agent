@@ -1,20 +1,29 @@
 /**
  * MCP servers: the built-in ones (Exa's web search), then those the user
- * adds. The browser connects to each one directly with TanStack AI's MCP
- * client (Streamable HTTP), so a server only works if it allows requests
- * from this site (CORS). The list, on/off choices and any keys or tokens
- * stay in this browser, in the mcpServers collection.
+ * adds. Each enabled server gets one TanStack AI MCP client
+ * (`createMCPClient`), kept open, and chat() discovers and runs their tools
+ * (`chat({ mcp: { clients, connection: "keep-alive" } })`, see
+ * src/chat/connection.ts).
+ *
+ * TanStack's docs keep MCP clients on a server. This app has none: models
+ * run in the browser, so the browser connects to each server directly
+ * (Streamable HTTP), and a server only works if it allows requests from
+ * this site (CORS). The list, on/off choices and any keys stay in this
+ * browser, in the mcpServers collection.
+ *
+ * Approval follows TanStack's rule for server trust: a tool runs without
+ * asking only when it comes from a built-in server (which this app trusts)
+ * and the server marks it read-only. Every tool of a server the user added
+ * asks first, whatever its hints say: hints are only labels.
  */
 import { toolDefinition } from "@tanstack/ai"
-import type { JSONSchema } from "@tanstack/ai"
-import type { MCPClient } from "@tanstack/ai-mcp"
+import type { MCPClient, MCPClientOptions, McpServerTool } from "@tanstack/ai-mcp"
 import { useLiveQuery } from "@tanstack/react-db"
 import { useMemo } from "react"
 import { v7 as uuidv7 } from "uuid"
 
 import { deleteIfPresent, mcpServers, mcpServersCollection } from "#/lib/db"
 import type { McpServerRecord } from "#/lib/db"
-import { compactToolResult, shorten } from "#/lib/sources"
 import { createStore } from "#/lib/store"
 
 export type McpServer = {
@@ -38,6 +47,11 @@ export type McpServer = {
   tokenHeader?: string
   /** What its key is called, for the field to enter it. */
   tokenLabel?: string
+  /**
+   * A built-in server known to speak only the older protocol: connect with
+   * its handshake straight away, rather than after a blocked first try.
+   */
+  legacyProtocol?: boolean
 }
 
 /** The headers to send to a server: its own, or its key in its header. */
@@ -52,10 +66,13 @@ function headersOf(server: McpServer): Record<string, string> {
 }
 
 export type McpTool = {
+  /** The name the model sees: a server the user added prefixes it. */
   name: string
+  /** The server's display name for it. */
+  title: string
   description: string
-  /** JSON Schema for the tool's arguments. */
-  inputSchema: JSONSchema
+  /** The run pauses for the user's approval before each call. */
+  needsApproval: boolean
 }
 
 export type McpServerStatus =
@@ -75,7 +92,8 @@ const BUILT_IN_SERVERS: Array<Omit<McpServer, "enabled" | "token">> = [
     url: "https://mcp.exa.ai/mcp",
     builtIn: true,
     tokenHeader: "x-api-key",
-    tokenLabel: "Exa API key"
+    tokenLabel: "Exa API key",
+    legacyProtocol: true
   }
 ]
 
@@ -141,8 +159,8 @@ export const mcpStatusStore = createStore<Record<string, McpServerStatus>>({})
 const setStatus = (id: string, status: McpServerStatus) =>
   mcpStatusStore.set((all) => ({ ...all, [id]: status }))
 
-/** A readable reason a connection failed. */
-function describeError(error: unknown) {
+/** Every message down an error's cause chain. */
+function errorMessages(error: unknown) {
   // The client wraps failures ("Failed to connect to MCP server"); the
   // reason is further down the cause chain.
   const messages: Array<string> = []
@@ -150,10 +168,23 @@ function describeError(error: unknown) {
     messages.push(e instanceof Error ? e.message : String(e))
     e = e instanceof Error ? e.cause : undefined
   }
+  return messages
+}
+
+/**
+ * Chrome says "Failed to fetch" and Safari "Load failed" when a request is
+ * blocked, which for a reachable server almost always means CORS.
+ */
+const wasBlocked = (error: unknown) =>
+  /failed to fetch|load failed|networkerror/i.test(
+    errorMessages(error).join(" | ")
+  )
+
+/** A readable reason a connection failed. */
+function describeError(error: unknown) {
+  const messages = errorMessages(error)
   const message = messages.join(" | ")
-  // Chrome says "Failed to fetch" and Safari "Load failed" when a request is
-  // blocked, which for a reachable server almost always means CORS.
-  if (/failed to fetch|load failed|networkerror/i.test(message)) {
+  if (wasBlocked(error)) {
     return "Couldn't connect. The server may be offline, or it doesn't allow connections from this site."
   }
   if (/\b401\b|unauthori[sz]ed/i.test(message)) {
@@ -168,24 +199,73 @@ function describeError(error: unknown) {
   return messages.at(-1) ?? message
 }
 
-/** Open connections by server id, reused for tool calls. */
+/**
+ * The prefix for a server the user added, from its name, so its tools can't
+ * collide with another server's (chat() fails a run on a duplicate name).
+ * A later server with the same name gets a number. Built-in servers keep
+ * their tools' own names.
+ */
+function prefixOf(server: McpServer) {
+  if (server.builtIn) return undefined
+  const slug = (name: string) =>
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 20) || "mcp"
+  const own = slug(server.name)
+  const same = getMcpServers().filter(
+    (s) => !s.builtIn && slug(s.name) === own
+  )
+  const index = same.findIndex((s) => s.id === server.id)
+  return index > 0 ? `${own}_${index + 1}` : own
+}
+
+/** How to connect to a server, and which of its tools ask first. */
+function clientOptions(server: McpServer): MCPClientOptions {
+  const prefix = prefixOf(server)
+  return {
+    transport: { type: "http", url: server.url, headers: headersOf(server) },
+    name: "lofi-agent",
+    ...(prefix && { prefix }),
+    ...(server.legacyProtocol && { prior: { kind: "legacy" as const } }),
+    needsApproval: (tool) =>
+      !(server.builtIn === true && tool.annotations?.readOnlyHint === true)
+  }
+}
+
+/** Open clients by server id, kept for every run of the session. */
 const clients = new Map<string, Promise<MCPClient>>()
+/** The connected ones, and which server each belongs to. */
+const connected = new Map<string, MCPClient>()
+/** Each connected server's tools, as its client lists them. */
+const serverTools = new Map<string, Array<McpServerTool>>()
+const serverOfClient = new WeakMap<object, string>()
+
+async function createClient(server: McpServer) {
+  const { createMCPClient } = await import("@tanstack/ai-mcp")
+  const options = clientOptions(server)
+  try {
+    return await createMCPClient(options)
+  } catch (error) {
+    if (!wasBlocked(error)) throw error
+    // The client first asks for the newest protocol, with headers that
+    // servers whose CORS rules predate them don't allow (Exa's), so the
+    // browser blocks it. The older handshake sends none of them.
+    return await createMCPClient({ ...options, prior: { kind: "legacy" } })
+  }
+}
 
 function connect(server: McpServer) {
   let client = clients.get(server.id)
   if (!client) {
-    client = import("@tanstack/ai-mcp").then(({ createMCPClient }) =>
-      createMCPClient({
-        transport: {
-          type: "http",
-          url: server.url,
-          headers: headersOf(server)
-        }
-      })
-    )
+    client = createClient(server)
     clients.set(server.id, client)
     // A failed connection isn't kept, so the next try reconnects.
-    client.catch(() => clients.delete(server.id))
+    client.then(
+      (c) => serverOfClient.set(c, server.id),
+      () => clients.delete(server.id)
+    )
   }
   return client
 }
@@ -193,6 +273,8 @@ function connect(server: McpServer) {
 function disconnect(id: string) {
   const client = clients.get(id)
   clients.delete(id)
+  connected.delete(id)
+  serverTools.delete(id)
   void client?.then((c) => c.close()).catch(() => undefined)
 }
 
@@ -201,13 +283,19 @@ export async function checkMcpServer(server: McpServer) {
   disconnect(server.id)
   setStatus(server.id, { state: "checking" })
   try {
-    const tools = await (await connect(server)).tools()
+    const client = await connect(server)
+    const tools = await client.tools()
+    connected.set(server.id, client)
+    serverTools.set(server.id, tools)
     setStatus(server.id, {
       state: "connected",
       tools: tools.map((t) => ({
         name: t.name,
+        title: t.metadata.mcp.title,
         description: t.description,
-        inputSchema: (t.inputSchema ?? { type: "object" }) as JSONSchema
+        // Set at runtime from the client's `needsApproval`; the static type
+        // only knows tools declared ahead of time.
+        needsApproval: Boolean(t.needsApproval)
       }))
     })
   } catch (error) {
@@ -224,57 +312,66 @@ export function checkMcpServers() {
   }
 }
 
-type CallToolResult = {
-  content?: Array<{ type: string; text?: string }>
-  structuredContent?: unknown
-  isError?: boolean
+/**
+ * The clients of every enabled, connected server, for `chat({ mcp })`.
+ * Built-in servers come first, so their tools lead (small models tend to
+ * pick the first tool that might fit).
+ */
+export const getMcpClients = () =>
+  getMcpServers().flatMap((server) => {
+    const client = connected.get(server.id)
+    return server.enabled && client ? [client] : []
+  })
+
+/**
+ * Definitions of the tools that ask first, for useChat's `tools`. The chat
+ * client only accepts an approval for a tool it has the definition of, with
+ * the same input schema (TanStack's approval guide: "pass the definition to
+ * useChat"). They come from the same tools chat() runs, so the schemas
+ * match; they carry no `execute`, so nothing runs them in the client.
+ */
+export function useMcpApprovalTools() {
+  const servers = useMcpServers()
+  const status = mcpStatusStore.use()
+  return useMemo(
+    () =>
+      servers.flatMap((server) =>
+        server.enabled && status[server.id]?.state === "connected"
+          ? (serverTools.get(server.id) ?? [])
+              .filter((tool) => tool.needsApproval)
+              .map((tool) =>
+                toolDefinition({
+                  name: tool.name,
+                  description: tool.description,
+                  inputSchema: tool.inputSchema,
+                  needsApproval: true
+                })
+              )
+          : []
+      ),
+    [servers, status]
+  )
 }
 
-/** Runs one MCP tool and returns its result as text for the model. */
-async function runMcpTool(server: McpServer, name: string, input: unknown) {
-  const client = await connect(server)
-  const result = (await client.callTool(
-    name,
-    (input ?? {}) as Record<string, unknown>
-  )) as CallToolResult
-  const text =
-    result.content
-      ?.map((c) => (c.type === "text" ? (c.text ?? "") : `[${c.type}]`))
-      .join("\n") ||
-    (result.structuredContent === undefined
-      ? ""
-      : JSON.stringify(result.structuredContent))
-  if (result.isError) throw new Error(text || "The tool failed.")
-  return shorten(compactToolResult(text))
+/** Whether every enabled server has connected or failed, so its tools are known. */
+export function useMcpSettled() {
+  const servers = useMcpServers()
+  const status = mcpStatusStore.use()
+  return servers.every((server) => {
+    const state = status[server.id]?.state
+    return !server.enabled || state === "connected" || state === "error"
+  })
 }
 
 /**
- * The tools of every enabled, connected server, as TanStack AI tools that
- * chat() runs, here in the browser. Built-in servers come first, so their
- * tools lead (small models tend to pick the first tool that might fit).
- * When two servers have a tool with the same name, the first one wins.
+ * A client whose tools couldn't be listed for a run: the run goes on
+ * without them, and the server shows the error in the MCP servers list.
  */
-export const getMcpTools = () => toolsOf(getMcpServers(), mcpStatusStore.get())
-
-function toolsOf(
-  servers: Array<McpServer>,
-  status: Record<string, McpServerStatus>
-) {
-  const seen = new Set<string>()
-  return servers.flatMap((server) => {
-    const s = status[server.id]
-    if (!server.enabled || s?.state !== "connected") return []
-    return s.tools
-      .filter((tool) => !seen.has(tool.name) && seen.add(tool.name))
-      .map((tool) =>
-        toolDefinition({
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.inputSchema
-          // chat() runs it, here in the page.
-        }).server((input) => runMcpTool(server, tool.name, input))
-      )
-  })
+export function reportMcpDiscoveryError(error: unknown, source: object) {
+  const id = serverOfClient.get(source)
+  if (!id) return
+  connected.delete(id)
+  setStatus(id, { state: "error", message: describeError(error) })
 }
 
 /** A default name for a server: its host, without a leading "mcp.". */

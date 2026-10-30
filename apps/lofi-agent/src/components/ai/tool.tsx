@@ -1,6 +1,7 @@
+import Hand from "@gravity-ui/icons/Hand"
 import TriangleExclamation from "@gravity-ui/icons/TriangleExclamation"
 import Wrench from "@gravity-ui/icons/Wrench"
-import { Button, Disclosure, Spinner } from "@heroui/react"
+import { Button, Card, Disclosure, Spinner } from "@heroui/react"
 import type { ReactNode } from "react"
 
 /** A tool call, collapsed under its name. */
@@ -8,7 +9,8 @@ export function Tool({ children }: { children: ReactNode }) {
   return <Disclosure>{children}</Disclosure>
 }
 
-export type ToolStatus = "running" | "error" | "done"
+/** `approval`: the call waits for the user to approve or deny it. */
+export type ToolStatus = "running" | "approval" | "error" | "done"
 
 export function ToolHeader({
   name,
@@ -27,6 +29,8 @@ export function ToolHeader({
       >
         {status === "running" ? (
           <Spinner size="sm" color="current" />
+        ) : status === "approval" ? (
+          <Hand className="text-warning" />
         ) : status === "error" ? (
           <TriangleExclamation className="text-danger" />
         ) : (
@@ -89,5 +93,59 @@ export function ToolOutput({
         {errorText ?? output}
       </pre>
     </>
+  )
+}
+
+/**
+ * Asks before a tool runs: its name and arguments, with Approve and Deny.
+ * Once answered, only the answer's status shows.
+ */
+export function ToolApproval({
+  name,
+  input,
+  status,
+  isDisabled,
+  onApprove,
+  onDeny
+}: {
+  name: string
+  /** The arguments, as JSON. */
+  input: string
+  status: "pending" | "validating" | "staged" | "submitting" | "error"
+  isDisabled: boolean
+  onApprove: () => void
+  onDeny: () => void
+}) {
+  if (status !== "pending") {
+    return <p className="text-xs text-muted">{status}</p>
+  }
+  return (
+    <Card variant="secondary" className="gap-3 rounded-2xl p-4">
+      <Card.Header className="gap-1 p-0">
+        <Card.Title className="flex items-center gap-2 text-sm">
+          <Hand className="text-warning" />
+          Run <span className="font-mono text-xs">{name}</span>?
+        </Card.Title>
+        <Card.Description className="text-xs">
+          This tool asks before it runs.
+        </Card.Description>
+      </Card.Header>
+      <Card.Content className="p-0 text-xs">
+        <ToolInput input={input} />
+      </Card.Content>
+      <Card.Footer className="gap-2 p-0">
+        <Button size="sm" isDisabled={isDisabled} onPress={onApprove}>
+          Approve
+        </Button>
+        <Button
+          size="sm"
+          variant="tertiary"
+          isDisabled={isDisabled}
+          onPress={onDeny}
+        >
+          Deny
+        </Button>
+      </Card.Footer>
+    </Card>
   )
 }

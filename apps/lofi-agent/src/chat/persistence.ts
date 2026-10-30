@@ -58,3 +58,7 @@ export function forgetChat(id: string) {
 /** A thread's messages, for copying it as text. */
 export const threadMessages = (id: string) =>
   chats().get(id)?.state.messages ?? []
+
+/** Whether a thread was saved waiting for an approval. */
+export const hasPendingInterrupts = (id: string) =>
+  (chats().get(id)?.state.resume?.pendingInterrupts?.length ?? 0) > 0

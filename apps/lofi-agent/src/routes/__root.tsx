@@ -1,4 +1,7 @@
+import { aiDevtoolsPlugin } from "@tanstack/react-ai-devtools"
+import { TanStackDevtools } from "@tanstack/react-devtools"
 import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router"
+import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools"
 import { ThemeProvider } from "next-themes"
 
 import appCss from "../styles.css?url"
@@ -68,6 +71,20 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         >
           {children}
         </ThemeProvider>
+        {/* TanStack devtools, in development only (the Vite plugin removes
+            them from builds), with no button: open them with Ctrl + ~.
+            Chats run in the page, so the AI panel sees each run's model
+            calls and tool calls with no server bus. */}
+        <TanStackDevtools
+          config={{ triggerHidden: true }}
+          plugins={[
+            aiDevtoolsPlugin(),
+            {
+              name: "TanStack Router",
+              render: <TanStackRouterDevtoolsPanel />
+            }
+          ]}
+        />
         <Scripts />
       </body>
     </html>

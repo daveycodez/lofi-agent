@@ -16,7 +16,6 @@ import {
 } from "@tanstack-ai-browser/apfel"
 import { useSyncExternalStore } from "react"
 
-import { setting } from "#/lib/settings"
 import { createStore } from "#/lib/store"
 
 export type ModelId =
@@ -28,12 +27,6 @@ export type ModelId =
   | "lfm2.5-thinking"
   | "lfm2.5-web"
   | "lfm2.5-thinking-web"
-
-/**
- * Whether models with a thinking switch should reason before answering. On
- * by default: LFM3 answers much better with it.
- */
-export const thinkingSetting = setting("think", true)
 
 /** Where the app reaches apfel on this Mac: its default address. */
 const APFEL_URL = APFEL_BASE_URL
@@ -111,7 +104,7 @@ export function canThink(id: ModelId) {
 
 /**
  * The model to start with, and to fall back on: LFM3 Web runs anywhere,
- * iPhone Safari included, with thinking on (see `thinkingSetting`).
+ * iPhone Safari included, with thinking on (see ./model.ts).
  */
 export const DEFAULT_MODEL: ModelId = "lfm3-web"
 
@@ -120,30 +113,25 @@ export const modelInfo = (id: ModelId) =>
   MODELS.find((m) => m.id === DEFAULT_MODEL) ??
   MODELS[0]
 
-/** The model the user picked; saved only once they pick one. */
-export const modelSetting = setting("model", DEFAULT_MODEL)
+/** Whether `value` is the id of a model in the list, as a run reads it. */
+export const isModelId = (value: unknown): value is ModelId =>
+  MODELS.some((m) => m.id === value)
 
 /** Apple's model only exists on macOS and iOS (iPadOS reports itself as a Mac). */
-const isApplePlatform = () =>
+export const isApplePlatform = () =>
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
 
 const noopSubscribe = () => () => undefined
-const useIsApplePlatform = () =>
+export const useIsApplePlatform = () =>
   useSyncExternalStore(noopSubscribe, isApplePlatform, () => false)
 
 /**
  * The pick, if this device offers it: the Apple model only on Apple
  * devices, and a model no longer offered falls back to the default.
  */
-const offered = (id: ModelId, isApple: boolean): ModelId =>
-  MODELS.some((m) => m.id === id) && (id !== "apple-fm" || isApple)
-    ? id
-    : DEFAULT_MODEL
-
-export const currentModel = () => offered(modelSetting.get(), isApplePlatform())
-export const useCurrentModel = () =>
-  offered(modelSetting.use(), useIsApplePlatform())
+export const offered = (id: ModelId, isApple: boolean): ModelId =>
+  isModelId(id) && (id !== "apple-fm" || isApple) ? id : DEFAULT_MODEL
 
 /** Models to offer in the picker on this device. */
 export function useModels() {

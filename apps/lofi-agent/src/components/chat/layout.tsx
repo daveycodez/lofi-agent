@@ -50,9 +50,11 @@ const PROMPTS = [
 
 export function ChatLayout({
   Messages,
+  Interrupts,
+  Queue,
   Input
 }: LayoutProps<typeof chatOptions>) {
-  const { messages, isHydrating } = useChatContext()
+  const { messages, isHydrating, queue } = useChatContext()
   const { threadId } = useThread()
 
   if (messages.length === 0 && !isHydrating) {
@@ -65,11 +67,17 @@ export function ChatLayout({
         {isHydrating ? (
           <TranscriptSkeleton />
         ) : (
-          <Transcript Messages={Messages} />
+          <Transcript Messages={Messages} Interrupts={Interrupts} />
         )}
       </ConversationContent>
       <div className="relative mx-auto flex w-full max-w-2xl flex-col px-6 pb-2">
         <ConversationScrollButton />
+        {queue.length > 0 && (
+          <div className="mb-2 flex flex-col gap-1">
+            <p className="px-1 text-xs font-medium text-muted">Queued</p>
+            <Queue />
+          </div>
+        )}
         <Input />
         {/* Token counts and speed of the latest reply. */}
         <ReplyStatsLine threadId={threadId} />
@@ -78,7 +86,13 @@ export function ChatLayout({
   )
 }
 
-function Transcript({ Messages }: { Messages: ComponentType }) {
+function Transcript({
+  Messages,
+  Interrupts
+}: {
+  Messages: ComponentType
+  Interrupts: ComponentType
+}) {
   const { messages, isLoading, error } = useChatContext()
   const sources = useMemo(() => sourcesByReply(messages), [messages])
   const last = messages.at(-1)
@@ -96,6 +110,8 @@ function Transcript({ Messages }: { Messages: ComponentType }) {
         <Messages />
         {/* The reply before its first token, or a run that failed. */}
         {last?.role === "user" && (isLoading || error) && <PendingReply />}
+        {/* Approvals and other pauses waiting for an answer. */}
+        <Interrupts />
       </div>
     </TranscriptContext.Provider>
   )

@@ -35,7 +35,7 @@ import {
   setMcpServerEnabled,
   useMcpServers
 } from "#/lib/mcp"
-import type { McpServer } from "#/lib/mcp"
+import type { McpServer, McpTool } from "#/lib/mcp"
 
 export function McpServersModal({
   isOpen,
@@ -71,8 +71,9 @@ function McpServersSection() {
     <section className="flex flex-col gap-4">
       <p className="text-sm text-muted">
         Give the model tools from remote MCP servers. Exa&apos;s web search
-        comes built in. Your browser connects to each server directly, so the
-        server has to allow connections from this site.
+        comes built in. Tools from servers you add ask before they run. Your
+        browser connects to each server directly, so the server has to allow
+        connections from this site.
       </p>
       {servers.length > 0 && (
         <ul className="flex flex-col gap-2">
@@ -160,6 +161,7 @@ function McpServerRow({ server }: { server: McpServer }) {
             {status.tools.length === 1
               ? "1 tool"
               : `${status.tools.length} tools`}
+            {approvalNote(status.tools)}
           </p>
           {status.tools.length > 0 && (
             <div className="flex flex-wrap gap-1">
@@ -174,6 +176,19 @@ function McpServerRow({ server }: { server: McpServer }) {
       )}
     </li>
   )
+}
+
+/**
+ * Which tools ask before they run (see src/lib/mcp.ts): every tool of a
+ * server the user added, and a built-in server's tools it doesn't mark
+ * read-only.
+ */
+function approvalNote(tools: Array<McpTool>) {
+  const asking = tools.filter((t) => t.needsApproval).length
+  if (tools.length === 0) return ""
+  if (asking === 0) return " · run without asking"
+  if (asking === tools.length) return " · each asks before it runs"
+  return ` · ${asking} ask before running`
 }
 
 /**
