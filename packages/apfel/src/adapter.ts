@@ -25,6 +25,8 @@ import {
   createToolCallSplitter,
   parseJsonToolCalls
 } from "./tool-calls.js"
+import { matchToolName, repairToolArguments } from "./tool-repair.js"
+import type { GuidedRequest } from "./tool-repair.js"
 
 /** Where apfel's server listens by default. */
 export const APFEL_BASE_URL = "http://127.0.0.1:11434/v1"
@@ -58,6 +60,11 @@ export type ApfelProviderUsageDetails = {
    * in for its share of the tokens.
    */
   decodeTokens?: number
+  /**
+   * Time spent rewriting the tool calls' arguments under their schemas,
+   * after the reply ended (see the README's "Tool calls").
+   */
+  toolRepairMs?: number
 }
 
 /**
@@ -599,11 +606,13 @@ export class ApfelTextAdapter<TModel extends string> extends BaseTextAdapter<
         name: call.name,
         arguments: JSON.stringify(call.args)
       }))
-    ]
+    ].map((call) => ({
+      ...call,
+      name: matchToolName(call.name, toolNames) ?? call.name
+    }))
+    let repairMs = 0
     for (const [index, call] of calls.entries()) {
       const toolCallId = nextId("tool")
-      const args = call.arguments || "{}"
-      const input = parseArguments(args)
       yield {
         type: EventType.TOOL_CALL_START,
         toolCallId,
@@ -613,6 +622,21 @@ export class ApfelTextAdapter<TModel extends string> extends BaseTextAdapter<
         model,
         timestamp: timestamp()
       }
+      const tool = options.tools?.find((t) => t.name === call.name)
+      const repairStart = performance.now()
+      const repaired = tool
+        ? await this.repairArguments(
+            tool,
+            call.arguments,
+            options,
+            send,
+            signal
+          )
+        : undefined
+      repairMs += performance.now() - repairStart
+      if (signal?.aborted) return
+      const args = repaired ? JSON.stringify(repaired) : call.arguments || "{}"
+      const input = repaired ?? parseArguments(args)
       yield {
         type: EventType.TOOL_CALL_ARGS,
         toolCallId,
@@ -635,6 +659,7 @@ export class ApfelTextAdapter<TModel extends string> extends BaseTextAdapter<
     endText()
     yield* events.splice(0)
 
+    if (repairMs > 0) details.toolRepairMs = repairMs
     const finishUsage = usageOf(usage, details)
     yield {
       type: EventType.RUN_FINISHED,
@@ -649,6 +674,75 @@ export class ApfelTextAdapter<TModel extends string> extends BaseTextAdapter<
             ? "stop"
             : finishReason,
       ...(finishUsage && { usage: finishUsage })
+    }
+  }
+
+  /**
+   * A tool call's arguments, written again under the tool's schema with
+   * guided generation. Undefined if the tool takes no arguments or a request
+   * failed: the model's own arguments are used then.
+   */
+  private async repairArguments(
+    tool: Tool,
+    draft: string,
+    options: TextOptions<ApfelModelOptions>,
+    send: typeof fetch,
+    signal: AbortSignal | undefined
+  ) {
+    const system = normalizeSystemPrompts(options.systemPrompts)
+      .map((p) => p.content)
+      .join("\n\n")
+    const messages = toOpenAIMessages(options.messages)
+    const complete = async ({ instructions, schema, name }: GuidedRequest) => {
+      options.logger.request(
+        `activity=tool-repair provider=apfel model=${this.model} tool=${tool.name} step=${name}`,
+        { provider: "apfel", model: this.model }
+      )
+      const response = await send(`${this.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: this.headers,
+        body: JSON.stringify({
+          ...options.modelOptions,
+          model: this.model,
+          // apfel takes one system message, and the conversation must end
+          // with the user or a tool result: the instructions go first.
+          messages: [
+            {
+              role: "system",
+              content: system
+                ? `${instructions}\n\nThe assistant's instructions, for context:\n${system}`
+                : instructions
+            },
+            ...messages
+          ],
+          response_format: {
+            type: "json_schema",
+            json_schema: { name, schema }
+          }
+        }),
+        signal
+      })
+      if (!response.ok) {
+        throw new Error(
+          `apfel returned HTTP ${response.status}: ${await errorBody(response)}`
+        )
+      }
+      const completion = (await response.json()) as OpenAICompletion
+      const text = (completion.choices?.[0]?.message?.content ?? "").trim()
+      return JSON.parse(
+        text.replace(/^```(?:json)?\s*|\s*```$/g, "")
+      ) as unknown
+    }
+    try {
+      return await repairToolArguments(tool, complete, draft)
+    } catch (error) {
+      if (!signal?.aborted) {
+        options.logger.errors("apfel tool-call repair failed", {
+          error,
+          source: "apfel.repairArguments"
+        })
+      }
+      return undefined
     }
   }
 
