@@ -3,6 +3,11 @@
  * the page stays smooth while it loads and generates. One model at a time:
  * loading another frees the previous one. Transformers.js comes from the CDN
  * at runtime so its native Node dependencies never enter the app build.
+ *
+ * Without WebGPU (Firefox on Android, say), the same models run on the CPU
+ * through ONNX Runtime's WebAssembly backend, from their q4 weights (float32
+ * activations, which the CPU kernels want): slower, but the same features,
+ * prompt caching in memory and on disk included.
  */
 import type {
   ChatTurn,
@@ -30,8 +35,16 @@ const TRANSFORMERS_URL =
  * 4.3.2 pins: its WebGPU mixture-of-experts kernel (QMoE) takes a separate
  * gate projection ("FC3"), which Gemma 4's experts use.
  */
-const ORT_URL =
-  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/ort.webgpu.bundle.min.mjs"
+const ORT_DIST = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/"
+
+/**
+ * The runtime bundle for a device. On the CPU it's the plain WebAssembly
+ * build: the WebGPU builds have no CPU kernel for GatherBlockQuantized,
+ * the 4-bit embedding lookup most q4 files use, and the plain build is
+ * half the size (14.8 MB of WebAssembly against 29).
+ */
+const ortUrl = (device: Device) =>
+  `${ORT_DIST}${device === "wasm" ? "ort.wasm.bundle.min.mjs" : "ort.webgpu.bundle.min.mjs"}`
 
 /**
  * The Cache Storage Transformers.js keeps model files and ONNX Runtime's
@@ -64,23 +77,23 @@ const moduleUrl = (code: string) =>
  * both are pointed at the one runtime bundle, so Transformers.js and ONNX
  * Runtime share one Tensor class too.
  */
-async function importTransformers() {
+async function importTransformers(device: Device) {
   const [transformers, ort] = await Promise.all([
     cachedText(TRANSFORMERS_URL),
-    cachedText(ORT_URL)
+    cachedText(ortUrl(device))
   ])
-  const ortUrl = moduleUrl(ort)
+  const ortModule = moduleUrl(ort)
   const url = moduleUrl(
     transformers.replace(
       /from\s*"onnxruntime-(?:web\/webgpu|common)"/g,
-      `from"${ortUrl}"`
+      `from"${ortModule}"`
     )
   )
   try {
     return (await import(/* @vite-ignore */ url)) as TransformersModule
   } finally {
     URL.revokeObjectURL(url)
-    URL.revokeObjectURL(ortUrl)
+    URL.revokeObjectURL(ortModule)
   }
 }
 
@@ -186,15 +199,17 @@ type TransformersModule = Record<string, unknown> & {
  * build is 16.8 MB instead of 26.9 MB and runs the same code, so it is used
  * wherever the browser has JSPI (Safari 27 and recent Chrome).
  */
-function pickWasmBuild(tf: TransformersModule) {
+function pickWasmBuild(tf: TransformersModule, device: Device) {
   const onnx = tf.env.backends.onnx
   const dist = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnx.versions.web}/dist/`
-  const build = "Suspending" in WebAssembly ? "jspi" : "asyncify"
+  // On the CPU, the plain build that goes with the plain bundle above.
+  const build =
+    device === "wasm" ? "" : "Suspending" in WebAssembly ? ".jspi" : ".asyncify"
   // Named as an object, Transformers.js keeps both files in its cache, for
   // loading offline.
   onnx.wasm.wasmPaths = {
-    mjs: `${dist}ort-wasm-simd-threaded.${build}.mjs`,
-    wasm: `${dist}ort-wasm-simd-threaded.${build}.wasm`
+    mjs: `${dist}ort-wasm-simd-threaded${build}.mjs`,
+    wasm: `${dist}ort-wasm-simd-threaded${build}.wasm`
   }
 }
 
@@ -207,12 +222,35 @@ function pickWasmBuild(tf: TransformersModule) {
 const fetchWithoutReferrer: typeof fetch = (input, init) =>
   fetch(input, { ...init, referrerPolicy: "no-referrer" })
 
+/** Where a model runs: the GPU, or the CPU through WebAssembly. */
+type Device = "webgpu" | "wasm"
+
 type Runtime = {
   tf: TransformersModule
   tokenizer: Tokenizer
   model: Model
   /** The model's end-of-turn tokens, taken out of the text it streams. */
   endTokens: RegExp
+  device: Device
+  /** The weights loaded: q4 on the CPU, whatever was asked for on the GPU. */
+  dtype: WeightsDtype
+}
+
+/**
+ * WebGPU if this browser has it and can get a GPU adapter, else the CPU.
+ * Some browsers have `navigator.gpu` but no adapter (a blocklisted GPU, or
+ * WebGPU turned off).
+ */
+async function pickDevice(): Promise<Device> {
+  const nav = navigator as Navigator & {
+    gpu?: { requestAdapter: () => Promise<unknown> }
+  }
+  if (!nav.gpu) return "wasm"
+  try {
+    return (await nav.gpu.requestAdapter()) ? "webgpu" : "wasm"
+  } catch {
+    return "wasm"
+  }
 }
 
 const ctx = globalThis as unknown as {
@@ -562,6 +600,8 @@ async function unlessGpuLost<T>(work: Promise<T>): Promise<T> {
  * makes the engine collect.
  */
 function nudgeGarbageCollector() {
+  // Only WebGPU's bind groups need it; on the CPU it's just churn.
+  if (!gpu.device) return 0
   const junk = Array.from({ length: 32 }, () => new ArrayBuffer(1 << 20))
   return junk.length
 }
@@ -570,7 +610,9 @@ function nudgeGarbageCollector() {
 function gpuReport() {
   const mb = (bytes: number) => Math.round(bytes / 1e6)
   return [
-    `GPU buffers: ${mb(gpu.liveBytes)} MB in use, ${mb(gpu.peakBytes)} MB peak`,
+    // Nothing to say about the GPU for a model on the CPU.
+    gpu.device &&
+      `GPU buffers: ${mb(gpu.liveBytes)} MB in use, ${mb(gpu.peakBytes)} MB peak`,
     `prompt: ${gpu.promptTokens} tokens`,
     gpu.lost && `device lost: ${gpu.lost}`,
     gpu.error && `GPU error: ${gpu.error}`
@@ -980,14 +1022,20 @@ let current: {
 
 async function loadRuntime(
   modelId: string,
-  dtype: WeightsDtype
+  requested: WeightsDtype
 ): Promise<Runtime> {
-  if (!("gpu" in navigator)) {
+  const device = await pickDevice()
+  // The CPU kernels want float32 activations: q4 weights.
+  const dtype: WeightsDtype = device === "wasm" ? "q4" : requested
+  let weights: Array<WeightsFile>
+  try {
+    weights = await listWeights(modelId, dtype)
+  } catch (error) {
+    if (device === "webgpu") throw error
     throw new Error(
-      "This model needs WebGPU, which this browser doesn't support."
+      "This model needs WebGPU, which this browser doesn't have, and it has no weights for running on the CPU. Pick another model."
     )
   }
-  const weights = await listWeights(modelId, dtype)
   void removeOtherWeights(modelId, dtype, weights)
   const cached = await isDownloaded(modelId, weights)
   ctx.postMessage({ type: "progress", modelId, progress: 0, cached })
@@ -1007,9 +1055,9 @@ async function loadRuntime(
     })
   })
   ctx.postMessage({ type: "progress", modelId, progress: 0, cached: true })
-  const tf = await importTransformers()
+  const tf = await importTransformers(device)
   tf.env.fetch = fetchWithoutReferrer
-  pickWasmBuild(tf)
+  pickWasmBuild(tf, device)
   const { repo, revision } = parseModelId(modelId)
   const tokenizer = await tf.AutoTokenizer.from_pretrained(repo, { revision })
   // Newer repos keep the chat template in its own file, which Transformers.js
@@ -1028,7 +1076,7 @@ async function loadRuntime(
       revision,
       config,
       dtype,
-      device: "webgpu",
+      device,
       // Weights come from disk (above), not Transformers.js's download. Every
       // session gets every file: a decoder may read the embedding's file too.
       use_external_data_format: 0,
@@ -1043,10 +1091,17 @@ async function loadRuntime(
         // WebKit releases destroyed buffers late, so a long reply climbed
         // past an iPhone's memory limit (on a Mac: 1,672 MB at 1,000 tokens
         // and climbing, against 1,137 MB and flat with bucket).
-        executionProviders: ["webgpu"]
+        executionProviders: [device]
       }
     })
-    return { tf, tokenizer, model, endTokens: endTokens(tokenizer, model) }
+    return {
+      tf,
+      tokenizer,
+      model,
+      endTokens: endTokens(tokenizer, model),
+      device,
+      dtype
+    }
   } finally {
     for (const weightsData of opened) weightsData.close()
   }
@@ -1136,15 +1191,49 @@ const isKeysValues = (name: string) => name.startsWith("past_key_values.")
 /** GPUBufferUsage.STORAGE | COPY_SRC | COPY_DST. */
 const CACHE_BUFFER_USAGE = 0x80 | 0x4 | 0x8
 
+/** Typed arrays, as ONNX Runtime's CPU tensors hold their data. */
+type TensorData = Float32Array | Uint16Array
+
+/** An array of the same kind as `data`, `length` elements long. */
+const sameKind = (data: TensorData, length: number): TensorData =>
+  data instanceof Float32Array
+    ? new Float32Array(length)
+    : new Uint16Array(length)
+
 /**
- * A copy of a cache tensor on the GPU. With `length`, keys/values shaped
- * [batch, heads, tokens, head size] keep each head's first `length` tokens.
+ * A CPU tensor's data, copied: whole, or with `length`, keys/values shaped
+ * [batch, heads, tokens, head size] cut to each head's first `length`
+ * tokens. The CPU twin of the GPU copies below.
+ */
+function copyCpuData(tensor: Tensor, length?: number) {
+  const data = tensor.data as TensorData
+  const dims = [...tensor.dims]
+  if (length === undefined) return { data: data.slice(), dims }
+  const [batch, heads, tokens, size] = dims
+  const copy = sameKind(data, batch * heads * length * size)
+  for (let i = 0; i < batch * heads; i++) {
+    copy.set(
+      data.subarray(i * tokens * size, i * tokens * size + length * size),
+      i * length * size
+    )
+  }
+  return { data: copy, dims: [batch, heads, length, size] }
+}
+
+/**
+ * A copy of a cache tensor, on the GPU or the CPU, where it is. With
+ * `length`, keys/values shaped [batch, heads, tokens, head size] keep each
+ * head's first `length` tokens.
  */
 function copyCacheTensor(
   tf: TransformersModule,
   tensor: Tensor,
   length?: number
 ): Tensor {
+  if (tensor.location !== "gpu-buffer") {
+    const { data, dims } = copyCpuData(tensor, length)
+    return new tf.Tensor(tensor.ort_tensor.type, data, dims)
+  }
   const source = tensor.ort_tensor.gpuBuffer
   const device = gpu.device
   if (!source || !device) throw new Error("The model's cache isn't on the GPU.")
@@ -1505,10 +1594,19 @@ const promptCacheDir = async () =>
 const READBACK_USAGE = 0x1 | 0x8
 
 /**
- * Copies a cache tensor (keys/values cut to `length`) off the GPU. The copy
- * is queued before this returns, so the tensor can change or go after.
+ * Copies a cache tensor (keys/values cut to `length`) off the GPU, or out of
+ * its CPU array. The copy is made or queued before this returns, so the
+ * tensor can change or go after.
  */
 function readCacheTensor(tensor: Tensor, length?: number) {
+  if (tensor.location !== "gpu-buffer") {
+    const { data, dims } = copyCpuData(tensor, length)
+    return {
+      type: tensor.ort_tensor.type,
+      dims,
+      data: Promise.resolve(new Uint8Array(data.buffer))
+    }
+  }
   const source = tensor.ort_tensor.gpuBuffer
   const device = gpu.device
   if (!source || !device) throw new Error("The model's cache isn't on the GPU.")
@@ -1634,17 +1732,19 @@ async function prunePromptCache(dir: FileSystemDirectoryHandle) {
 }
 
 /**
- * Loads the saved cache for exactly these tokens onto the GPU, or null if
- * there's none (or it's for another model or format).
+ * Loads the saved cache for exactly these tokens onto the GPU, or into CPU
+ * tensors for a model on the CPU, or null if there's none (or it's for
+ * another model or format).
  */
 async function loadFromDisk(
   tf: TransformersModule,
   modelId: string,
-  ids: Array<number>
+  ids: Array<number>,
+  on: Device
 ): Promise<Cache | null> {
   const key = promptCacheKey(modelId, ids)
   const device = gpu.device
-  if (!device) return null
+  if (on === "webgpu" && !device) return null
   let buffer: ArrayBuffer
   try {
     const dir = await promptCacheDir()
@@ -1682,6 +1782,13 @@ async function loadFromDisk(
   const dataStart = Math.ceil((8 + headerLength) / 4) * 4
   const entries: Record<string, Tensor> = {}
   for (const t of header.tensors) {
+    if (on === "wasm" || !device) {
+      const bytes = buffer.slice(dataStart + t.offset, dataStart + t.offset + t.size)
+      const data =
+        t.type === "float16" ? new Uint16Array(bytes) : new Float32Array(bytes)
+      entries[t.name] = new tf.Tensor(t.type, data, t.dims)
+      continue
+    }
     const gpuBuffer = device.createBuffer({
       size: t.size,
       usage: CACHE_BUFFER_USAGE
@@ -1914,10 +2021,12 @@ async function generate(
   const requested = performance.now()
   if (!current) throw new Error("No model loaded.")
   const loaded = current
-  const { tf, tokenizer, model, endTokens } = await loaded.runtime
-  // The model's caches, in memory and on disk, are by model and dtype: the
-  // dtype decides the cache's tensor types.
-  const cacheId = `${loaded.modelId}:${loaded.dtype}`
+  const { tf, tokenizer, model, endTokens, device, dtype } =
+    await loaded.runtime
+  // The model's caches, in memory and on disk, are by model and the dtype
+  // loaded: the dtype decides the cache's tensor types (float16 on the GPU,
+  // float32 on the CPU).
+  const cacheId = `${loaded.modelId}:${dtype}`
   // Models with a thinking mode reason in a <think> block before answering.
   const prompt = tokenizer.apply_chat_template(chat, {
     ...(tools.length > 0 && { tools }),
@@ -1987,7 +2096,9 @@ async function generate(
   // Nothing in memory covers the system prompt and tools: try the disk.
   const wantsSystem = reused.cached < systemEnd && systemEnd >= MIN_DISK_TOKENS
   const fromDisk = wantsSystem
-    ? await loadFromDisk(tf, cacheId, ids.slice(0, systemEnd)).catch(() => null)
+    ? await loadFromDisk(tf, cacheId, ids.slice(0, systemEnd), device).catch(
+        () => null
+      )
     : null
   if (fromDisk) {
     reused.checkpoints.forEach(disposeCheckpoint)

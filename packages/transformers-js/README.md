@@ -1,6 +1,6 @@
 # @tanstack-ai-browser/transformers-js
 
-A [TanStack AI](https://tanstack.com/ai) adapter for [Transformers.js](https://huggingface.co/docs/transformers.js) models that run in the browser, on WebGPU in a Web Worker, tuned for Safari on iPhone.
+A [TanStack AI](https://tanstack.com/ai) adapter for [Transformers.js](https://huggingface.co/docs/transformers.js) models that run in the browser, on WebGPU in a Web Worker, tuned for Safari on iPhone. Without WebGPU, models with CPU weights run on the CPU instead.
 
 ```sh
 npm install @tanstack-ai-browser/transformers-js @tanstack/ai
@@ -22,15 +22,16 @@ const stream = chat({
 
 `TRANSFORMERS_JS_TEXT_MODELS` lists the models this package knows, and `TRANSFORMERS_JS_MODEL_META` has each one's details: Hugging Face id and pinned revision, size, context, capabilities, tool format, reasoning levels and the sampling from its model card. A listed model needs no config.
 
-| Model                                 | Reasoning                  |
-| ------------------------------------- | -------------------------- |
-| `onnx-community/gemma-4-E4B-it-ONNX`  | on/off                     |
-| `daveycodez/LFM3-1.7B-Web`            | on/off (`"off"`, `"high"`) |
-| `onnx-community/LFM3-1.7B-ONNX`       | on/off                     |
-| `daveycodez/LFM2.5-1.2B-Web`          | none                       |
-| `daveycodez/LFM2.5-1.2B-Thinking-Web` | always (`"high"`)          |
-| `LiquidAI/LFM2.5-1.2B-Instruct-ONNX`  | none                       |
-| `LiquidAI/LFM2.5-1.2B-Thinking-ONNX`  | always                     |
+| Model                                 | Reasoning                  | Without WebGPU |
+| ------------------------------------- | -------------------------- | -------------- |
+| `onnx-community/gemma-4-E4B-it-ONNX`  | on/off                     | no             |
+| `daveycodez/LFM3-1.7B-Web`            | on/off (`"off"`, `"high"`) | no             |
+| `onnx-community/LFM3-1.7B-ONNX`       | on/off                     | yes            |
+| `daveycodez/LFM2.5-1.2B-Web`          | none                       | no             |
+| `daveycodez/LFM2.5-1.2B-Thinking-Web` | always (`"high"`)          | no             |
+| `LiquidAI/LFM2.5-1.2B-Instruct-ONNX`  | none                       | yes            |
+| `LiquidAI/LFM2.5-1.2B-Thinking-ONNX`  | always                     | yes            |
+| `onnx-community/LFM2-1.2B-Tool-ONNX`  | none                       | yes            |
 
 Any other Hugging Face ONNX model works too, given how it writes tool calls and thinks: `transformersJsText("owner/model", { toolFormat: "gemma4" })`, with `"lfm2"`, `"lfm3"` or `"gemma4"`. Pin a revision with `"owner/model@commit"`. Its `q4f16` weights load by default; `dtype: "q4"` loads 4-bit weights with fp32 activations instead. `contextLength` sets how many tokens a chat may hold (8,192 by default). Weights split into several files, and builds split into an embedding, a decoder and vision or audio encoders, load as they are.
 
@@ -39,6 +40,8 @@ Any other Hugging Face ONNX model works too, given how it writes tool calls and 
 **Sampling** goes in `modelOptions` per call (`temperature`, `top_k`, `repetition_penalty`, `max_new_tokens`), over the model card's.
 
 **Usage** is in each call's `RUN_FINISHED` event, as with any TanStack AI adapter: `promptTokens`, `completionTokens`, `totalTokens`, and `promptTokensDetails.cachedTokens` for the start of the prompt the model reused from an earlier call. Timings are in `usage.providerUsageDetails` (`TransformersJsProviderUsageDetails`: `firstTokenMs`, `promptMs`, `decodeMs`, `decodeTokens`), for example in `chat()` middleware's `onUsage`.
+
+**Without WebGPU** (Firefox on Android, for one), there's nothing to set: the worker sees there's no GPU adapter and runs the model on the CPU through ONNX Runtime's WebAssembly backend, from its `q4` weights. It's slower, with the same features, prompt caching in memory and on disk included. `hasWebGpu()` says which this browser gets, and `runsWithoutWebGpu(model)` whether a model has CPU weights. It uses several threads where the page is cross-origin isolated, else one.
 
 **Downloads:** `loadModel(model)` downloads and loads a model ahead of time, and `modelStatus(model)` is a store of its loading progress (with bytes downloaded and the total while it downloads).
 
@@ -56,4 +59,4 @@ export default defineConfig({
 })
 ```
 
-**Status:** early (0.0.x); the API may change. See the [repository README](https://github.com/daveycodez/tanstack-ai-browser#readme).
+**Status:** early (0.x); the API may change. See the [repository README](https://github.com/daveycodez/tanstack-ai-browser#readme).

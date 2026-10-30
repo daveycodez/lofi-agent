@@ -137,9 +137,36 @@ function keepDownloads() {
     .catch(() => undefined)
 }
 
+let webGpu: Promise<boolean> | undefined
+
+/**
+ * Whether models here run on WebGPU: the browser has it and gives a GPU
+ * adapter. Where it doesn't, they run on the CPU through WebAssembly, which
+ * needs a model with q4 weights (see `runsWithoutWebGpu`). The worker makes
+ * the same check when it loads a model.
+ */
+export function hasWebGpu(): Promise<boolean> {
+  webGpu ??= (async () => {
+    const nav =
+      typeof navigator === "undefined"
+        ? undefined
+        : (navigator as Navigator & {
+            gpu?: { requestAdapter: () => Promise<unknown> }
+          })
+    if (!nav?.gpu) return false
+    try {
+      return (await nav.gpu.requestAdapter()) !== null
+    } catch {
+      return false
+    }
+  })()
+  return webGpu
+}
+
 /**
  * Loads a model (downloading it the first time), replacing any other: a
- * listed model at its pinned revision, or any Hugging Face id.
+ * listed model at its pinned revision, or any Hugging Face id. Without
+ * WebGPU the worker loads its q4 weights on the CPU instead of `dtype`.
  */
 export function loadModel(
   model: string,

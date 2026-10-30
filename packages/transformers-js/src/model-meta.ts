@@ -30,6 +30,11 @@ export type TransformersJsModelMeta = {
   toolFormat: ToolFormat
   /** The weights to load: "q4f16" unless the model needs fp32 activations. */
   dtype?: WeightsDtype
+  /**
+   * The repo also has q4 weights (float32 activations), so the model runs
+   * on the CPU through WebAssembly where there's no WebGPU.
+   */
+  cpu?: boolean
   /** Sampling from the model card, used unless `modelOptions` overrides it. */
   sampling: Sampling
 }
@@ -62,6 +67,13 @@ const TOOLS = {
   output: ["text"],
   capabilities: ["tools"]
 } as const
+
+/** LFM2 1.2B Tool card: greedy decoding (temperature 0). */
+const LFM2_TOOL_SAMPLING = {
+  temperature: 0,
+  top_k: 1,
+  repetition_penalty: 1
+} as const satisfies Sampling
 
 /** LFM3 card, "General" (chat, tool use, agents, coding). */
 const LFM3_SAMPLING = {
@@ -129,7 +141,8 @@ const LFM3_1_7B = {
   context: CONTEXT,
   reasoning: THINKING_SWITCH,
   toolFormat: "lfm3",
-  sampling: LFM3_SAMPLING
+  sampling: LFM3_SAMPLING,
+  cpu: true
 } as const satisfies TransformersJsModelMeta
 
 const LFM2_5_1_2B = {
@@ -138,7 +151,8 @@ const LFM2_5_1_2B = {
   size: "1.2b",
   context: CONTEXT,
   toolFormat: "lfm2",
-  sampling: LFM2_5_SAMPLING
+  sampling: LFM2_5_SAMPLING,
+  cpu: true
 } as const satisfies TransformersJsModelMeta
 
 const LFM2_5_1_2B_THINKING = {
@@ -148,7 +162,24 @@ const LFM2_5_1_2B_THINKING = {
   context: CONTEXT,
   reasoning: ALWAYS_THINKS,
   toolFormat: "lfm2",
-  sampling: LFM2_5_THINKING_SAMPLING
+  sampling: LFM2_5_THINKING_SAMPLING,
+  cpu: true
+} as const satisfies TransformersJsModelMeta
+
+/**
+ * Liquid AI's LFM2 1.2B Tool, in onnx-community's build: tuned for short,
+ * precise tool calls without thinking. Its q4 weights (1.2 GB) run on the
+ * CPU too.
+ */
+const LFM2_1_2B_TOOL = {
+  name: "onnx-community/LFM2-1.2B-Tool-ONNX",
+  revision: "6a719165fdb804a2e312e14bf1491221717a3049",
+  supports: TOOLS,
+  size: "1.2b",
+  context: CONTEXT,
+  toolFormat: "lfm2",
+  sampling: LFM2_TOOL_SAMPLING,
+  cpu: true
 } as const satisfies TransformersJsModelMeta
 
 /**
@@ -184,7 +215,8 @@ export const TRANSFORMERS_JS_TEXT_MODELS = [
   LFM2_5_1_2B_WEB.name,
   LFM2_5_1_2B_THINKING_WEB.name,
   LFM2_5_1_2B.name,
-  LFM2_5_1_2B_THINKING.name
+  LFM2_5_1_2B_THINKING.name,
+  LFM2_1_2B_TOOL.name
 ] as const
 
 /** A model this package lists. */
@@ -204,7 +236,8 @@ export const TRANSFORMERS_JS_MODEL_META: Readonly<
   [LFM2_5_1_2B_WEB.name]: LFM2_5_1_2B_WEB,
   [LFM2_5_1_2B_THINKING_WEB.name]: LFM2_5_1_2B_THINKING_WEB,
   [LFM2_5_1_2B.name]: LFM2_5_1_2B,
-  [LFM2_5_1_2B_THINKING.name]: LFM2_5_1_2B_THINKING
+  [LFM2_5_1_2B_THINKING.name]: LFM2_5_1_2B_THINKING,
+  [LFM2_1_2B_TOOL.name]: LFM2_1_2B_TOOL
 }
 
 const TRANSFORMERS_JS_REASONING = {
@@ -242,6 +275,14 @@ export const modelMeta = (
   LISTED.has(model)
     ? TRANSFORMERS_JS_MODEL_META[model as TransformersJsListedModel]
     : undefined
+
+/**
+ * Whether a model runs without WebGPU, on the CPU: a listed model that has
+ * q4 weights. Another Hugging Face id may too; it isn't known here, so the
+ * answer is yes, and loading says if its repo has no q4 weights.
+ */
+export const runsWithoutWebGpu = (model: string): boolean =>
+  LISTED.has(model) ? (modelMeta(model)?.cpu ?? false) : true
 
 /** A model's reasoning data: listed, none for a listed non-reasoner, else the toggle. */
 export const modelReasoning = (model: string): ModelReasoning | undefined =>

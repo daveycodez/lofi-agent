@@ -9,6 +9,7 @@ export type {
   TransformersJsTextProviderOptions
 } from "./adapter.js"
 export {
+  runsWithoutWebGpu,
   TRANSFORMERS_JS_MODEL_META,
   TRANSFORMERS_JS_MODEL_REASONING,
   TRANSFORMERS_JS_TEXT_MODELS
@@ -19,7 +20,7 @@ export type {
   TransformersJsModelReasoningByName,
   TransformersJsTextModel
 } from "./model-meta.js"
-export { loadModel, modelStatus, setDebug } from "./client.js"
+export { hasWebGpu, loadModel, modelStatus, setDebug } from "./client.js"
 export type { ModelStatus } from "./client.js"
 export type { Sampling } from "./protocol.js"
 export type { Store } from "./store.js"
