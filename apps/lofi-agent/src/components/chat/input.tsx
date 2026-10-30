@@ -117,9 +117,8 @@ export function PromptInputSkeleton() {
       <PromptInputTextarea placeholder="Send a message..." value="" readOnly />
       <PromptInputToolbar>
         <PromptInputTools>
-          <div className="flex h-9 items-center px-3 md:h-8">
-            <Skeleton className="h-3.5 w-28 rounded-md" />
-          </div>
+          {/* The size of the model picker's button. */}
+          <Skeleton className="h-9 w-40 rounded-full md:h-8" />
         </PromptInputTools>
         <PromptInputTools end>
           <PromptInputSubmit

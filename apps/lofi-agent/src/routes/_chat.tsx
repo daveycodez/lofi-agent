@@ -154,7 +154,11 @@ function Assistant() {
       </Drawer.Backdrop>
 
       <McpServersModal isOpen={mcpOpen} onOpenChange={setMcpOpen} />
-      <SettingsModal isOpen={settingsOpen} onOpenChange={setSettingsOpen} />
+      <SettingsModal
+        isOpen={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        onAllDeleted={newThread}
+      />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-separator px-4">

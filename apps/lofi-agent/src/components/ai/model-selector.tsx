@@ -34,7 +34,7 @@ function ModelLogo({ src }: { src: string }) {
 }
 
 /**
- * A model picker for the prompt input's toolbar: a ghost Button opening a
+ * A model picker for the prompt input's toolbar: a tertiary Button opening a
  * Popover with a single-selection ListBox, one section per provider. For a
  * model with thinking effort levels, a "Thinking" row under the list picks
  * one, and the button shows it after the model's name (as assistant-ui's
@@ -64,7 +64,9 @@ export function ModelSelector({
   const current = sections
     .flatMap((section) => section.models)
     .find((model) => model.id === value)
-  const effortName = efforts.find((e) => e.id === effort)?.name
+  // The button names the level only while the model thinks: not "Off".
+  const effortName =
+    effort === "off" ? undefined : efforts.find((e) => e.id === effort)?.name
 
   return (
     // min-w-0: a long model name truncates instead of pushing the toolbar's
@@ -73,14 +75,16 @@ export function ModelSelector({
       <Popover isOpen={isOpen} onOpenChange={setIsOpen}>
         <Button
           size="sm"
-          variant="ghost"
+          variant="tertiary"
           aria-label={`Model: ${current?.name ?? value}${effortName ? `, thinking ${effortName}` : ""}`}
-          className="min-w-0 text-muted"
+          // The toolbar it sits in is muted: the model's name isn't, only
+          // its effort.
+          className="min-w-0 text-foreground"
         >
           {current && <ModelLogo src={current.icon} />}
           <span className="min-w-0 truncate">{current?.name ?? value}</span>
           {effortName && (
-            <span className="shrink-0 text-muted/70">{effortName}</span>
+            <span className="shrink-0 text-muted">{effortName}</span>
           )}
           {/* Buttons pull icons in by 2px; keep the caret 8px from the label. */}
           <ChevronDown className="ms-0 shrink-0" />

@@ -17,7 +17,6 @@ import Plus from "@gravity-ui/icons/Plus"
 import TrashBin from "@gravity-ui/icons/TrashBin"
 import Xmark from "@gravity-ui/icons/Xmark"
 import {
-  AlertDialog,
   Button,
   buttonVariants,
   Dropdown,
@@ -36,7 +35,6 @@ import { threadsCollection } from "#/lib/db"
 import type { Thread } from "#/lib/db"
 import {
   archiveThread,
-  deleteAllThreads,
   deleteThread,
   renameThread,
   togglePinThread
@@ -60,7 +58,6 @@ export function ThreadListSidebar(props: SidebarProps) {
       <div className="flex h-12 shrink-0 items-center gap-2 px-4">
         <Comments className="size-4" />
         <span className="text-sm font-semibold">lofi-agent</span>
-        <ChatsMenu onActiveRemoved={props.onActiveRemoved} />
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
@@ -102,88 +99,6 @@ export function ThreadListSidebar(props: SidebarProps) {
         </a>
       </div>
     </div>
-  )
-}
-
-/** Actions for all chats at once, in the header: deleting them all. */
-function ChatsMenu({ onActiveRemoved }: { onActiveRemoved: () => void }) {
-  // Every session, archived ones included.
-  const db = useOptionalDbClient()
-  const { data: allThreads } = useLiveQuery({
-    query: (q) => (db ? q.from({ thread: threadsCollection }) : null)
-  })
-  const count = allThreads?.length ?? 0
-  const [isConfirming, setIsConfirming] = useState(false)
-  return (
-    <>
-      <Dropdown>
-        <Button
-          isIconOnly
-          size="sm"
-          variant="ghost"
-          aria-label="Session options"
-          className="-me-2 ms-auto text-muted hover:text-foreground aria-expanded:text-foreground"
-        >
-          <Ellipsis />
-        </Button>
-        <Dropdown.Popover placement="bottom end">
-          <Dropdown.Menu
-            disabledKeys={count === 0 ? ["delete-all"] : []}
-            onAction={(key) => {
-              if (key === "delete-all") setIsConfirming(true)
-            }}
-          >
-            <Dropdown.Item
-              id="delete-all"
-              textValue="Delete all sessions"
-              variant="danger"
-            >
-              <TrashBin className="size-4 text-danger" />
-              <Label>Delete all sessions</Label>
-            </Dropdown.Item>
-          </Dropdown.Menu>
-        </Dropdown.Popover>
-      </Dropdown>
-
-      <AlertDialog.Backdrop
-        isOpen={isConfirming}
-        onOpenChange={setIsConfirming}
-      >
-        <AlertDialog.Container>
-          <AlertDialog.Dialog className="sm:max-w-[400px]">
-            <AlertDialog.CloseTrigger />
-            <AlertDialog.Header>
-              <AlertDialog.Icon status="danger">
-                <TrashBin className="size-5" />
-              </AlertDialog.Icon>
-              <AlertDialog.Heading>Delete all sessions?</AlertDialog.Heading>
-            </AlertDialog.Header>
-            <AlertDialog.Body>
-              <p>
-                This permanently deletes{" "}
-                {count === 1 ? "your session" : `all ${count} sessions`},
-                including archived ones. This can't be undone.
-              </p>
-            </AlertDialog.Body>
-            <AlertDialog.Footer>
-              <Button slot="close" variant="tertiary">
-                Cancel
-              </Button>
-              <Button
-                slot="close"
-                variant="danger"
-                onPress={() => {
-                  deleteAllThreads()
-                  onActiveRemoved()
-                }}
-              >
-                Delete All
-              </Button>
-            </AlertDialog.Footer>
-          </AlertDialog.Dialog>
-        </AlertDialog.Container>
-      </AlertDialog.Backdrop>
-    </>
   )
 }
 
