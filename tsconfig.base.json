@@ -16,7 +16,7 @@
     "skipLibCheck": true,
     "strict": true,
     "target": "es2022",
-    "customConditions": ["@org/source"],
+    "customConditions": ["@tanstack-ai-browser/source"],
     "noUncheckedSideEffectImports": false,
     "types": ["*"]
   }

@@ -23,7 +23,7 @@ import {
   JSON_TOOL_CALLS_MARKER,
   createToolCallSplitter,
   parseJsonToolCalls
-} from "./tool-calls"
+} from "./tool-calls.js"
 
 /** Where `apfel --serve` listens by default. */
 export const APFEL_BASE_URL = "http://127.0.0.1:11434/v1"

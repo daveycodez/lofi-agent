@@ -11,7 +11,7 @@ import type {
   ToolSpec,
   WorkerRequest,
   WorkerResponse
-} from "./protocol"
+} from "./protocol.js"
 
 /**
  * Diagnostics (memory and cache logs, error stacks) when the page started

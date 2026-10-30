@@ -18,15 +18,15 @@ import type {
   StructuredOutputResult
 } from "@tanstack/ai/adapters"
 
-import { generate, loadModel, setDebug } from "./client"
-import type { ChatTurn, RunTimings, Sampling, ToolSpec } from "./protocol"
-import { createThinkingSplitter, splitThinking } from "./thinking"
+import { generate, loadModel, setDebug } from "./client.js"
+import type { ChatTurn, RunTimings, Sampling, ToolSpec } from "./protocol.js"
+import { createThinkingSplitter, splitThinking } from "./thinking.js"
 import {
   createToolCallSplitter,
   formatLfm2ToolCalls,
   parseToolCalls
-} from "./tool-calls"
-import type { ParsedToolCall, ToolFormat } from "./tool-calls"
+} from "./tool-calls.js"
+import type { ParsedToolCall, ToolFormat } from "./tool-calls.js"
 
 /** A run's token counts and timings, as the worker measures them. */
 export type RunStats = RunTimings

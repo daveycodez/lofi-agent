@@ -1,17 +1,48 @@
 {
   "name": "@tanstack-ai-browser/transformers-js",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.0.0",
+  "description": "TanStack AI adapter for Transformers.js models running in the browser on WebGPU",
+  "license": "MIT",
+  "author": "daveycodez",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daveycodez/tanstack-ai-browser.git",
+    "directory": "packages/transformers-js"
+  },
+  "homepage": "https://github.com/daveycodez/tanstack-ai-browser/tree/main/packages/transformers-js#readme",
+  "bugs": "https://github.com/daveycodez/tanstack-ai-browser/issues",
+  "keywords": [
+    "tanstack-ai",
+    "tanstack",
+    "ai",
+    "llm",
+    "transformers.js",
+    "webgpu",
+    "onnx",
+    "browser",
+    "local-ai"
+  ],
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
+    "./package.json": "./package.json",
     ".": {
-      "types": "./src/index.ts",
-      "import": "./src/index.ts",
-      "default": "./src/index.ts"
-    },
-    "./package.json": "./package.json"
+      "@tanstack-ai-browser/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "nx": {
     "name": "transformers-js"

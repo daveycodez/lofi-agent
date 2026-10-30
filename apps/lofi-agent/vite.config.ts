@@ -1,4 +1,4 @@
-import { defineConfig } from "vite"
+import { defaultClientConditions, defaultServerConditions, defineConfig } from "vite"
 import { devtools } from "@tanstack/devtools-vite"
 
 import { tanstackStart } from "@tanstack/react-start/plugin/vite"
@@ -8,7 +8,15 @@ import tailwindcss from "@tailwindcss/vite"
 import { cloudflare } from "@cloudflare/vite-plugin"
 
 const config = defineConfig({
-  resolve: { tsconfigPaths: true },
+  // "@tanstack-ai-browser/source" points this repo's packages at their TypeScript sources,
+  // so the demo runs on them without building them first.
+  resolve: {
+    tsconfigPaths: true,
+    conditions: ["@tanstack-ai-browser/source", ...defaultClientConditions]
+  },
+  ssr: {
+    resolve: { conditions: ["@tanstack-ai-browser/source", ...defaultServerConditions] }
+  },
   // Module workers, so the LFM3 worker can import Transformers.js from the CDN.
   worker: { format: "es" },
   // The dev server also answers on the local network (http://<this mac>.local:3001)

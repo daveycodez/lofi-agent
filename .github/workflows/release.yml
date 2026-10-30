@@ -1,0 +1,66 @@
+name: Release
+
+# Run by hand from the Actions tab. Versions the packages in packages/,
+# writes their changelogs, commits and tags the release, publishes to npm,
+# and creates a GitHub release for each package.
+on:
+  workflow_dispatch:
+    inputs:
+      specifier:
+        description: "Version or bump (patch, minor, 0.0.1). Leave empty to work it out from conventional commits."
+        required: false
+        default: ""
+      first-release:
+        description: "First release of a package (no earlier tag or npm version to compare with)"
+        type: boolean
+        default: false
+      dry-run:
+        description: "Dry run: show what would change, publish nothing"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  # Push the release commit and tags, and create GitHub releases.
+  contents: write
+  # npm provenance and trusted publishing.
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history and tags, to find the last release and read commits since.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Release
+        run: pnpm nx release $SPECIFIER --yes $FIRST_RELEASE $DRY_RUN
+        env:
+          SPECIFIER: ${{ inputs.specifier }}
+          FIRST_RELEASE: ${{ inputs.first-release && '--first-release' || '' }}
+          DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # An npm token, until trusted publishing is set up for both packages.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true

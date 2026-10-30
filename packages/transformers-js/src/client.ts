@@ -3,8 +3,8 @@
  * runs the model off the main thread so the page stays smooth. One worker,
  * and one model in it at a time: loading another frees the previous one.
  */
-import { createStore } from "./store"
-import type { Store } from "./store"
+import { createStore } from "./store.js"
+import type { Store } from "./store.js"
 import type {
   ChatTurn,
   RunTimings,
@@ -12,7 +12,7 @@ import type {
   ToolSpec,
   WorkerRequest,
   WorkerResponse
-} from "./protocol"
+} from "./protocol.js"
 
 export type ModelStatus =
   | { state: "idle" }
@@ -98,7 +98,7 @@ function handleMessage({ data }: MessageEvent<WorkerResponse>) {
 
 function post(message: WorkerRequest) {
   if (!worker) {
-    worker = new Worker(new URL("./worker.ts", import.meta.url), {
+    worker = new Worker(new URL("./worker.js", import.meta.url), {
       type: "module",
       // The worker reads its name to turn on diagnostics before any message.
       name: debug ? "transformers-js:debug" : "transformers-js"

@@ -13,6 +13,7 @@
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    "customConditions": ["@tanstack-ai-browser/source"],
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,

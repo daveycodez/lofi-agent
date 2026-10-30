@@ -7,5 +7,5 @@ export {
   ApfelTextAdapter,
   apfel,
   isApfelAvailable
-} from "./adapter"
-export type { ApfelModelOptions, ApfelOptions, ApfelStats } from "./adapter"
+} from "./adapter.js"
+export type { ApfelModelOptions, ApfelOptions, ApfelStats } from "./adapter.js"
