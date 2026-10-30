@@ -30,7 +30,7 @@ What does leave your device: calls to MCP servers (Exa's web search, if it's on,
 | LFM2.5 1.2B Thinking GGUF   | LFM2.5 Thinking's GGUF build, on the CPU the same way: always reasons before answering.                                                                                                                       |
 | LFM2.5 350M GGUF            | LFM2.5 350M's GGUF build (229 MB): on the CPU, the quickest of all.                                                                                                                                           |
 | Apple Foundation Model      | Apple's on-device model, served on your Mac by [apfel](https://apfel.franzai.com), through `@tanstack-ai-browser/apfel`. Shown on Apple devices only; needs a Mac (see Requirements).                         |
-| Gemini Nano (Chrome)        | The browser's built-in model, through the Prompt API and `@tanstack-ai-browser/prompt-api` (Phi-4-mini in Edge). Chrome downloads it (about 85 s) for every site. 9,216 tokens per session.                   |
+| Gemini Nano                 | The browser's built-in model, through the Prompt API and `@tanstack-ai-browser/prompt-api` (Phi-4-mini in Edge). Chrome downloads it (about 85 s) for every site. 9,216 tokens per session.                   |
 
 The GGUF models are in the picker's wllama section. They run on the CPU, WebGPU or not: on three quarters of the cores where the page is cross-origin isolated (see `src/start.ts`), on one thread where the browser doesn't isolate it (Safari, which doesn't accept `credentialless`). On an M3 Ultra, LFM2.5 1.2B GGUF writes about 76 tokens/s, against 5 to 9 for its ONNX builds on the CPU.
 
@@ -51,7 +51,7 @@ The "Web" builds are published under [`daveycodez` on Hugging Face](https://hugg
 - A model downloads when the first message is sent to it, and the reply shows its progress: "Downloading LFM3 1.7B Web… 412 MB of 1.10 GB"
 - A stats line under the composer for the latest reply: tokens in, cached, out and total, prompt reading and generation speed, and time to first token
 - Voice input through the browser's speech recognition, where available
-- The browser's built-in model (the Built-in section: Gemini Nano in Chrome, Phi-4-mini in Edge), through the Prompt API, where the browser has it and the device can run it. The browser downloads it once for every site, with its progress shown in the reply; follow-ups and tool steps reuse its session, and web search works through guided generation
+- The browser's built-in model (the Prompt API section: Gemini Nano in Chrome, Phi-4-mini in Edge), through the Prompt API, where the browser has it and the device can run it. The browser downloads it once for every site, with its progress shown in the reply; follow-ups and tool steps reuse its session, and web search works through guided generation
 - Settings: a system prompt sent with every session (before the current date), and deleting every session
 - Light, dark and system themes
 - Add to Home Screen: installs as an app with its own icon, and keeps the downloaded model more reliably than a Safari tab

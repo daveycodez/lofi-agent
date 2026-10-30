@@ -105,11 +105,6 @@ const gguf = (id: ModelId, name: string, model: WllamaTextModel) => ({
   reasoning: WLLAMA_MODEL_REASONING[model] as ModelReasoning | undefined
 })
 
-/** The browser's built-in model by name and browser: "Gemini Nano (Chrome)". */
-function builtInName() {
-  const { name, browser } = promptApiModel()
-  return browser ? `${name} (${browser})` : name
-}
 
 export const MODELS = [
   {
@@ -125,8 +120,8 @@ export const MODELS = [
   },
   {
     id: "built-in",
-    /** The browser's own model: "Gemini Nano (Chrome)", "Phi-4-mini (Edge)". */
-    name: builtInName(),
+    /** The browser's own model: Gemini Nano in Chrome, Phi-4-mini in Edge. */
+    name: promptApiModel().name,
     icon:
       promptApiModel().id === "phi-4-mini"
         ? "/icons/microsoft.svg"
@@ -181,7 +176,7 @@ export const MODELS = [
  */
 export const PROVIDERS = [
   { id: "apfel", name: "apfel" },
-  { id: "prompt-api", name: "Built-in" },
+  { id: "prompt-api", name: "Prompt API" },
   { id: "transformers-js", name: "Transformers.js" },
   { id: "wllama", name: "wllama" }
 ] as const
