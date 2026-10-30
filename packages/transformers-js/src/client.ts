@@ -3,7 +3,7 @@
  * runs the model off the main thread so the page stays smooth. One worker,
  * and one model in it at a time: loading another frees the previous one.
  */
-import { runtimeModelId } from "./model-meta.js"
+import { modelMeta, runtimeModelId } from "./model-meta.js"
 import { createStore } from "./store.js"
 import type { Store } from "./store.js"
 import type {
@@ -11,6 +11,7 @@ import type {
   RunTimings,
   Sampling,
   ToolSpec,
+  WeightsDtype,
   WorkerRequest,
   WorkerResponse
 } from "./protocol.js"
@@ -132,7 +133,10 @@ function keepDownloads() {
  * Loads a model (downloading it the first time), replacing any other: a
  * listed model at its pinned revision, or any Hugging Face id.
  */
-export function loadModel(model: string): Promise<void> {
+export function loadModel(
+  model: string,
+  dtype: WeightsDtype = modelMeta(model)?.dtype ?? "q4f16"
+): Promise<void> {
   const modelId = runtimeModelId(model)
   if (loaded?.modelId === modelId) return loaded.load.promise
   if (loaded) {
@@ -151,7 +155,7 @@ export function loadModel(model: string): Promise<void> {
   keepDownloads()
   // The worker reports whether this is a download or a cached load.
   modelStatus(modelId).set({ state: "loading", progress: 0, cached: true })
-  post({ type: "load", modelId })
+  post({ type: "load", modelId, dtype })
   return promise
 }
 
@@ -169,6 +173,8 @@ export async function* generate(request: {
   thinking?: boolean
   sampling: Sampling
   maxTokens?: number
+  contextLength: number
+  thinkingOpen: string
   signal?: AbortSignal
 }): AsyncGenerator<string, GenerationEnd> {
   const { id, signal } = request
@@ -197,7 +203,9 @@ export async function* generate(request: {
     tools: request.tools,
     ...(request.thinking !== undefined && { thinking: request.thinking }),
     sampling: request.sampling,
-    ...(request.maxTokens !== undefined && { maxTokens: request.maxTokens })
+    ...(request.maxTokens !== undefined && { maxTokens: request.maxTokens }),
+    contextLength: request.contextLength,
+    thinkingOpen: request.thinkingOpen
   })
   try {
     while (!finished || queue.length > 0) {

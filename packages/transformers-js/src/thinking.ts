@@ -1,26 +1,49 @@
+import type { ToolFormat } from "./tool-calls.js"
+
+/** Where a model's thinking starts and ends in its reply. */
+export type ThinkingMarkers = { open: string; close: string }
+
+/** `<think>…</think>`, as LFM models (and most others) write it. */
+export const THINK_TAGS: ThinkingMarkers = {
+  open: "<think>",
+  close: "</think>"
+}
+
+/** Each format's thinking markers. */
+export const THINKING_MARKERS: Record<ToolFormat, ThinkingMarkers> = {
+  lfm2: THINK_TAGS,
+  lfm3: THINK_TAGS,
+  // Gemma 4 thinks in a "thought" channel: `<|channel>thought\n…<channel|>`.
+  gemma4: { open: "<|channel>thought", close: "<channel|>" }
+}
+
 /**
  * Splits a model's reply into its thinking and its answer. Thinking is any
- * `<think>…</think>` block, or everything before a lone `</think>` (models
- * prompted with an empty `<think></think>` sometimes still think a little and
- * close it). A `<think>` with no `</think>` yet means it's still thinking.
+ * `<think>…</think>` block (or the format's own markers), or everything
+ * before a lone close (models prompted with an empty `<think></think>`
+ * sometimes still think a little and close it). An open with no close yet
+ * means it's still thinking.
  */
-export function splitThinking(text: string) {
+export function splitThinking(
+  text: string,
+  { open: OPEN, close: CLOSE }: ThinkingMarkers = THINK_TAGS
+) {
   const thoughts: Array<string> = []
   let rest = text
   let isThinking = false
   for (;;) {
-    const open = rest.indexOf("<think>")
-    const close = rest.indexOf("</think>")
+    const open = rest.indexOf(OPEN)
+    const close = rest.indexOf(CLOSE)
     if (close !== -1 && (open === -1 || close < open)) {
       // A close with no open: everything before it was thinking.
       thoughts.push(rest.slice(0, close))
-      rest = rest.slice(close + "</think>".length)
+      rest = rest.slice(close + CLOSE.length)
       continue
     }
     if (open === -1) break
     const before = rest.slice(0, open)
-    const after = rest.slice(open + "<think>".length)
-    const end = after.indexOf("</think>")
+    const after = rest.slice(open + OPEN.length)
+    const end = after.indexOf(CLOSE)
     if (end === -1) {
       thoughts.push(after)
       rest = before
@@ -28,7 +51,7 @@ export function splitThinking(text: string) {
       break
     }
     thoughts.push(after.slice(0, end))
-    rest = before + after.slice(end + "</think>".length)
+    rest = before + after.slice(end + CLOSE.length)
   }
   return {
     thinking: thoughts
@@ -39,9 +62,6 @@ export function splitThinking(text: string) {
     isThinking
   }
 }
-
-const OPEN = "<think>"
-const CLOSE = "</think>"
 
 /** Length of the longest end of `text` that could be the start of `tag`. */
 function partialTag(text: string, tag: string) {
@@ -55,12 +75,18 @@ export type ReplyPiece = { kind: "thinking" | "answer"; text: string }
 
 /**
  * Splits a reply into thinking and answer while it streams. A reply that
- * starts with `<think>` is thinking until `</think>`; the rest is the
- * answer. Tags split across tokens are held back until they are complete.
+ * starts with the open marker (`<think>`) is thinking until the close
+ * (`</think>`); the rest is the answer. Markers split across tokens are held
+ * back until they are complete.
  */
-export function createThinkingSplitter() {
+export function createThinkingSplitter({
+  open: OPEN,
+  close: CLOSE
+}: ThinkingMarkers = THINK_TAGS) {
   let state: "start" | "thinking" | "answer" = "start"
   let buffer = ""
+  /** Whether the thinking has had any text yet (to drop a leading newline). */
+  let thought = false
   /** Whether the answer has had any text yet (to drop leading blank lines). */
   let answered = false
 
@@ -90,12 +116,20 @@ export function createThinkingSplitter() {
         if (end === -1) {
           const keep = partialTag(buffer, CLOSE)
           const done = buffer.slice(0, buffer.length - keep)
-          if (done) pieces.push({ kind: "thinking", text: done })
           buffer = buffer.slice(done.length)
+          const text = thought ? done : done.trimStart()
+          if (text) {
+            thought = true
+            pieces.push({ kind: "thinking", text })
+          }
           return pieces
         }
-        if (end > 0) {
-          pieces.push({ kind: "thinking", text: buffer.slice(0, end) })
+        const text = thought
+          ? buffer.slice(0, end)
+          : buffer.slice(0, end).trimStart()
+        if (text) {
+          thought = true
+          pieces.push({ kind: "thinking", text })
         }
         buffer = buffer.slice(end + CLOSE.length)
         state = "answer"

@@ -9,6 +9,7 @@ import type {
   RunTimings,
   Sampling,
   ToolSpec,
+  WeightsDtype,
   WorkerRequest,
   WorkerResponse
 } from "./protocol.js"
@@ -22,7 +23,66 @@ const DEBUG =
   (globalThis as { name?: string }).name?.endsWith(":debug") ?? false
 
 const TRANSFORMERS_URL =
-  "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2"
+  "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2/dist/transformers.web.min.js"
+
+/**
+ * ONNX Runtime 1.31.1 instead of the September 14 dev build Transformers.js
+ * 4.3.2 pins: its WebGPU mixture-of-experts kernel (QMoE) takes a separate
+ * gate projection ("FC3"), which Gemma 4's experts use.
+ */
+const ORT_URL =
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/ort.webgpu.bundle.min.mjs"
+
+/**
+ * The Cache Storage Transformers.js keeps model files and ONNX Runtime's
+ * WebAssembly in. The runtime's own scripts are kept there too, so a model
+ * that has loaded once loads again offline.
+ */
+const RUNTIME_CACHE = "transformers-cache"
+
+/**
+ * A file's text from the cache, else from the network (then cached). For
+ * files whose URL names their version, which never change.
+ */
+async function cachedText(url: string) {
+  const cache = await caches.open(RUNTIME_CACHE).catch(() => null)
+  const hit = await cache?.match(url)
+  if (hit) return hit.text()
+  const res = await fetchWithoutReferrer(url)
+  if (!res.ok) throw new Error(`Couldn't load ${url} (HTTP ${res.status}).`)
+  await cache?.put(url, res.clone()).catch(() => undefined)
+  return res.text()
+}
+
+const moduleUrl = (code: string) =>
+  URL.createObjectURL(new Blob([code], { type: "text/javascript" }))
+
+/**
+ * Transformers.js's browser build, on the ONNX Runtime above, both from the
+ * cache. The build imports ONNX Runtime by package name
+ * (`onnxruntime-web/webgpu`, and `onnxruntime-common` for its Tensor class);
+ * both are pointed at the one runtime bundle, so Transformers.js and ONNX
+ * Runtime share one Tensor class too.
+ */
+async function importTransformers() {
+  const [transformers, ort] = await Promise.all([
+    cachedText(TRANSFORMERS_URL),
+    cachedText(ORT_URL)
+  ])
+  const ortUrl = moduleUrl(ort)
+  const url = moduleUrl(
+    transformers.replace(
+      /from\s*"onnxruntime-(?:web\/webgpu|common)"/g,
+      `from"${ortUrl}"`
+    )
+  )
+  try {
+    return (await import(/* @vite-ignore */ url)) as TransformersModule
+  } finally {
+    URL.revokeObjectURL(url)
+    URL.revokeObjectURL(ortUrl)
+  }
+}
 
 /* Minimal shapes of the Transformers.js APIs used here. */
 /** An onnxruntime-web tensor, as Transformers.js tensors hold them. */
@@ -49,6 +109,7 @@ type Cache = Record<string, Tensor> & {
   dispose: () => Promise<void>
 }
 type Tokenizer = {
+  chat_template?: string | null
   decode: (
     ids: Array<bigint>,
     options: { skip_special_tokens: boolean }
@@ -60,24 +121,33 @@ type Tokenizer = {
   (text: string, options: Record<string, unknown>): { input_ids: Tensor }
 }
 type Model = {
+  generation_config?: { eos_token_id?: number | Array<number> }
+  config?: { eos_token_id?: number | Array<number> }
   generate: (options: Record<string, unknown>) => Promise<unknown>
   forward: (inputs: Record<string, unknown>) => Promise<Record<string, Tensor>>
   dispose: () => Promise<unknown>
 }
 type StoppingCriteria = { interrupt: () => void; interrupted: boolean }
-type TransformersModule = {
+type ModelClass = {
+  from_pretrained: (
+    id: string,
+    options: Record<string, unknown>
+  ) => Promise<Model>
+}
+type TransformersModule = Record<string, unknown> & {
+  AutoConfig: {
+    from_pretrained: (
+      id: string,
+      options?: Record<string, unknown>
+    ) => Promise<{ architectures?: Array<string> }>
+  }
   AutoTokenizer: {
     from_pretrained: (
       id: string,
       options?: Record<string, unknown>
     ) => Promise<Tokenizer>
   }
-  AutoModelForCausalLM: {
-    from_pretrained: (
-      id: string,
-      options: Record<string, unknown>
-    ) => Promise<Model>
-  }
+  AutoModelForCausalLM: ModelClass
   TextStreamer: new (
     tokenizer: Tokenizer,
     options: Record<string, unknown>
@@ -116,13 +186,15 @@ type TransformersModule = {
  * build is 16.8 MB instead of 26.9 MB and runs the same code, so it is used
  * wherever the browser has JSPI (Safari 27 and recent Chrome).
  */
-function pickJspiBuild(tf: TransformersModule) {
-  if (!("Suspending" in WebAssembly)) return
+function pickWasmBuild(tf: TransformersModule) {
   const onnx = tf.env.backends.onnx
   const dist = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnx.versions.web}/dist/`
+  const build = "Suspending" in WebAssembly ? "jspi" : "asyncify"
+  // Named as an object, Transformers.js keeps both files in its cache, for
+  // loading offline.
   onnx.wasm.wasmPaths = {
-    mjs: `${dist}ort-wasm-simd-threaded.jspi.mjs`,
-    wasm: `${dist}ort-wasm-simd-threaded.jspi.wasm`
+    mjs: `${dist}ort-wasm-simd-threaded.${build}.mjs`,
+    wasm: `${dist}ort-wasm-simd-threaded.${build}.wasm`
   }
 }
 
@@ -135,7 +207,13 @@ function pickJspiBuild(tf: TransformersModule) {
 const fetchWithoutReferrer: typeof fetch = (input, init) =>
   fetch(input, { ...init, referrerPolicy: "no-referrer" })
 
-type Runtime = { tf: TransformersModule; tokenizer: Tokenizer; model: Model }
+type Runtime = {
+  tf: TransformersModule
+  tokenizer: Tokenizer
+  model: Model
+  /** The model's end-of-turn tokens, taken out of the text it streams. */
+  endTokens: RegExp
+}
 
 const ctx = globalThis as unknown as {
   postMessage: (message: WorkerResponse) => void
@@ -502,14 +580,21 @@ function gpuReport() {
 }
 
 /*
- * The weights file (`onnx/model_q4f16.onnx_data`, 0.76-1.09 GB) is cached in
- * the Origin Private File System instead of Transformers.js's Cache Storage:
- * Transformers.js 4.3 holds the whole download in memory and copies it again
- * to cache it, which goes past iPhone Safari's 2 GB page limit. Downloading
- * straight to disk and streaming it back in slice by slice avoids both.
- * Transformers.js still fetches and caches the small files itself.
+ * The model's weights (`onnx/*_q4f16.onnx_data*`: one 0.76-1.09 GB file for
+ * the LFM builds, several ~2 GB parts for larger models) are cached in the
+ * Origin Private File System instead of Transformers.js's Cache Storage:
+ * Transformers.js 4.3 holds each whole download in memory and copies it
+ * again to cache it, which goes past iPhone Safari's 2 GB page limit.
+ * Downloading straight to disk and streaming it back in slice by slice
+ * avoids both. Transformers.js still fetches and caches the small files.
  */
-const WEIGHTS = "model_q4f16.onnx_data"
+
+/** A dtype's weights files, by name in the repo's `onnx` folder. */
+const weightsPattern = (dtype: WeightsDtype) =>
+  new RegExp(`^[\\w.-]+_${dtype}\\.onnx_data(?:_\\d+)?$`)
+
+/** A weights file of the model, and its size in bytes. */
+type WeightsFile = { name: string; size: number }
 
 /**
  * A model id is a Hugging Face repo, optionally pinned to a commit:
@@ -522,22 +607,76 @@ function parseModelId(modelId: string) {
 }
 
 /**
- * The weights file on disk is named by repo and, for a pinned model, by
- * revision, so a new version is downloaded fresh rather than reusing what an
- * older one saved.
+ * Files on disk are named by repo and, for a pinned model, by revision, so
+ * a new version is downloaded fresh rather than reusing what an older one
+ * saved.
  */
 const repoFilePrefix = (repo: string) => `${repo.replace(/[^\w.-]+/g, "_")}.`
 
-const weightsFiles = (modelId: string) => {
+const filePrefix = (modelId: string) => {
   const { repo, revision } = parseModelId(modelId)
   const version = revision === "main" ? "" : `${revision.slice(0, 12)}.`
-  const file = `${repoFilePrefix(repo)}${version}${WEIGHTS}`
+  return `${repoFilePrefix(repo)}${version}`
+}
+
+const weightsFile = (modelId: string, name: string) => {
+  const { repo, revision } = parseModelId(modelId)
+  const file = `${filePrefix(modelId)}${name}`
   return {
-    url: `https://huggingface.co/${repo}/resolve/${revision}/onnx/${WEIGHTS}`,
+    url: `https://huggingface.co/${repo}/resolve/${revision}/onnx/${name}`,
     file,
     /** Written once the download is complete. */
     done: `${file}.done`
   }
+}
+
+/**
+ * The model's weights files: listed once by Hugging Face's API, then kept
+ * on disk with them, so a downloaded model loads without the network.
+ */
+async function listWeights(
+  modelId: string,
+  dtype: WeightsDtype
+): Promise<Array<WeightsFile>> {
+  const dir = await navigator.storage.getDirectory()
+  const saved = `${filePrefix(modelId)}weights.${dtype}.json`
+  try {
+    const file = await (await dir.getFileHandle(saved)).getFile()
+    return JSON.parse(await file.text()) as Array<WeightsFile>
+  } catch {
+    // Not listed yet.
+  }
+  const { repo, revision } = parseModelId(modelId)
+  const res = await fetchWithoutReferrer(
+    `https://huggingface.co/api/models/${repo}/tree/${revision}/onnx`
+  )
+  if (!res.ok) {
+    throw new Error(`Couldn't list the model's files (HTTP ${res.status}).`)
+  }
+  const entries = (await res.json()) as Array<{
+    type: string
+    path: string
+    size: number
+  }>
+  const files = entries
+    .filter((e) => e.type === "file")
+    .map((e) => ({ name: e.path.replace(/^onnx\//, ""), size: e.size }))
+    .filter((f) => weightsPattern(dtype).test(f.name))
+    .sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true }))
+  if (files.length === 0) {
+    throw new Error(`${repo} has no ${dtype} ONNX weights.`)
+  }
+  const handle = await openSync(
+    await dir.getFileHandle(saved, { create: true })
+  )
+  try {
+    handle.truncate(0)
+    handle.write(new TextEncoder().encode(JSON.stringify(files)), { at: 0 })
+    handle.flush()
+  } finally {
+    handle.close()
+  }
+  return files
 }
 
 /** OPFS sync access handles (worker-only, not in the DOM typings). */
@@ -565,59 +704,123 @@ async function hasFile(dir: FileSystemDirectoryHandle, name: string) {
   }
 }
 
-/** Whether the weights are already downloaded to disk. */
-async function isDownloaded(modelId: string) {
+/** Whether every weights file is already downloaded to disk. */
+async function isDownloaded(modelId: string, weights: Array<WeightsFile>) {
   try {
     const dir = await navigator.storage.getDirectory()
-    return await hasFile(dir, weightsFiles(modelId).done)
+    for (const { name } of weights) {
+      if (!(await hasFile(dir, weightsFile(modelId, name).done))) return false
+    }
+    return true
   } catch {
     return false
   }
 }
 
-/** Downloads the weights to disk, writing each network chunk as it arrives. */
+/**
+ * Downloads the weights files to disk, one after another, writing each
+ * network chunk as it arrives. Progress is across all of them.
+ */
 async function downloadWeights(
   modelId: string,
+  weights: Array<WeightsFile>,
   onProgress: (progress: number) => void
 ) {
-  const files = weightsFiles(modelId)
   const dir = await navigator.storage.getDirectory()
-  if (await hasFile(dir, files.done)) return
-  const res = await fetchWithoutReferrer(files.url)
-  if (!res.ok || !res.body) {
-    throw new Error(`Couldn't download the model (HTTP ${res.status}).`)
+  const total = weights.reduce((sum, w) => sum + w.size, 0)
+  let before = 0
+  for (const file of weights) {
+    await downloadFile(
+      modelId,
+      file,
+      (written) => {
+        if (total) onProgress((before + written) / total)
+      },
+      dir
+    )
+    before += file.size
   }
-  const total = Number(res.headers.get("content-length")) || 0
+}
+
+/** Tries per weights file before a download fails. */
+const DOWNLOAD_ATTEMPTS = 6
+
+class HttpError extends Error {}
+
+/**
+ * Downloads one weights file to disk, unless it's there already. A broken
+ * connection (common over several GB) doesn't start it over: it retries,
+ * with a growing wait, and asks only for the bytes still missing. A file an
+ * earlier visit left half-done is continued the same way.
+ */
+async function downloadFile(
+  modelId: string,
+  { name, size }: WeightsFile,
+  onWritten: (bytes: number) => void,
+  dir: FileSystemDirectoryHandle
+) {
+  const files = weightsFile(modelId, name)
+  if (await hasFile(dir, files.done)) return
   const handle = await openSync(
     await dir.getFileHandle(files.file, { create: true })
   )
+  let written = handle.getSize()
+  if (size && written > size) {
+    handle.truncate(0)
+    written = 0
+  }
   // Download speed goes to the console every tenth of the file and at the
   // end, to tell a slow network from a slow phone.
   const started = performance.now()
-  const logSpeed = (bytes: number, label: string) => {
+  const resumedAt = written
+  const logSpeed = (label: string) => {
     const seconds = (performance.now() - started) / 1000
     ctx.postMessage({
       type: "log",
-      text: `[download] ${label}: ${Math.round(bytes / 1e6)} of ${Math.round(total / 1e6)} MB in ${seconds.toFixed(1)} s, ${(bytes / 1e6 / seconds).toFixed(1)} MB/s`
+      text: `[download] ${name} ${label}: ${Math.round(written / 1e6)} of ${Math.round(size / 1e6)} MB, ${((written - resumedAt) / 1e6 / seconds).toFixed(1)} MB/s`
     })
   }
   try {
-    handle.truncate(0)
-    let written = 0
-    let nextLog = total / 10
-    const reader = res.body.getReader()
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      written += handle.write(value, { at: written })
-      if (total) onProgress(written / total)
-      if (total && written >= nextLog && written < total) {
-        logSpeed(written, `${Math.round((written / total) * 100)}%`)
-        nextLog += total / 10
+    let nextLog = written + size / 10
+    for (let attempt = 1; !size || written < size; attempt++) {
+      try {
+        const res = await fetchWithoutReferrer(
+          files.url,
+          written > 0 ? { headers: { Range: `bytes=${written}-` } } : {}
+        )
+        if (!res.ok || !res.body) {
+          throw new HttpError(
+            `Couldn't download the model (HTTP ${res.status}).`
+          )
+        }
+        // A server that ignores the range sends the whole file again.
+        if (written > 0 && res.status !== 206) {
+          handle.truncate(0)
+          written = 0
+        }
+        const reader = res.body.getReader()
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          written += handle.write(value, { at: written })
+          onWritten(written)
+          if (size && written >= nextLog && written < size) {
+            logSpeed(`${Math.round((written / size) * 100)}%`)
+            nextLog += size / 10
+          }
+        }
+        if (!size) break
+      } catch (error) {
+        if (error instanceof HttpError || attempt >= DOWNLOAD_ATTEMPTS) {
+          throw error
+        }
+        logSpeed(`interrupted (${errorMessage(error)}), try ${attempt + 1}`)
+        await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt))
       }
     }
+    handle.truncate(written)
     handle.flush()
-    logSpeed(written, "done")
+    logSpeed("done")
   } finally {
     handle.close()
   }
@@ -630,10 +833,10 @@ async function downloadWeights(
  * slice is read from disk when asked and the file never sits in memory.
  * Call close() once the model is created.
  */
-async function openWeights(modelId: string) {
+async function openWeights(modelId: string, name: string) {
   const dir = await navigator.storage.getDirectory()
   const handle = await openSync(
-    await dir.getFileHandle(weightsFiles(modelId).file)
+    await dir.getFileHandle(weightsFile(modelId, name).file)
   )
   const size = handle.getSize()
   // Every slice is read into the same buffer, grown to the largest tensor:
@@ -667,22 +870,20 @@ async function openWeights(modelId: string) {
 
 /**
  * Removes weights earlier versions of the app stored elsewhere, and saved
- * weights of other versions of this model.
+ * files of other versions of this model.
  */
 async function removeOldCopies(modelId: string) {
   try {
     const cache = await caches.open("transformers-cache")
-    await cache.delete(weightsFiles(modelId).url)
+    await cache.delete(weightsFile(modelId, "model_q4f16.onnx_data").url)
     const { repo } = parseModelId(modelId)
-    const current = weightsFiles(modelId)
+    const current = filePrefix(modelId)
     const dir = await navigator.storage.getDirectory()
     for await (const name of (
       dir as unknown as { keys: () => AsyncIterable<string> }
     ).keys()) {
       const otherVersion =
-        name.startsWith(repoFilePrefix(repo)) &&
-        name !== current.file &&
-        name !== current.done
+        name.startsWith(repoFilePrefix(repo)) && !name.startsWith(current)
       if (name.startsWith("lfm3-1.7b-") || otherVersion) {
         await dir.removeEntry(name)
       }
@@ -692,19 +893,107 @@ async function removeOldCopies(modelId: string) {
   }
 }
 
-let current: { modelId: string; runtime: Promise<Runtime> } | null = null
+/**
+ * Removes this model's files of another dtype (the q4f16 weights once it
+ * loads q4, say), which would otherwise sit on disk unused.
+ */
+async function removeOtherWeights(
+  modelId: string,
+  dtype: WeightsDtype,
+  weights: Array<WeightsFile>
+) {
+  try {
+    const prefix = filePrefix(modelId)
+    const keep = new Set([`${prefix}weights.${dtype}.json`])
+    for (const { name } of weights) {
+      keep.add(weightsFile(modelId, name).file)
+      keep.add(weightsFile(modelId, name).done)
+    }
+    const dir = await navigator.storage.getDirectory()
+    const other: Array<string> = []
+    for await (const name of (
+      dir as unknown as { keys: () => AsyncIterable<string> }
+    ).keys()) {
+      if (name.startsWith(prefix) && !keep.has(name)) other.push(name)
+    }
+    for (const name of other) await dir.removeEntry(name)
+  } catch {
+    // Nothing to clean up.
+  }
+}
 
-async function loadRuntime(modelId: string): Promise<Runtime> {
+const escapeRegExp = (text: string) =>
+  text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+/**
+ * The model's end-of-turn tokens as text, to take out of what it streams:
+ * its end-of-sequence tokens (`<|im_end|>` for LFM, `<turn|>` for Gemma 4),
+ * and ChatML's.
+ */
+function endTokens(tokenizer: Tokenizer, model: Model) {
+  const ids = [
+    model.generation_config?.eos_token_id,
+    model.config?.eos_token_id
+  ].flatMap((id) => (id === undefined ? [] : Array.isArray(id) ? id : [id]))
+  const texts = new Set(["<|im_end|>", "<|endoftext|>", "<|im_start|>"])
+  for (const id of ids) {
+    const text = tokenizer.decode([BigInt(id)], { skip_special_tokens: false })
+    if (text.trim()) texts.add(text)
+  }
+  return new RegExp([...texts].map(escapeRegExp).join("|"), "g")
+}
+
+/**
+ * The class to load the model with: its own class from the config, which
+ * for a multimodal build (`Gemma4ForConditionalGeneration`) loads its vision
+ * and audio encoders too. A text-only export of a multimodal family
+ * (`Gemma4ForCausalLM` with separate `embed_tokens` and
+ * `decoder_model_merged` files, no encoders) is loaded the way
+ * Transformers.js loads a multimodal model's text part: with the causal-LM
+ * class, and a config naming the multimodal architecture, so it reads just
+ * those two files.
+ */
+async function modelClass(
+  tf: TransformersModule,
+  repo: string,
+  revision: string,
+  weights: Array<WeightsFile>
+) {
+  const config = await tf.AutoConfig.from_pretrained(repo, { revision })
+  const arch = config.architectures?.[0]
+  const split =
+    weights.some((w) => w.name.startsWith("embed_tokens")) &&
+    weights.some((w) => w.name.startsWith("decoder_model_merged"))
+  if (arch?.endsWith("ForCausalLM") && split) {
+    const multimodal = arch.replace(/ForCausalLM$/, "ForConditionalGeneration")
+    if (tf[multimodal]) config.architectures = [multimodal]
+  }
+  const own = arch ? (tf[arch] as ModelClass | undefined) : undefined
+  return { Model: own ?? tf.AutoModelForCausalLM, config }
+}
+
+let current: {
+  modelId: string
+  dtype: WeightsDtype
+  runtime: Promise<Runtime>
+} | null = null
+
+async function loadRuntime(
+  modelId: string,
+  dtype: WeightsDtype
+): Promise<Runtime> {
   if (!("gpu" in navigator)) {
     throw new Error(
       "This model needs WebGPU, which this browser doesn't support."
     )
   }
-  const cached = await isDownloaded(modelId)
+  const weights = await listWeights(modelId, dtype)
+  void removeOtherWeights(modelId, dtype, weights)
+  const cached = await isDownloaded(modelId, weights)
   ctx.postMessage({ type: "progress", modelId, progress: 0, cached })
   // Whole percents only; the download stream reports every chunk.
   let lastPercent = -1
-  await downloadWeights(modelId, (progress) => {
+  await downloadWeights(modelId, weights, (progress) => {
     const percent = Math.floor(progress * 100)
     if (percent === lastPercent) return
     lastPercent = percent
@@ -716,23 +1005,36 @@ async function loadRuntime(modelId: string): Promise<Runtime> {
     })
   })
   ctx.postMessage({ type: "progress", modelId, progress: 0, cached: true })
-  const tf = (await import(
-    /* @vite-ignore */ TRANSFORMERS_URL
-  )) as TransformersModule
+  const tf = await importTransformers()
   tf.env.fetch = fetchWithoutReferrer
-  pickJspiBuild(tf)
+  pickWasmBuild(tf)
   const { repo, revision } = parseModelId(modelId)
   const tokenizer = await tf.AutoTokenizer.from_pretrained(repo, { revision })
-  const weights = await openWeights(modelId)
+  // Newer repos keep the chat template in its own file, which Transformers.js
+  // 4.3 doesn't read.
+  if (!tokenizer.chat_template) {
+    tokenizer.chat_template = await cachedText(
+      `https://huggingface.co/${repo}/resolve/${revision}/chat_template.jinja`
+    ).catch(() => null)
+  }
+  const { Model, config } = await modelClass(tf, repo, revision, weights)
+  const opened: Array<Awaited<ReturnType<typeof openWeights>>> = []
   try {
-    const model = await tf.AutoModelForCausalLM.from_pretrained(repo, {
+    for (const { name } of weights)
+      opened.push(await openWeights(modelId, name))
+    const model = await Model.from_pretrained(repo, {
       revision,
-      dtype: "q4f16",
+      config,
+      dtype,
       device: "webgpu",
-      // Weights come from disk (above), not Transformers.js's download.
+      // Weights come from disk (above), not Transformers.js's download. Every
+      // session gets every file: a decoder may read the embedding's file too.
       use_external_data_format: 0,
       session_options: {
-        externalData: [{ path: WEIGHTS, data: weights.data }],
+        externalData: weights.map(({ name }, i) => ({
+          path: name,
+          data: opened[i].data
+        })),
         // onnxruntime's default buffer cache ("bucket") reuses GPU buffers
         // between steps. "lazyRelease" frees them after every step instead,
         // which creates and destroys ~27 MB of buffers per token for LFM3;
@@ -742,24 +1044,26 @@ async function loadRuntime(modelId: string): Promise<Runtime> {
         executionProviders: ["webgpu"]
       }
     })
-    return { tf, tokenizer, model }
+    return { tf, tokenizer, model, endTokens: endTokens(tokenizer, model) }
   } finally {
-    weights.close()
+    for (const weightsData of opened) weightsData.close()
   }
 }
 
 /** Loads `modelId`, freeing whichever model was loaded before. */
-function load(modelId: string) {
-  if (current?.modelId === modelId) return current.runtime
+function load(modelId: string, dtype: WeightsDtype) {
+  if (current?.modelId === modelId && current.dtype === dtype) {
+    return current.runtime
+  }
   const previous = current?.runtime
   const runtime = (async () => {
     // The kept caches belong to the previous model.
     await discardSaved()
     await previous?.then((r) => r.model.dispose()).catch(() => undefined)
     void removeOldCopies(modelId)
-    return loadRuntime(modelId)
+    return loadRuntime(modelId, dtype)
   })()
-  current = { modelId, runtime }
+  current = { modelId, dtype, runtime }
   runtime.then(
     () => {
       logMemory(`loaded ${modelId}`)
@@ -779,16 +1083,6 @@ function load(modelId: string) {
 
 const running = new Map<string, StoppingCriteria>()
 
-/** End-of-turn tokens, dropped when special tokens are kept. */
-const END_TOKENS = /<\|im_end\|>|<\|endoftext\|>|<\|im_start\|>/g
-
-/**
- * The most tokens a chat can hold, prompt and reply together: the same as
- * Apple's on-device model. Past 4,096 tokens ONNX Runtime's buffer cache
- * moves LFM3's attention memory to 8 MiB buffers, which hold exactly 8,192;
- * one more token would move it to 12 MiB, past what iPhone Safari allows.
- */
-const CONTEXT_LIMIT = 8192
 /** Below this much room for a reply, the chat is too long to answer. */
 const MIN_REPLY_TOKENS = 32
 
@@ -1470,7 +1764,12 @@ async function readPrompt(
  * top_k likeliest tokens, draws one at the given temperature, and leaves
  * only it possible.
  */
-function createSampler({ temperature, top_k, repetition_penalty }: Sampling) {
+function createSampler({
+  temperature,
+  top_k,
+  repetition_penalty,
+  top_p = 1
+}: Sampling) {
   const seen = new Set<number>()
   let counted = 0
   return (inputIds: Array<Array<bigint>>, logits: Tensor) => {
@@ -1508,6 +1807,24 @@ function createSampler({ temperature, top_k, repetition_penalty }: Sampling) {
       for (let j = 0; j < k; j++) {
         kept[j] = Math.exp((kept[j] - max) / temperature)
         total += kept[j]
+      }
+      // Top-p: the likeliest tokens until their share reaches top_p; the
+      // rest can't be drawn.
+      if (top_p < 1) {
+        const order = Array.from({ length: k }, (_, j) => j).sort(
+          (a, b) => kept[b] - kept[a]
+        )
+        let share = 0
+        let cut = false
+        for (const j of order) {
+          if (cut) {
+            total -= kept[j]
+            kept[j] = 0
+          } else {
+            share += kept[j] / total
+            cut = share >= top_p
+          }
+        }
       }
       let draw = Math.random() * total
       for (let j = 0; j < k; j++) {
@@ -1587,13 +1904,18 @@ async function generate(
   tools: Array<ToolSpec>,
   thinking: boolean | undefined,
   sampling: Sampling,
-  maxTokens: number | undefined
+  maxTokens: number | undefined,
+  contextLength: number,
+  thinkingOpen: string
 ): Promise<RunTimings> {
   // Time to first token counts from here: it includes reading the prompt.
   const requested = performance.now()
   if (!current) throw new Error("No model loaded.")
   const loaded = current
-  const { tf, tokenizer, model } = await loaded.runtime
+  const { tf, tokenizer, model, endTokens } = await loaded.runtime
+  // The model's caches, in memory and on disk, are by model and dtype: the
+  // dtype decides the cache's tensor types.
+  const cacheId = `${loaded.modelId}:${loaded.dtype}`
   // Models with a thinking mode reason in a <think> block before answering.
   const prompt = tokenizer.apply_chat_template(chat, {
     ...(tools.length > 0 && { tools }),
@@ -1601,19 +1923,20 @@ async function generate(
     tokenize: false,
     ...(thinking !== undefined && { enable_thinking: thinking })
   })
-  // Some templates open the <think> block in the prompt itself; start the
-  // reply with it too so the thread shows what follows as thinking.
-  if (prompt.trimEnd().endsWith("<think>")) {
-    ctx.postMessage({ type: "token", id, text: "<think>" })
+  // Some templates open the thinking in the prompt itself (`<think>`,
+  // Gemma 4's `<|channel>thought`); start the reply with it too so the
+  // thread shows what follows as thinking.
+  if (prompt.trimEnd().endsWith(thinkingOpen)) {
+    ctx.postMessage({ type: "token", id, text: thinkingOpen })
   }
   const inputs = tokenizer(prompt, { add_special_tokens: false })
   const ids = Array.from(inputs.input_ids.data, Number)
   gpu.promptTokens = ids.length
   // The reply gets what's left of the context limit.
-  const room = CONTEXT_LIMIT - gpu.promptTokens
+  const room = contextLength - gpu.promptTokens
   if (room < MIN_REPLY_TOKENS) {
     throw new ContextLimitError(
-      `This session is too long for the model: ${gpu.promptTokens.toLocaleString("en-US")} tokens, and it can read ${CONTEXT_LIMIT.toLocaleString("en-US")} at most, reply included. Start a new session to keep going.`
+      `This session is too long for the model: ${gpu.promptTokens.toLocaleString("en-US")} tokens, and it can read ${contextLength.toLocaleString("en-US")} at most, reply included. Start a new session to keep going.`
     )
   }
   // Thinking takes many more tokens before the answer starts.
@@ -1621,8 +1944,6 @@ async function generate(
   const maxNewTokens = Math.min(wanted, room)
   const stopping = new tf.InterruptableStoppingCriteria()
   running.set(id, stopping)
-  // With tools, keep special tokens: LFM2.5 marks its tool calls with them.
-  const keepSpecial = tools.length > 0
   // Every generated token, counted as the streamer gets it (text arrives
   // word by word, later than its tokens).
   let outputTokens = 0
@@ -1631,7 +1952,7 @@ async function generate(
   let readStarted = performance.now()
   // What the last run left in the cache that this prompt starts with.
   const systemEnd = systemLength(tokenizer, chat, tools, thinking, ids)
-  let reused = reuseSaved(tf, loaded.modelId, ids, systemEnd)
+  let reused = reuseSaved(tf, cacheId, ids, systemEnd)
   const timings = (): RunTimings => ({
     inputTokens: ids.length,
     cachedTokens: reused.cached,
@@ -1641,7 +1962,10 @@ async function generate(
     decodeMs: firstToken === null ? 0 : lastToken - firstToken
   })
   const streamer = createStreamer(tokenizer, {
-    skipSpecial: !keepSpecial,
+    // Special tokens stay in the text, all but the end of turn: models mark
+    // their tool calls with them (LFM2.5, Gemma 4), and Gemma 4 its
+    // thinking and strings.
+    skipSpecial: false,
     onTokens: (tokens: Array<bigint>) => {
       lastToken = performance.now()
       firstToken ??= lastToken
@@ -1652,7 +1976,7 @@ async function generate(
       }
     },
     onText: (raw: string) => {
-      const text = keepSpecial ? raw.replace(END_TOKENS, "") : raw
+      const text = raw.replace(endTokens, "")
       if (text) ctx.postMessage({ type: "token", id, text })
     }
   })
@@ -1661,9 +1985,7 @@ async function generate(
   // Nothing in memory covers the system prompt and tools: try the disk.
   const wantsSystem = reused.cached < systemEnd && systemEnd >= MIN_DISK_TOKENS
   const fromDisk = wantsSystem
-    ? await loadFromDisk(tf, loaded.modelId, ids.slice(0, systemEnd)).catch(
-        () => null
-      )
+    ? await loadFromDisk(tf, cacheId, ids.slice(0, systemEnd)).catch(() => null)
     : null
   if (fromDisk) {
     reused.checkpoints.forEach(disposeCheckpoint)
@@ -1761,10 +2083,10 @@ async function generate(
       const length = cache.get_seq_length()
       const atSystem = checkpoints.find((c) => c.length === systemEnd)
       if (savesSystem && atSystem && length >= systemEnd) {
-        saveToDisk(loaded.modelId, ids.slice(0, systemEnd), cache, atSystem)
+        saveToDisk(cacheId, ids.slice(0, systemEnd), cache, atSystem)
       }
       keepSaved(tf, {
-        modelId: loaded.modelId,
+        modelId: cacheId,
         ids: sequence.slice(0, length),
         cache,
         checkpoints
@@ -1788,7 +2110,7 @@ async function generate(
     !stopping.interrupted
   ) {
     throw new ContextLimitError(
-      `The reply stopped at the model's limit of ${CONTEXT_LIMIT.toLocaleString("en-US")} tokens for a session. Start a new session to keep going.`
+      `The reply stopped at the model's limit of ${contextLength.toLocaleString("en-US")} tokens for a session. Start a new session to keep going.`
     )
   }
   return timings()
@@ -1799,7 +2121,7 @@ const errorMessage = (error: unknown) =>
 
 ctx.onmessage = ({ data }) => {
   if (data.type === "load") {
-    load(data.modelId).catch(() => undefined)
+    load(data.modelId, data.dtype).catch(() => undefined)
   } else if (data.type === "generate") {
     generate(
       data.id,
@@ -1807,7 +2129,9 @@ ctx.onmessage = ({ data }) => {
       data.tools,
       data.thinking,
       data.sampling,
-      data.maxTokens
+      data.maxTokens,
+      data.contextLength,
+      data.thinkingOpen
     )
       .then((stats) => ctx.postMessage({ type: "done", id: data.id, stats }))
       .catch((error: unknown) => {

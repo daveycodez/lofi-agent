@@ -24,6 +24,7 @@ const stream = chat({
 
 | Model                                 | Reasoning                  |
 | ------------------------------------- | -------------------------- |
+| `onnx-community/gemma-4-E4B-it-ONNX`  | on/off                     |
 | `daveycodez/LFM3-1.7B-Web`            | on/off (`"off"`, `"high"`) |
 | `onnx-community/LFM3-1.7B-ONNX`       | on/off                     |
 | `daveycodez/LFM2.5-1.2B-Web`          | none                       |
@@ -31,7 +32,7 @@ const stream = chat({
 | `LiquidAI/LFM2.5-1.2B-Instruct-ONNX`  | none                       |
 | `LiquidAI/LFM2.5-1.2B-Thinking-ONNX`  | always                     |
 
-Any other Hugging Face ONNX model works too, given how it writes tool calls: `transformersJsText("owner/model", { toolFormat: "lfm3" })`. Pin a revision with `"owner/model@commit"`.
+Any other Hugging Face ONNX model works too, given how it writes tool calls and thinks: `transformersJsText("owner/model", { toolFormat: "gemma4" })`, with `"lfm2"`, `"lfm3"` or `"gemma4"`. Pin a revision with `"owner/model@commit"`. Its `q4f16` weights load by default; `dtype: "q4"` loads 4-bit weights with fp32 activations instead. `contextLength` sets how many tokens a chat may hold (8,192 by default). Weights split into several files, and builds split into an embedding, a decoder and vision or audio encoders, load as they are.
 
 **Reasoning** works as with other TanStack AI adapters: `chat({ reasoning })` takes the model's levels, read from its chat template (`enable_thinking`), and is a type error for a model that doesn't reason. A model the package doesn't list gets the on/off toggle. `supportedReasoningLevels(TRANSFORMERS_JS_MODEL_REASONING[model])` from `@tanstack/ai` gives a listed model's levels at runtime.
 

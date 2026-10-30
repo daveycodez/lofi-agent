@@ -7,7 +7,7 @@
 import type { ModelReasoning } from "@tanstack/ai"
 import type { ModelReasoningCapability } from "@tanstack/ai/adapter-internals"
 
-import type { Sampling } from "./protocol.js"
+import type { Sampling, WeightsDtype } from "./protocol.js"
 import type { ToolFormat } from "./tool-calls.js"
 
 export type TransformersJsModelMeta = {
@@ -28,20 +28,28 @@ export type TransformersJsModelMeta = {
   reasoning?: ModelReasoning
   /** How the model writes tool calls. */
   toolFormat: ToolFormat
+  /** The weights to load: "q4f16" unless the model needs fp32 activations. */
+  dtype?: WeightsDtype
   /** Sampling from the model card, used unless `modelOptions` overrides it. */
   sampling: Sampling
 }
 
 // Reasoning shapes, each level's value being the chat template's
-// `enable_thinking`. Read from the models' chat templates: LFM3's takes
-// `enable_thinking`; LFM2.5 Thinking always thinks and takes no switch.
+// `enable_thinking`. Read from the models' chat templates: LFM3's and
+// Gemma 4's take `enable_thinking`; LFM2.5 Thinking always thinks and takes
+// no switch.
 const THINKING_SWITCH = {
   levels: { off: "false", high: "true" },
   budget: false
 } as const
 const ALWAYS_THINKS = { levels: { high: "true" }, budget: false } as const
 
-/** The runtime holds 8,192 tokens per chat, the most iPhone Safari allows. */
+/**
+ * The LFM builds hold 8,192 tokens per chat in this runtime: past 4,096
+ * tokens ONNX Runtime's buffer cache moves LFM3's attention memory to 8 MiB
+ * buffers, which hold exactly 8,192; one more token would move it to
+ * 12 MiB, past what iPhone Safari allows.
+ */
 const CONTEXT = 8192
 
 const TOOLS_AND_THINKING = {
@@ -71,6 +79,30 @@ const LFM2_5_THINKING_SAMPLING = {
   top_k: 50,
   repetition_penalty: 1.05
 } as const satisfies Sampling
+
+/** Gemma 4's generation config: temperature 1, top-k 64, top-p 0.95. */
+const GEMMA_4_SAMPLING = {
+  temperature: 1,
+  top_k: 64,
+  top_p: 0.95,
+  repetition_penalty: 1
+} as const satisfies Sampling
+
+/**
+ * Gemma 4 E4B (4.5B effective parameters, 8B with its per-layer
+ * embeddings), in onnx-community's Transformers.js build; its text model
+ * only (embedding and decoder, 4.9 GB).
+ */
+const GEMMA_4_E4B = {
+  name: "onnx-community/gemma-4-E4B-it-ONNX",
+  revision: "2b6d2e26a962f70a33da8f7cd81e1afdd8d9cfb2",
+  supports: TOOLS_AND_THINKING,
+  size: "4b",
+  context: 32_768,
+  reasoning: THINKING_SWITCH,
+  toolFormat: "gemma4",
+  sampling: GEMMA_4_SAMPLING
+} as const satisfies TransformersJsModelMeta
 
 /**
  * LFM3 built for iPhone Safari: GPTQ 4-bit with block size 32 (so
@@ -146,6 +178,7 @@ const LFM2_5_1_2B_THINKING_WEB = {
 } as const satisfies TransformersJsModelMeta
 
 export const TRANSFORMERS_JS_TEXT_MODELS = [
+  GEMMA_4_E4B.name,
   LFM3_1_7B_WEB.name,
   LFM3_1_7B.name,
   LFM2_5_1_2B_WEB.name,
@@ -165,6 +198,7 @@ export type TransformersJsTextModel = TransformersJsListedModel | (string & {})
 export const TRANSFORMERS_JS_MODEL_META: Readonly<
   Record<TransformersJsListedModel, TransformersJsModelMeta>
 > = {
+  [GEMMA_4_E4B.name]: GEMMA_4_E4B,
   [LFM3_1_7B_WEB.name]: LFM3_1_7B_WEB,
   [LFM3_1_7B.name]: LFM3_1_7B,
   [LFM2_5_1_2B_WEB.name]: LFM2_5_1_2B_WEB,
@@ -174,6 +208,7 @@ export const TRANSFORMERS_JS_MODEL_META: Readonly<
 }
 
 const TRANSFORMERS_JS_REASONING = {
+  [GEMMA_4_E4B.name]: GEMMA_4_E4B.reasoning,
   [LFM3_1_7B_WEB.name]: LFM3_1_7B_WEB.reasoning,
   [LFM3_1_7B.name]: LFM3_1_7B.reasoning,
   [LFM2_5_1_2B_THINKING_WEB.name]: LFM2_5_1_2B_THINKING_WEB.reasoning,
@@ -201,7 +236,9 @@ export const UNLISTED_MODEL_REASONING: ModelReasoning = THINKING_SWITCH
 const LISTED: ReadonlySet<string> = new Set(TRANSFORMERS_JS_TEXT_MODELS)
 
 /** A listed model's metadata, or undefined for any other id. */
-export const modelMeta = (model: string): TransformersJsModelMeta | undefined =>
+export const modelMeta = (
+  model: string
+): TransformersJsModelMeta | undefined =>
   LISTED.has(model)
     ? TRANSFORMERS_JS_MODEL_META[model as TransformersJsListedModel]
     : undefined

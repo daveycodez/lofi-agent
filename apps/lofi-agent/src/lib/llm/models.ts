@@ -20,6 +20,7 @@ import { createStore } from "#/lib/store"
 
 export type ModelId =
   | "apple-fm"
+  | "gemma-4-e4b"
   | "lfm3"
   | "lfm3-web"
   | "lfm2.5"
@@ -46,13 +47,12 @@ const local = (
 ) => ({
   id,
   name,
-  icon: "/icons/liquid.svg",
+  icon: model.includes("gemma") ? "/icons/gemma.svg" : "/icons/liquid.svg",
   adapter: transformersJsText(model, { debug: import.meta.env.DEV }),
   /** The model it downloads, for its loading status. */
   download: model as string | null,
   reasoning: TRANSFORMERS_JS_MODEL_REASONING[model] as
-    | ModelReasoning
-    | undefined
+    ModelReasoning | undefined
 })
 
 export const MODELS = [
@@ -66,6 +66,7 @@ export const MODELS = [
     download: null,
     reasoning: undefined
   },
+  local("gemma-4-e4b", "Gemma 4 E4B", "onnx-community/gemma-4-E4B-it-ONNX"),
   local("lfm3", "LFM3 1.7B", "onnx-community/LFM3-1.7B-ONNX"),
   local("lfm3-web", "LFM3 1.7B Web", "daveycodez/LFM3-1.7B-Web"),
   local("lfm2.5", "LFM2.5 1.2B", "LiquidAI/LFM2.5-1.2B-Instruct-ONNX"),

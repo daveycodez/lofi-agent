@@ -5,11 +5,17 @@ export type ChatTurn = {
   content: string
   /** The reply's thinking; LFM3's template keeps it for the current turn. */
   thinking?: string
-  /** Past tool calls, for templates that write them themselves (LFM3). */
+  /** The reply's thinking, as Gemma 4's template reads it. */
+  reasoning?: string
+  /** Past tool calls, for templates that write them themselves. */
   tool_calls?: Array<{
+    id?: string
     type: "function"
     function: { name: string; arguments: Record<string, unknown> }
   }>
+  /** A tool result's call, and its tool's name (Gemma 4 writes it). */
+  tool_call_id?: string
+  name?: string
 }
 
 /** A tool as chat templates take it (OpenAI's function format). */
@@ -23,6 +29,8 @@ export type Sampling = {
   temperature: number
   top_k: number
   repetition_penalty: number
+  /** Nucleus sampling: the likeliest tokens up to this probability. */
+  top_p?: number
 }
 
 /** Token counts and timings of one generation, measured in the worker. */
@@ -44,8 +52,15 @@ export type RunTimings = {
   decodeMs: number
 }
 
+/**
+ * Which weights to load: 4-bit weights with fp16 activations and cache
+ * ("q4f16", the smallest), or with fp32 ones ("q4", for models whose
+ * activations overflow fp16).
+ */
+export type WeightsDtype = "q4f16" | "q4"
+
 export type WorkerRequest =
-  | { type: "load"; modelId: string }
+  | { type: "load"; modelId: string; dtype: WeightsDtype }
   | {
       type: "generate"
       id: string
@@ -56,6 +71,13 @@ export type WorkerRequest =
       sampling: Sampling
       /** Most tokens to generate; the worker's default when left out. */
       maxTokens?: number
+      /** Tokens the chat may hold, prompt and reply together. */
+      contextLength: number
+      /**
+       * Where the model's thinking starts: sent ahead of the reply when the
+       * chat template opens the thinking in the prompt itself.
+       */
+      thinkingOpen: string
     }
   | { type: "stop"; id: string }
 

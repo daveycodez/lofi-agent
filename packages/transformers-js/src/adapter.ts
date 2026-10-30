@@ -27,8 +27,18 @@ import type {
   TransformersJsListedModel,
   TransformersJsModelReasoningByName
 } from "./model-meta.js"
-import type { ChatTurn, RunTimings, Sampling, ToolSpec } from "./protocol.js"
-import { createThinkingSplitter, splitThinking } from "./thinking.js"
+import type {
+  ChatTurn,
+  RunTimings,
+  Sampling,
+  ToolSpec,
+  WeightsDtype
+} from "./protocol.js"
+import {
+  createThinkingSplitter,
+  splitThinking,
+  THINKING_MARKERS
+} from "./thinking.js"
 import {
   createToolCallSplitter,
   formatLfm2ToolCalls,
@@ -42,9 +52,22 @@ export type TransformersJsTextConfig = {
    * A listed model's own by default; required for any other model.
    */
   toolFormat?: ToolFormat
+  /**
+   * Tokens a chat may hold, prompt and reply together: a listed model's own
+   * by default, else 8,192 (the most iPhone Safari allows for LFM3).
+   */
+  contextLength?: number
+  /**
+   * The weights to load: a listed model's own by default, else "q4f16".
+   * "q4" (fp32 activations) is for models that overflow fp16.
+   */
+  dtype?: WeightsDtype
   /** Memory and cache logs from the worker, in the console. */
   debug?: boolean
 }
+
+/** Tokens a chat may hold for a model this package doesn't list. */
+const DEFAULT_CONTEXT = 8192
 
 /** The config a model takes: any other model than a listed one names its tool format. */
 export type TransformersJsTextConfigFor<TModel extends string> =
@@ -144,7 +167,7 @@ function parseArguments(json: string): Record<string, unknown> {
 /** An assistant turn with tool calls, written the way the model writes them. */
 function assistantToolTurn(
   content: string,
-  calls: Array<ParsedToolCall>,
+  calls: Array<ParsedToolCall & { id: string }>,
   format: ToolFormat
 ): ChatTurn {
   if (format === "lfm2") {
@@ -154,10 +177,19 @@ function assistantToolTurn(
     role: "assistant",
     content,
     tool_calls: calls.map((c) => ({
+      id: c.id,
       type: "function",
       function: { name: c.name, arguments: c.args }
     }))
   }
+}
+
+/** The current turn's thinking, under the key the format's template reads. */
+function withThinking(turn: ChatTurn, thinking: string, format: ToolFormat) {
+  // Liquid's guide: keep the reasoning of the current tool-use turn.
+  if (format === "lfm3") return { ...turn, thinking }
+  if (format === "gemma4") return { ...turn, reasoning: thinking }
+  return turn
 }
 
 /**
@@ -169,25 +201,37 @@ function assistantToolTurn(
 function toChatTurns(messages: Array<ModelMessage>, format: ToolFormat) {
   const chat: Array<ChatTurn> = []
   const currentTurn = messages.map((m) => m.role).lastIndexOf("user")
+  // Tool names by call id, for the results.
+  const toolNames = new Map<string, string>()
   for (const [i, m] of messages.entries()) {
     const content = contentText(m.content)
     const earlier = i < currentTurn
     if (m.role === "tool") {
-      if (!earlier) chat.push({ role: "tool", content: toolResultText(m) })
+      if (earlier) continue
+      const name = m.toolCallId ? toolNames.get(m.toolCallId) : undefined
+      chat.push({
+        role: "tool",
+        content: toolResultText(m),
+        ...(m.toolCallId && { tool_call_id: m.toolCallId }),
+        ...(name && { name })
+      })
       continue
     }
-    const calls = (m.toolCalls ?? []).map((call) => ({
-      name: call.function.name,
-      args: parseArguments(call.function.arguments)
-    }))
+    const calls = (m.toolCalls ?? []).map((call) => {
+      toolNames.set(call.id, call.function.name)
+      return {
+        id: call.id,
+        name: call.function.name,
+        args: parseArguments(call.function.arguments)
+      }
+    })
     if (m.role === "user" || calls.length === 0 || earlier) {
       if (content) chat.push({ role: m.role, content })
       continue
     }
     const turn = assistantToolTurn(content, calls, format)
-    // Liquid's guide: keep the reasoning of the current tool-use turn.
     const thinking = m.thinking?.map((t) => t.content).join("")
-    chat.push(format === "lfm3" && thinking ? { ...turn, thinking } : turn)
+    chat.push(thinking ? withThinking(turn, thinking, format) : turn)
   }
   return chat
 }
@@ -253,6 +297,8 @@ export class TransformersJsTextAdapter<
   override readonly api = "transformers-js" as const
   override readonly inputModalities = ["text"] as const
   private readonly toolFormat: ToolFormat
+  private readonly contextLength: number
+  private readonly dtype: WeightsDtype
 
   constructor(config: TransformersJsTextConfig, model: TModel) {
     super({}, model)
@@ -263,17 +309,24 @@ export class TransformersJsTextAdapter<
       )
     }
     this.toolFormat = toolFormat
+    this.contextLength =
+      config.contextLength ?? modelMeta(model)?.context ?? DEFAULT_CONTEXT
+    this.dtype = config.dtype ?? modelMeta(model)?.dtype ?? "q4f16"
     if (config.debug) setDebug(true)
   }
 
   /** Sampling for a call: `modelOptions` over the model card's or the defaults. */
-  private sampling(modelOptions: TransformersJsTextProviderOptions | undefined) {
+  private sampling(
+    modelOptions: TransformersJsTextProviderOptions | undefined
+  ) {
     const base = modelMeta(this.model)?.sampling ?? DEFAULT_SAMPLING
+    const top_p = modelOptions?.top_p ?? base.top_p
     return {
       temperature: modelOptions?.temperature ?? base.temperature,
       top_k: modelOptions?.top_k ?? base.top_k,
       repetition_penalty:
-        modelOptions?.repetition_penalty ?? base.repetition_penalty
+        modelOptions?.repetition_penalty ?? base.repetition_penalty,
+      ...(top_p !== undefined && { top_p })
     }
   }
 
@@ -303,7 +356,7 @@ export class TransformersJsTextAdapter<
       ...(options.parentRunId && { parentRunId: options.parentRunId })
     }
     try {
-      await loadModel(model)
+      await loadModel(model, this.dtype)
     } catch (error) {
       yield {
         type: EventType.RUN_ERROR,
@@ -329,7 +382,9 @@ export class TransformersJsTextAdapter<
     let reasoning: "none" | "open" | "closed" = "none"
     let textStarted = false
     let text = ""
-    const thinkingSplitter = createThinkingSplitter()
+    const thinkingSplitter = createThinkingSplitter(
+      THINKING_MARKERS[this.toolFormat]
+    )
     const toolSplitter = createToolCallSplitter()
     const events: Array<AdapterYieldChunk> = []
     const endReasoning = () => {
@@ -414,6 +469,8 @@ export class TransformersJsTextAdapter<
       thinking,
       sampling,
       maxTokens: options.modelOptions?.max_new_tokens,
+      contextLength: this.contextLength,
+      thinkingOpen: THINKING_MARKERS[this.toolFormat].open,
       signal
     })
     let next = await stream.next()
@@ -500,7 +557,7 @@ export class TransformersJsTextAdapter<
     options: StructuredOutputOptions<TransformersJsTextProviderOptions>
   ): Promise<StructuredOutputResult<unknown>> {
     const { chatOptions, outputSchema } = options
-    await loadModel(this.model)
+    await loadModel(this.model, this.dtype)
     const system = normalizeSystemPrompts(chatOptions.systemPrompts)
       .map((p) => p.content)
       .concat(
@@ -517,6 +574,8 @@ export class TransformersJsTextAdapter<
       thinking: enableThinking(chatOptions.reasoning, this.model),
       sampling: this.sampling(chatOptions.modelOptions),
       maxTokens: chatOptions.modelOptions?.max_new_tokens,
+      contextLength: this.contextLength,
+      thinkingOpen: THINKING_MARKERS[this.toolFormat].open,
       signal: chatOptions.abortController?.signal
     })
     let raw = ""
@@ -526,7 +585,10 @@ export class TransformersJsTextAdapter<
       next = await stream.next()
     }
     if (next.value.failure) throw new Error(next.value.failure)
-    const rawText = splitThinking(raw).answer.trim()
+    const rawText = splitThinking(
+      raw,
+      THINKING_MARKERS[this.toolFormat]
+    ).answer.trim()
     const json = rawText.replace(/^```(?:json)?\s*|\s*```$/g, "")
     try {
       return {

@@ -3,6 +3,7 @@
  *
  * - LFM2.5: `<|tool_call_start|>[get_weather(city="Tokyo")]<|tool_call_end|>`
  * - LFM3: `<tool_call>\n<function=get_weather>\n<parameter=city>\nTokyo\n</parameter>\n</function>\n</tool_call>`
+ * - Gemma 4: `<|tool_call>call:get_weather{city:<|"|>Tokyo<|"|>}<tool_call|>`
  * - Apple's model, when apfel doesn't recognize its call and passes it on as
  *   text: `{"tool_calls": [{"function": "get_weather", "arguments": {…}}]}`
  */
@@ -10,9 +11,9 @@
 export type ParsedToolCall = { name: string; args: Record<string, unknown> }
 
 /** How a model writes tool calls. */
-export type ToolFormat = "lfm2" | "lfm3"
+export type ToolFormat = "lfm2" | "lfm3" | "gemma4"
 
-const MARKERS = ["<|tool_call_start|>", "<tool_call>"]
+const MARKERS = ["<|tool_call_start|>", "<tool_call>", "<|tool_call>"]
 
 /** Where Apple's model starts a tool call it writes as text. */
 export const JSON_TOOL_CALLS_MARKER = '{"tool_calls"'
@@ -143,9 +144,88 @@ function parseXmlish(body: string) {
   return calls
 }
 
+/** Gemma 4's string delimiter: `<|"|>text<|"|>`. */
+const GEMMA_QUOTE = '<|"|>'
+
+/**
+ * A value in Gemma 4's notation: `<|"|>text<|"|>` strings, bare numbers,
+ * true/false/null, `{key:value}` objects with bare keys, and `[…]` arrays.
+ * Returns the value and where it ends.
+ */
+function gemmaValue(text: string, start: number): [unknown, number] {
+  let i = start
+  while (/\s/.test(text[i] ?? "")) i++
+  if (text.startsWith(GEMMA_QUOTE, i)) {
+    const end = text.indexOf(GEMMA_QUOTE, i + GEMMA_QUOTE.length)
+    const stop = end < 0 ? text.length : end
+    return [
+      text.slice(i + GEMMA_QUOTE.length, stop),
+      end < 0 ? stop : stop + GEMMA_QUOTE.length
+    ]
+  }
+  if (text[i] === "{") return gemmaObject(text, i)
+  if (text[i] === "[") {
+    const items: Array<unknown> = []
+    i++
+    for (;;) {
+      while (/[\s,]/.test(text[i] ?? "")) i++
+      if (i >= text.length || text[i] === "]") return [items, i + 1]
+      const [item, next] = gemmaValue(text, i)
+      items.push(item)
+      if (next <= i) return [items, text.length]
+      i = next
+    }
+  }
+  const raw = /^[^,}\]]*/.exec(text.slice(i))?.[0] ?? ""
+  return [parseValue(raw), i + raw.length]
+}
+
+/** `{key:value,…}` in Gemma 4's notation, from `text[start]` (a `{`). */
+function gemmaObject(
+  text: string,
+  start: number
+): [Record<string, unknown>, number] {
+  const object: Record<string, unknown> = {}
+  let i = start + 1
+  for (;;) {
+    while (/[\s,]/.test(text[i] ?? "")) i++
+    if (i >= text.length || text[i] === "}") return [object, i + 1]
+    let key: string
+    if (text.startsWith(GEMMA_QUOTE, i)) {
+      const end = text.indexOf(GEMMA_QUOTE, i + GEMMA_QUOTE.length)
+      if (end < 0) return [object, text.length]
+      key = text.slice(i + GEMMA_QUOTE.length, end)
+      i = end + GEMMA_QUOTE.length
+    } else {
+      const bare = /^[^:{}\s]+/.exec(text.slice(i))?.[0]
+      if (!bare) return [object, text.length]
+      key = bare
+      i += bare.length
+    }
+    while (/\s/.test(text[i] ?? "")) i++
+    if (text[i] !== ":") return [object, text.length]
+    const [value, next] = gemmaValue(text, i + 1)
+    object[key] = value
+    i = next
+  }
+}
+
+/** `call:name{…}` bodies of Gemma 4's `<|tool_call>…<tool_call|>` blocks. */
+function parseGemma(text: string) {
+  const calls: Array<ParsedToolCall> = []
+  for (const m of text.matchAll(
+    /<\|tool_call>\s*call:([^{\s]+)\s*([\s\S]*?)(?:<tool_call\|>|$)/g
+  )) {
+    const body = m[2].trim()
+    const args = body.startsWith("{") ? gemmaObject(body, 0)[0] : {}
+    calls.push({ name: m[1], args })
+  }
+  return calls
+}
+
 /** Every tool call in `text`, whichever format the model used. */
 export function parseToolCalls(text: string): Array<ParsedToolCall> {
-  const calls: Array<ParsedToolCall> = []
+  const calls: Array<ParsedToolCall> = [...parseGemma(text)]
   for (const m of text.matchAll(/<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/g)) {
     const body = m[1].trim()
     if (body.includes("<function=")) {

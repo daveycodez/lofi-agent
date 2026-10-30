@@ -15,15 +15,16 @@ What does leave your device: calls to MCP servers (Exa's web search, if it's on,
 
 ## Models
 
-| Model                       | Notes                                                                                                                                                                                                 |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **LFM3 1.7B Web** (default) | Liquid AI's LFM3, in a custom ONNX build for iPhone Safari: 4-bit weights (about 900 MB), a smaller vocabulary, and flash attention in its sliding-window layers to keep memory down on long prompts. |
-| LFM3 1.7B                   | The `onnx-community` ONNX export of LFM3.                                                                                                                                                             |
-| LFM2.5 1.2B                 | Liquid AI's ONNX build of LFM2.5 Instruct.                                                                                                                                                            |
-| LFM2.5 1.2B Thinking        | Liquid AI's LFM2.5 Thinking: always reasons before answering.                                                                                                                                         |
-| LFM2.5 1.2B Web             | The same weights, re-exported so reading a prompt computes output for the last token only. Long prompts (for example, with web search results) crashed iPhone Safari without this.                    |
-| LFM2.5 1.2B Thinking Web    | LFM2.5 Thinking, re-exported the same way.                                                                                                                                                            |
-| Apple Foundation Model      | Apple's on-device model, served on your Mac by [apfel](https://apfel.franzai.com), through `@tanstack-ai-browser/apfel`. Shown on Apple devices only; needs a Mac (see Requirements).                 |
+| Model                       | Notes                                                                                                                                                                                                         |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gemma 4 E4B                 | Google's Gemma 4 E4B (4.5B effective parameters), in onnx-community's Transformers.js build: about 5 GB, for desktops. Its vision and audio encoders are downloaded with it, for image and audio input later. |
+| **LFM3 1.7B Web** (default) | Liquid AI's LFM3, in a custom ONNX build for iPhone Safari: 4-bit weights (about 900 MB), a smaller vocabulary, and flash attention in its sliding-window layers to keep memory down on long prompts.         |
+| LFM3 1.7B                   | The `onnx-community` ONNX export of LFM3.                                                                                                                                                                     |
+| LFM2.5 1.2B                 | Liquid AI's ONNX build of LFM2.5 Instruct.                                                                                                                                                                    |
+| LFM2.5 1.2B Thinking        | Liquid AI's LFM2.5 Thinking: always reasons before answering.                                                                                                                                                 |
+| LFM2.5 1.2B Web             | The same weights, re-exported so reading a prompt computes output for the last token only. Long prompts (for example, with web search results) crashed iPhone Safari without this.                            |
+| LFM2.5 1.2B Thinking Web    | LFM2.5 Thinking, re-exported the same way.                                                                                                                                                                    |
+| Apple Foundation Model      | Apple's on-device model, served on your Mac by [apfel](https://apfel.franzai.com), through `@tanstack-ai-browser/apfel`. Shown on Apple devices only; needs a Mac (see Requirements).                         |
 
 The "Web" builds are published under [`daveycodez` on Hugging Face](https://huggingface.co/daveycodez) and pinned to a commit. Models whose reasoning can be switched on and off (LFM3) have a Think toggle in the composer, on by default.
 
@@ -111,5 +112,5 @@ apps/lofi-agent/           the app (Nx project "lofi-agent")
 
 - The chat and sidebar layout follows [assistant-ui](https://github.com/assistant-ui/assistant-ui) (MIT).
 - Provider icons are from [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT).
-- LFM3 and LFM2.5 are models by [Liquid AI](https://huggingface.co/LiquidAI).
+- LFM3 and LFM2.5 are models by [Liquid AI](https://huggingface.co/LiquidAI); Gemma 4 is by [Google DeepMind](https://deepmind.google/models/gemma/).
 - Apple's model is reached through [apfel](https://apfel.franzai.com).
