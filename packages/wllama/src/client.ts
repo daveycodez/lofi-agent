@@ -52,6 +52,13 @@ export type RuntimeOptions = {
    */
   wasmUrl?: string
   /**
+   * Where this package's faster build of wllama is served
+   * (`wasm/wllama-relaxed.wasm`), or `false` to use wllama's own. Browsers
+   * with relaxed SIMD (Chrome, Firefox) use it; by default the bundler emits
+   * it from this package. See scripts/build-wasm.sh.
+   */
+  relaxedSimdWasmUrl?: string | false
+  /**
    * Where wllama's compat build is served: its WebAssembly file and its
    * worker script. Browsers without JSPI or 64-bit WebAssembly memory
    * (Safari) run it instead of the main build, which doesn't run there. By
@@ -73,6 +80,37 @@ export function configureRuntime(next: RuntimeOptions) {
 
 const defaultWasmUrl = () =>
   new URL("@wllama/wllama/esm/wasm/wllama.wasm", import.meta.url).href
+
+/**
+ * wllama's main build with llama.cpp's WebAssembly SIMD kernels, which
+ * wllama's own build leaves out, and relaxed SIMD dot products: about twice
+ * as fast at reading prompts. Its JavaScript glue is wllama's, unchanged.
+ */
+const relaxedWasmUrl = () =>
+  new URL("../wasm/wllama-relaxed.wasm", import.meta.url).href
+
+/** A WebAssembly module with one relaxed SIMD instruction (i32x4.relaxed_dot_i8x16_i7x16_add_s). */
+const RELAXED_SIMD_MODULE = new Uint8Array([
+  0, 97, 115, 109, 1, 0, 0, 0, 1, 6, 1, 96, 1, 123, 1, 123, 3, 2, 1, 0, 10, 13,
+  1, 11, 0, 32, 0, 32, 0, 32, 0, 253, 147, 2, 11
+])
+
+function hasRelaxedSimd() {
+  try {
+    return WebAssembly.validate(RELAXED_SIMD_MODULE)
+  } catch {
+    return false
+  }
+}
+
+/** The main build to load: the faster one where the browser can run it. */
+function mainWasmUrl() {
+  if (options.wasmUrl) return options.wasmUrl
+  if (options.relaxedSimdWasmUrl !== false && hasRelaxedSimd()) {
+    return options.relaxedSimdWasmUrl ?? relaxedWasmUrl()
+  }
+  return defaultWasmUrl()
+}
 
 const defaultCompat = () => ({
   wasm: new URL("@wllama/wllama-compat/wasm/wllama.wasm", import.meta.url)
@@ -213,7 +251,7 @@ export function loadModel(model: WllamaTextModel): Promise<Wllama> {
   if (previous) modelStatus(previous.model).set({ state: "idle" })
   keepDownloads()
   const wllama = new Wllama(
-    { default: options.wasmUrl ?? defaultWasmUrl() },
+    { default: mainWasmUrl() },
     {
       logger: options.debug ? console : LoggerWithoutDebug,
       suppressNativeLog: !options.debug

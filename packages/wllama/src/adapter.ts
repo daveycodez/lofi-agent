@@ -47,6 +47,12 @@ export type WllamaTextConfig = {
    */
   wasmUrl?: string
   /**
+   * Where this package's faster build (`wasm/wllama-relaxed.wasm`, for
+   * browsers with relaxed SIMD) is served, if not emitted by the bundler, or
+   * `false` to use wllama's own build everywhere.
+   */
+  relaxedSimdWasmUrl?: string | false
+  /**
    * Where wllama's compat build (for Safari) is served, if not from
    * `@wllama/wllama-compat` through the bundler.
    */
@@ -217,6 +223,9 @@ export class WllamaTextAdapter<
     super({}, model)
     configureRuntime({
       ...(config.wasmUrl && { wasmUrl: config.wasmUrl }),
+      ...(config.relaxedSimdWasmUrl !== undefined && {
+        relaxedSimdWasmUrl: config.relaxedSimdWasmUrl
+      }),
       ...(config.compat && { compat: config.compat }),
       ...(config.threads && { threads: config.threads }),
       ...(config.debug && { debug: true })
