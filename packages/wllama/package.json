@@ -1,0 +1,61 @@
+{
+  "name": "@tanstack-ai-browser/wllama",
+  "version": "0.0.0",
+  "description": "TanStack AI adapter for GGUF models running in the browser with wllama (llama.cpp in WebAssembly)",
+  "license": "MIT",
+  "author": "daveycodez",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daveycodez/tanstack-ai-browser.git",
+    "directory": "packages/wllama"
+  },
+  "homepage": "https://github.com/daveycodez/tanstack-ai-browser/tree/main/packages/wllama#readme",
+  "bugs": "https://github.com/daveycodez/tanstack-ai-browser/issues",
+  "keywords": [
+    "tanstack-ai",
+    "tanstack",
+    "ai",
+    "llm",
+    "wllama",
+    "llama.cpp",
+    "gguf",
+    "webassembly",
+    "browser",
+    "local-ai"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "@tanstack-ai-browser/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "nx": {
+    "name": "wllama"
+  },
+  "peerDependencies": {
+    "@tanstack/ai": "^1.0.0"
+  },
+  "devDependencies": {
+    "@tanstack/ai": "1.0.0"
+  },
+  "dependencies": {
+    "@huggingface/jinja": "0.5.10",
+    "@wllama/wllama": "3.8.1"
+  }
+}
