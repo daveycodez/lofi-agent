@@ -1123,6 +1123,39 @@ function reuseSaved(
   }
 }
 
+/** "The current date is …", a paragraph of its own in system prompts. */
+const DATE_LINE = /(?:^|\n+)(The current date is [^\n]*\.)[ \t]*(?=\n|$)/
+
+/**
+ * The chat with the date line taken out of its system prompt, and the line,
+ * to add back at the very end of the rendered system message: after the
+ * tool definitions, which chat templates put after the system prompt. The
+ * start of the prompt (system prompt and tools), which the cache keeps, then
+ * stays the same from day to day. Left in place when it's the whole system
+ * prompt and there are no tools: it's the end already, and the template
+ * leaves out an empty system message.
+ */
+function withoutDate(chat: Array<ChatTurn>, tools: Array<ToolSpec>) {
+  const system = chat.at(0)
+  const match =
+    system?.role === "system" ? DATE_LINE.exec(system.content) : null
+  if (!system || !match) return { chat, date: null }
+  const content = system.content.replace(match[0], "").trim()
+  if (!content && tools.length === 0) return { chat, date: null }
+  return {
+    chat: [{ ...system, content }, ...chat.slice(1)],
+    date: match[1]
+  }
+}
+
+/** Adds a line at the end of a rendered prompt's system message. */
+const afterSystem = (prompt: string, line: string) => {
+  const end = prompt.indexOf("<|im_end|>")
+  return end < 0
+    ? prompt
+    : `${prompt.slice(0, end)}\n\n${line}${prompt.slice(end)}`
+}
+
 /**
  * How many tokens the system prompt and tools take at the start of a
  * prompt, or 0 if there are none or they can't be told apart.
@@ -1147,9 +1180,13 @@ function systemLength(
       tokenizer(text, { add_special_tokens: false }).input_ids.data,
       Number
     )
-    const matches =
-      prefix.length < ids.length && prefix.every((t, i) => t === ids[i])
-    return matches ? prefix.length : 0
+    let common = 0
+    const limit = Math.min(prefix.length, ids.length - 1)
+    while (common < limit && prefix[common] === ids[common]) common++
+    // The prompt may go on inside the system message (the date, moved after
+    // the tools), so its last few tokens can differ: the end of the message,
+    // or a token merged across the join.
+    return common >= prefix.length - 3 ? common : 0
   } catch {
     return 0
   }
@@ -1158,8 +1195,8 @@ function systemLength(
 /*
  * The prompt cache on disk. The cache in memory goes with the page, so the
  * first run of each agent after a reload would read its whole system prompt
- * and tools again (a long one, ~1,300 tokens, takes ~13 s on an iPhone). Each run that reads a system prompt and tools from scratch
- * saves the cache at their end to the Origin Private File System, and a run
+ * and tools again (a long one, ~1,300 tokens, takes ~13 s on an iPhone).
+ * Each run that reads a system prompt and tools from scratch saves the cache at their end to the Origin Private File System, and a run
  * with nothing in memory covering them loads it from there instead. ~22 KB
  * per token on disk.
  */
@@ -1585,13 +1622,17 @@ async function generate(
   if (!current) throw new Error("No model loaded.")
   const loaded = current
   const { tf, tokenizer, model } = await loaded.runtime
+  // The date goes at the very end of the system message, after the tool
+  // definitions, so a new day doesn't change the start the cache holds.
+  const { chat: dateless, date } = withoutDate(chat, tools)
   // Models with a thinking mode reason in a <think> block before answering.
-  const prompt = tokenizer.apply_chat_template(chat, {
+  const rendered = tokenizer.apply_chat_template(dateless, {
     ...(tools.length > 0 && { tools }),
     add_generation_prompt: true,
     tokenize: false,
     enable_thinking: thinking
   })
+  const prompt = date ? afterSystem(rendered, date) : rendered
   // Some templates open the <think> block in the prompt itself; start the
   // reply with it too so the thread shows what follows as thinking.
   if (prompt.trimEnd().endsWith("<think>")) {
@@ -1621,7 +1662,7 @@ async function generate(
   let lastToken = 0
   let readStarted = performance.now()
   // What the last run left in the cache that this prompt starts with.
-  const systemEnd = systemLength(tokenizer, chat, tools, thinking, ids)
+  const systemEnd = systemLength(tokenizer, dateless, tools, thinking, ids)
   let reused = reuseSaved(tf, loaded.modelId, ids, systemEnd)
   const timings = (): RunTimings => ({
     inputTokens: ids.length,
