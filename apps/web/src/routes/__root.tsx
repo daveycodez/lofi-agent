@@ -26,7 +26,13 @@ export const Route = createRootRoute({
       {
         rel: "stylesheet",
         href: appCss
-      }
+      },
+      // Add to Home Screen: name, start page and icons come from the manifest.
+      // An installed app also keeps its storage (the downloaded model) more
+      // reliably than a site in Safari.
+      { rel: "manifest", href: "/manifest.webmanifest" },
+      { rel: "icon", href: "/icon.svg", type: "image/svg+xml" },
+      { rel: "apple-touch-icon", href: "/apple-touch-icon.png" }
     ]
   }),
   shellComponent: RootDocument
@@ -39,6 +45,18 @@ function RootDocument({ children }: { children: React.ReactNode }) {
     <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
+        {/* The browser bar and the Home Screen app's status bar match the
+            page. Written here: the head manager keeps one tag per name. */}
+        <meta
+          name="theme-color"
+          content="#f5f5f5"
+          media="(prefers-color-scheme: light)"
+        />
+        <meta
+          name="theme-color"
+          content="#09090b"
+          media="(prefers-color-scheme: dark)"
+        />
       </head>
       <body className="bg-background text-foreground">
         {/* HeroUI reads both the class and data-theme attributes */}

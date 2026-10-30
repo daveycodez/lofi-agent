@@ -7,7 +7,7 @@ A chat app that runs small language models entirely in your browser. Models are 
 - **Private.** In-browser models run on your device. The app has no backend and no accounts: the Cloudflare Worker only serves prerendered pages. Chats, settings and MCP server details stay in your browser's storage.
 - **Runs on iPhone.** The default model is a custom build made for iPhone Safari, and the runtime is tuned to stay inside its memory and GPU limits. In-browser models hold up to 8,192 tokens per chat, prompt and reply together.
 - **Download once.** Model weights (about 0.8 to 1.1 GB per model) are saved to the browser's Origin Private File System and loaded from disk on later visits.
-- **Reuses work between runs.** The model keeps what it has already read, so a follow-up message, the next step after a tool call, or a new chat with the same system prompt only reads what's new.
+- **Reuses work between runs.** The model keeps what it has already read, so a follow-up message, the next step after a tool call, or a new chat with the same system prompt only reads what's new. The system prompt and tools are also saved to disk, so they aren't read again after a reload.
 
 What does leave your device: web search queries (if web search is on), calls to MCP servers you add, and the downloads of model files (Hugging Face) and the runtime (jsDelivr).
 
@@ -37,6 +37,7 @@ The "Web" builds are published under [`daveycodez` on Hugging Face](https://hugg
 - Voice input through the browser's speech recognition, where available
 - Settings: turn web search on or off, and write a system prompt sent with every chat (after the current date)
 - Light, dark and system themes
+- Add to Home Screen: installs as an app with its own icon, and keeps the downloaded model more reliably than a Safari tab
 
 ## Requirements
 

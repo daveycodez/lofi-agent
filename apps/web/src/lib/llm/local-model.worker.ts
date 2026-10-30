@@ -22,12 +22,6 @@ type OrtTensor = {
   type: string
   dims: ReadonlyArray<number>
   gpuBuffer?: GPUBuffer
-  constructor: {
-    fromGpuBuffer: (
-      buffer: GPUBuffer,
-      options: { dataType: string; dims: Array<number>; dispose: () => void }
-    ) => OrtTensor
-  }
 }
 type Tensor = {
   dims: Array<number>
@@ -84,7 +78,13 @@ type TransformersModule = {
   DynamicCache: new (entries: Record<string, Tensor>) => Cache
   Tensor: {
     new (type: string, data: unknown, dims: Array<number>): Tensor
-    new (ortTensor: OrtTensor): Tensor
+    new (gpu: {
+      location: "gpu-buffer"
+      gpuBuffer: GPUBuffer
+      type: string
+      dims: Array<number>
+      dispose: () => void
+    }): Tensor
   }
   ones: (dims: Array<number>) => Tensor
   env: {
@@ -867,14 +867,28 @@ function copyCacheTensor(
     encoder.copyBufferToBuffer(source, i * from, buffer, i * to, to)
   }
   device.queue.submit([encoder.finish()])
-  return new tf.Tensor(
-    tensor.ort_tensor.constructor.fromGpuBuffer(buffer, {
-      dataType: tensor.ort_tensor.type,
-      dims: target,
-      dispose: () => buffer.destroy()
-    })
-  )
+  return gpuTensor(tf, buffer, tensor.ort_tensor.type, target)
 }
+
+/**
+ * A tensor over a GPU buffer, which it destroys when disposed. Made from
+ * plain fields rather than onnxruntime-web's Tensor.fromGpuBuffer: the
+ * Transformers.js bundle has two copies of that class, and wrapping a
+ * tensor of the other copy made its dispose() call itself forever.
+ */
+const gpuTensor = (
+  tf: TransformersModule,
+  gpuBuffer: GPUBuffer,
+  type: string,
+  dims: Array<number>
+) =>
+  new tf.Tensor({
+    location: "gpu-buffer",
+    gpuBuffer,
+    type,
+    dims,
+    dispose: () => gpuBuffer.destroy()
+  })
 
 /*
  * Prompt caching. The model's cache from each run is kept, so the next run
@@ -1141,6 +1155,242 @@ function systemLength(
   }
 }
 
+/*
+ * The prompt cache on disk. The cache in memory goes with the page, so the
+ * first run of each agent after a reload would read its whole system prompt
+ * and tools again (a long one, ~1,300 tokens, takes ~13 s on an iPhone). Each run that reads a system prompt and tools from scratch
+ * saves the cache at their end to the Origin Private File System, and a run
+ * with nothing in memory covering them loads it from there instead. ~22 KB
+ * per token on disk.
+ */
+const PROMPT_CACHE_DIR = "prompt-cache"
+/** The file format; files of other versions are ignored. */
+const PROMPT_CACHE_VERSION = 1
+/** Shorter system prompts load faster from the model than from disk. */
+const MIN_DISK_TOKENS = 64
+/** Disk the saved prompt caches may take; the oldest go first. */
+const PROMPT_CACHE_BYTES = 200 * 1024 * 1024
+/** "LFPC": marks a prompt cache file. */
+const PROMPT_CACHE_MAGIC = 0x4350464c
+/** Files saved or loaded this session, by key. */
+const onDisk = new Set<string>()
+
+/** A file name for a model and the tokens its cache holds (64-bit FNV-1a). */
+function promptCacheKey(modelId: string, ids: Array<number>) {
+  let a = 0x811c9dc5
+  let b = 0x01000193 ^ ids.length
+  const mix = (value: number) => {
+    a = Math.imul(a ^ value, 0x01000193) >>> 0
+    b = Math.imul(b ^ (value + 0x9e3779b9), 0x01000193) >>> 0
+  }
+  for (let i = 0; i < modelId.length; i++) mix(modelId.charCodeAt(i))
+  for (const id of ids) mix(id)
+  return `${a.toString(16).padStart(8, "0")}${b.toString(16).padStart(8, "0")}.bin`
+}
+
+const promptCacheDir = async () =>
+  (await navigator.storage.getDirectory()).getDirectoryHandle(
+    PROMPT_CACHE_DIR,
+    { create: true }
+  )
+
+/** GPUBufferUsage.MAP_READ | COPY_DST. */
+const READBACK_USAGE = 0x1 | 0x8
+
+/**
+ * Copies a cache tensor (keys/values cut to `length`) off the GPU. The copy
+ * is queued before this returns, so the tensor can change or go after.
+ */
+function readCacheTensor(tensor: Tensor, length?: number) {
+  const source = tensor.ort_tensor.gpuBuffer
+  const device = gpu.device
+  if (!source || !device) throw new Error("The model's cache isn't on the GPU.")
+  const dims = [...tensor.dims]
+  const bytes = tensor.ort_tensor.type === "float16" ? 2 : 4
+  let target = dims
+  let pieces = 1
+  let from = dims.reduce((x, y) => x * y, 1) * bytes
+  let to = from
+  if (length !== undefined) {
+    const [batch, heads, tokens, size] = dims
+    target = [batch, heads, length, size]
+    pieces = batch * heads
+    from = tokens * size * bytes
+    to = length * size * bytes
+  }
+  const staging = device.createBuffer({
+    size: pieces * to,
+    usage: READBACK_USAGE
+  })
+  const encoder = device.createCommandEncoder()
+  for (let i = 0; i < pieces; i++) {
+    encoder.copyBufferToBuffer(source, i * from, staging, i * to, to)
+  }
+  device.queue.submit([encoder.finish()])
+  const data = staging.mapAsync(0x1).then(() => {
+    const copy = new Uint8Array(staging.getMappedRange()).slice()
+    staging.unmap()
+    staging.destroy()
+    return copy
+  })
+  return { type: tensor.ort_tensor.type, dims: target, data }
+}
+
+/**
+ * Saves a cache's first `ids.length` tokens to disk: the keys/values from
+ * the cache and the other states from `at`, the checkpoint at that length.
+ */
+function saveToDisk(
+  modelId: string,
+  ids: Array<number>,
+  cache: Cache,
+  at: Checkpoint
+) {
+  const key = promptCacheKey(modelId, ids)
+  if (onDisk.has(key)) return
+  onDisk.add(key)
+  let reads: Array<{ name: string } & ReturnType<typeof readCacheTensor>>
+  try {
+    reads = cacheTensors(cache).map(([name, tensor]) => ({
+      name,
+      ...(isKeysValues(name)
+        ? readCacheTensor(tensor, ids.length)
+        : readCacheTensor(at.states[name]))
+    }))
+  } catch {
+    onDisk.delete(key)
+    return
+  }
+  void (async () => {
+    const datas = await Promise.all(reads.map((r) => r.data))
+    let offset = 0
+    const tensors = reads.map((r, i) => {
+      const entry = { name: r.name, type: r.type, dims: r.dims, offset }
+      offset += datas[i].byteLength
+      return { ...entry, size: datas[i].byteLength }
+    })
+    const header = new TextEncoder().encode(
+      JSON.stringify({ version: PROMPT_CACHE_VERSION, modelId, ids, tensors })
+    )
+    // The data starts 4-byte aligned, for uploading straight from the file.
+    const dataStart = Math.ceil((8 + header.byteLength) / 4) * 4
+    const prefix = new Uint8Array(dataStart)
+    const view = new DataView(prefix.buffer)
+    view.setUint32(0, PROMPT_CACHE_MAGIC, true)
+    view.setUint32(4, header.byteLength, true)
+    prefix.set(header, 8)
+    const dir = await promptCacheDir()
+    const handle = await openSync(
+      await dir.getFileHandle(key, { create: true })
+    )
+    try {
+      handle.truncate(0)
+      handle.write(prefix, { at: 0 })
+      for (const [i, data] of datas.entries()) {
+        handle.write(data, { at: dataStart + tensors[i].offset })
+      }
+      handle.flush()
+    } finally {
+      handle.close()
+    }
+    if (import.meta.env.DEV) {
+      ctx.postMessage({
+        type: "log",
+        text: `[cache] saved ${ids.length} tokens to disk (${Math.round((dataStart + offset) / 1e6)} MB)`
+      })
+    }
+    await prunePromptCache(dir)
+  })().catch(() => onDisk.delete(key))
+}
+
+/** Deletes the oldest saved prompt caches past the disk budget. */
+async function prunePromptCache(dir: FileSystemDirectoryHandle) {
+  const files: Array<File & { key: string }> = []
+  for await (const [name, entry] of (
+    dir as unknown as {
+      entries: () => AsyncIterable<[string, FileSystemHandle]>
+    }
+  ).entries()) {
+    if (entry.kind !== "file") continue
+    const file = await (entry as FileSystemFileHandle).getFile()
+    files.push(Object.assign(file, { key: name }))
+  }
+  files.sort((x, y) => y.lastModified - x.lastModified)
+  let total = 0
+  for (const file of files) {
+    total += file.size
+    if (total > PROMPT_CACHE_BYTES) {
+      await dir.removeEntry(file.key).catch(() => undefined)
+      onDisk.delete(file.key)
+    }
+  }
+}
+
+/**
+ * Loads the saved cache for exactly these tokens onto the GPU, or null if
+ * there's none (or it's for another model or format).
+ */
+async function loadFromDisk(
+  tf: TransformersModule,
+  modelId: string,
+  ids: Array<number>
+): Promise<Cache | null> {
+  const key = promptCacheKey(modelId, ids)
+  const device = gpu.device
+  if (!device) return null
+  let buffer: ArrayBuffer
+  try {
+    const dir = await promptCacheDir()
+    buffer = await (
+      await (await dir.getFileHandle(key)).getFile()
+    ).arrayBuffer()
+  } catch {
+    return null
+  }
+  const view = new DataView(buffer)
+  if (buffer.byteLength < 8 || view.getUint32(0, true) !== PROMPT_CACHE_MAGIC) {
+    return null
+  }
+  const headerLength = view.getUint32(4, true)
+  const header = JSON.parse(
+    new TextDecoder().decode(new Uint8Array(buffer, 8, headerLength))
+  ) as {
+    version: number
+    modelId: string
+    ids: Array<number>
+    tensors: Array<{
+      name: string
+      type: string
+      dims: Array<number>
+      offset: number
+      size: number
+    }>
+  }
+  const same =
+    header.version === PROMPT_CACHE_VERSION &&
+    header.modelId === modelId &&
+    header.ids.length === ids.length &&
+    header.ids.every((id, i) => id === ids[i])
+  if (!same) return null
+  const dataStart = Math.ceil((8 + headerLength) / 4) * 4
+  const entries: Record<string, Tensor> = {}
+  for (const t of header.tensors) {
+    const gpuBuffer = device.createBuffer({
+      size: t.size,
+      usage: CACHE_BUFFER_USAGE
+    })
+    unpooledBuffers.add(gpuBuffer)
+    device.queue.writeBuffer(
+      gpuBuffer,
+      0,
+      new Uint8Array(buffer, dataStart + t.offset, t.size)
+    )
+    entries[t.name] = gpuTensor(tf, gpuBuffer, t.type, t.dims)
+  }
+  onDisk.add(key)
+  return new tf.DynamicCache(entries)
+}
+
 /**
  * Reads the prompt from token `from` up to its last token into the cache, a
  * step at a time; generate() reads the last token and replies. Steps also
@@ -1372,7 +1622,7 @@ async function generate(
   let readStarted = performance.now()
   // What the last run left in the cache that this prompt starts with.
   const systemEnd = systemLength(tokenizer, chat, tools, thinking, ids)
-  const reused = reuseSaved(tf, loaded.modelId, ids, systemEnd)
+  let reused = reuseSaved(tf, loaded.modelId, ids, systemEnd)
   const timings = (): RunTimings => ({
     inputTokens: ids.length,
     cachedTokens: reused.cached,
@@ -1411,6 +1661,33 @@ async function generate(
       if (text) ctx.postMessage({ type: "token", id, text })
     }
   })
+  // Prompt reading starts here, for its speed (the model is loaded).
+  readStarted = performance.now()
+  // Nothing in memory covers the system prompt and tools: try the disk.
+  const wantsSystem = reused.cached < systemEnd && systemEnd >= MIN_DISK_TOKENS
+  const fromDisk = wantsSystem
+    ? await loadFromDisk(tf, loaded.modelId, ids.slice(0, systemEnd)).catch(
+        () => null
+      )
+    : null
+  if (fromDisk) {
+    reused.checkpoints.forEach(disposeCheckpoint)
+    await reused.cache?.dispose().catch(() => undefined)
+    reused = {
+      cache: fromDisk,
+      cached: systemEnd,
+      checkpoints: [checkpoint(tf, fromDisk, systemEnd)],
+      common: Math.max(reused.common, systemEnd)
+    }
+    if (import.meta.env.DEV) {
+      ctx.postMessage({
+        type: "log",
+        text: `[cache] loaded ${systemEnd} tokens from disk in ${Math.round(performance.now() - readStarted)} ms`
+      })
+    }
+  }
+  // This run reads the system prompt and tools from scratch: save them.
+  const savesSystem = wantsSystem && !fromDisk
   let cache: Cache | null = reused.cache
   const checkpoints = reused.checkpoints
   /** Every token the model has read, prompt and reply, once it's replied. */
@@ -1421,8 +1698,6 @@ async function generate(
       text: `[cache] ${reused.cached} of ${ids.length} prompt tokens already read`
     })
   }
-  // Prompt reading starts here, for its speed (the model is loaded).
-  readStarted = performance.now()
   try {
     const addCheckpoint = (at: Cache, length: number) => {
       checkpoints.push(checkpoint(tf, at, length))
@@ -1489,6 +1764,10 @@ async function generate(
     // (the last token generated isn't read until the next step).
     if (cache && current === loaded) {
       const length = cache.get_seq_length()
+      const atSystem = checkpoints.find((c) => c.length === systemEnd)
+      if (savesSystem && atSystem && length >= systemEnd) {
+        saveToDisk(loaded.modelId, ids.slice(0, systemEnd), cache, atSystem)
+      }
       keepSaved(tf, {
         modelId: loaded.modelId,
         ids: sequence.slice(0, length),
@@ -1530,7 +1809,10 @@ ctx.onmessage = ({ data }) => {
   } else if (data.type === "generate") {
     generate(data.id, data.chat, data.tools, data.thinking, data.sampling)
       .then((stats) => ctx.postMessage({ type: "done", id: data.id, stats }))
-      .catch((error: unknown) =>
+      .catch((error: unknown) => {
+        if (import.meta.env.DEV && error instanceof Error) {
+          ctx.postMessage({ type: "log", text: `[error] ${error.stack}` })
+        }
         ctx.postMessage({
           type: "error",
           id: data.id,
@@ -1539,7 +1821,7 @@ ctx.onmessage = ({ data }) => {
               ? error.message
               : `${errorMessage(error)} (${gpuReport()})`
         })
-      )
+      })
   } else {
     running.get(data.id)?.interrupt()
   }
