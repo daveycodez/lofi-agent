@@ -1,7 +1,9 @@
 import { clampReasoningLevel, supportedReasoningLevels } from "@tanstack/ai"
 import type { ModelReasoning, ReasoningLevel } from "@tanstack/ai"
 import {
+  hasWebGpu,
   modelStatus,
+  runsWithoutWebGpu,
   TRANSFORMERS_JS_MODEL_REASONING,
   transformersJsText
 } from "@tanstack-ai-browser/transformers-js"
@@ -27,6 +29,7 @@ export type ModelId =
   | "lfm2.5-thinking"
   | "lfm2.5-web"
   | "lfm2.5-thinking-web"
+  | "lfm2-tool"
 
 /** Where the app reaches apfel on this Mac: its default address. */
 const APFEL_URL = APFEL_BASE_URL
@@ -44,6 +47,8 @@ const local = (
   adapter: transformersJsText(model, { debug: import.meta.env.DEV }),
   /** The model it downloads, for its loading status. */
   download: model as string | null,
+  /** No CPU weights: it can't run where there's no WebGPU. */
+  needsWebGpu: !runsWithoutWebGpu(model),
   reasoning: TRANSFORMERS_JS_MODEL_REASONING[model] as
     ModelReasoning | undefined
 })
@@ -57,6 +62,7 @@ export const MODELS = [
     adapter: apfelText(APPLE_MODEL, { baseURL: APFEL_URL }),
     /** Runs outside the browser: nothing to download. */
     download: null,
+    needsWebGpu: false,
     reasoning: undefined
   },
   local("gemma-4-e4b", "Gemma 4 E4B", "onnx-community/gemma-4-E4B-it-ONNX"),
@@ -73,13 +79,15 @@ export const MODELS = [
     "lfm2.5-thinking-web",
     "LFM2.5 1.2B Thinking Web",
     "daveycodez/LFM2.5-1.2B-Thinking-Web"
-  )
+  ),
+  local("lfm2-tool", "LFM2 1.2B Tool", "onnx-community/LFM2-1.2B-Tool-ONNX")
 ] satisfies Array<{
   id: ModelId
   name: string
   icon: string
   adapter: ReturnType<typeof transformersJsText> | ReturnType<typeof apfelText>
   download: string | null
+  needsWebGpu: boolean
   reasoning: ModelReasoning | undefined
 }>
 
@@ -161,6 +169,13 @@ export function effortButtonLabel(id: ModelId, level: ReasoningLevel) {
  */
 export const DEFAULT_MODEL: ModelId = "lfm3-web"
 
+/**
+ * The model to start with where there's no WebGPU (Firefox on Android, for
+ * one), and models run on the CPU: LFM2 1.2B Tool, which has CPU weights
+ * ONNX Runtime's WebAssembly build can run, and is made for tool calls.
+ */
+export const DEFAULT_CPU_MODEL: ModelId = "lfm2-tool"
+
 export const modelInfo = (id: ModelId) =>
   MODELS.find((m) => m.id === id) ??
   MODELS.find((m) => m.id === DEFAULT_MODEL) ??
@@ -180,16 +195,42 @@ export const useIsApplePlatform = () =>
   useSyncExternalStore(noopSubscribe, isApplePlatform, () => false)
 
 /**
- * The pick, if this device offers it: the Apple model only on Apple
- * devices, and a model no longer offered falls back to the default.
+ * Whether models run on WebGPU here. Until the GPU check is back, what
+ * `navigator` says (Firefox on Android has no `navigator.gpu`); on the
+ * server, yes. Without it, only models with CPU weights are offered.
  */
-export const offered = (id: ModelId, isApple: boolean): ModelId =>
-  isModelId(id) && (id !== "apple-fm" || isApple) ? id : DEFAULT_MODEL
+const webGpu = createStore(
+  typeof navigator === "undefined" || "gpu" in navigator
+)
+if (typeof window !== "undefined") void hasWebGpu().then(webGpu.set)
+
+export const hasWebGpuNow = webGpu.get
+
+export const useHasWebGpu = () =>
+  useSyncExternalStore(webGpu.subscribe, webGpu.get, () => true)
+
+/** What this device can run: Apple's model on Apple devices, CPU models without WebGPU. */
+const canRun = (id: ModelId, isApple: boolean, hasGpu: boolean) =>
+  isModelId(id) &&
+  (id !== "apple-fm" || isApple) &&
+  (hasGpu || !modelInfo(id).needsWebGpu)
+
+/**
+ * The pick, if this device can run it, else the default: LFM3 Web, or
+ * LFM2 1.2B Tool where there's no WebGPU.
+ */
+export const offered = (
+  id: ModelId,
+  isApple: boolean,
+  hasGpu: boolean
+): ModelId =>
+  canRun(id, isApple, hasGpu) ? id : hasGpu ? DEFAULT_MODEL : DEFAULT_CPU_MODEL
 
 /** Models to offer in the picker on this device. */
 export function useModels() {
   const isApple = useIsApplePlatform()
-  return MODELS.filter((m) => m.id !== "apple-fm" || isApple)
+  const hasGpu = useHasWebGpu()
+  return MODELS.filter((m) => canRun(m.id, isApple, hasGpu))
 }
 
 const IDLE = createStore<ModelStatus>({ state: "idle" })

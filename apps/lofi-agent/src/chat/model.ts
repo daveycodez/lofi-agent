@@ -10,8 +10,10 @@ import type { ReasoningLevel } from "@tanstack/ai"
 import { setting } from "#/lib/settings"
 import {
   DEFAULT_MODEL,
+  hasWebGpuNow,
   isApplePlatform,
   offered,
+  useHasWebGpu,
   useIsApplePlatform
 } from "./models"
 import type { ModelId } from "./models"
@@ -25,12 +27,12 @@ const modelSetting = setting("model", DEFAULT_MODEL)
  */
 const effortSetting = setting("effort", "high")
 
-/** The picked model, if this device offers it, else the default. */
+/** The picked model, if this device can run it, else the default for it. */
 export const selectedModel = () =>
-  offered(modelSetting.get(), isApplePlatform())
+  offered(modelSetting.get(), isApplePlatform(), hasWebGpuNow())
 
 export const useSelectedModel = () =>
-  offered(modelSetting.use(), useIsApplePlatform())
+  offered(modelSetting.use(), useIsApplePlatform(), useHasWebGpu())
 
 export const setSelectedModel = (id: ModelId) => modelSetting.set(id)
 
