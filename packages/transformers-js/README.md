@@ -32,6 +32,7 @@ const stream = chat({
 | `LiquidAI/LFM2.5-1.2B-Instruct-ONNX`  | none                       | yes            |
 | `LiquidAI/LFM2.5-1.2B-Thinking-ONNX`  | always                     | yes            |
 | `onnx-community/LFM2-1.2B-Tool-ONNX`  | none                       | yes            |
+| `LiquidAI/LFM2.5-350M-ONNX`           | none                       | yes            |
 
 Any other Hugging Face ONNX model works too, given how it writes tool calls and thinks: `transformersJsText("owner/model", { toolFormat: "gemma4" })`, with `"lfm2"`, `"lfm3"` or `"gemma4"`. Pin a revision with `"owner/model@commit"`. Its `q4f16` weights load by default; `dtype: "q4"` loads 4-bit weights with fp32 activations instead. `contextLength` sets how many tokens a chat may hold (8,192 by default). Weights split into several files, and builds split into an embedding, a decoder and vision or audio encoders, load as they are.
 

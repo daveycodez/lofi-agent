@@ -184,6 +184,22 @@ const LFM2_1_2B_TOOL = {
 } as const satisfies TransformersJsModelMeta
 
 /**
+ * Liquid AI's LFM2.5 350M (instruction-tuned): the smallest and quickest,
+ * for short answers, extraction and tool calls rather than knowledge or
+ * code. Its graph already computes logits for the last token only.
+ */
+const LFM2_5_350M = {
+  name: "LiquidAI/LFM2.5-350M-ONNX",
+  revision: "d11593fd9eb408e322667926656598896c2d5ff9",
+  supports: TOOLS,
+  size: "350m",
+  context: CONTEXT,
+  toolFormat: "lfm2",
+  sampling: LFM2_5_SAMPLING,
+  cpu: true
+} as const satisfies TransformersJsModelMeta
+
+/**
  * LiquidAI's LFM2.5 re-exported with a `num_logits_to_keep` input, so
  * reading a prompt computes logits for its last token only (an 800-token
  * prompt otherwise needs 210 MB for them, which crashed iPhone Safari).
@@ -219,7 +235,8 @@ export const TRANSFORMERS_JS_TEXT_MODELS = [
   LFM2_5_1_2B_THINKING_WEB.name,
   LFM2_5_1_2B.name,
   LFM2_5_1_2B_THINKING.name,
-  LFM2_1_2B_TOOL.name
+  LFM2_1_2B_TOOL.name,
+  LFM2_5_350M.name
 ] as const
 
 /** A model this package lists. */
@@ -240,7 +257,8 @@ export const TRANSFORMERS_JS_MODEL_META: Readonly<
   [LFM2_5_1_2B_THINKING_WEB.name]: LFM2_5_1_2B_THINKING_WEB,
   [LFM2_5_1_2B.name]: LFM2_5_1_2B,
   [LFM2_5_1_2B_THINKING.name]: LFM2_5_1_2B_THINKING,
-  [LFM2_1_2B_TOOL.name]: LFM2_1_2B_TOOL
+  [LFM2_1_2B_TOOL.name]: LFM2_1_2B_TOOL,
+  [LFM2_5_350M.name]: LFM2_5_350M
 }
 
 const TRANSFORMERS_JS_REASONING = {
