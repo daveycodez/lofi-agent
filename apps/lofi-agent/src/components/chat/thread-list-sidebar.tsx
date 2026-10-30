@@ -421,7 +421,8 @@ function ThreadListItem({
           size="sm"
           variant="ghost"
           aria-label="Session actions"
-          className="absolute end-1 top-1/2 z-10 -translate-y-1/2 text-muted hover:text-foreground aria-expanded:text-foreground"
+          // No background of its own: hovering it hovers the whole row.
+          className="absolute end-1 top-1/2 z-10 -translate-y-1/2 text-muted [--button-bg-hover:transparent] [--button-bg-pressed:transparent] hover:text-foreground aria-expanded:text-foreground"
         >
           <Ellipsis />
         </Button>
