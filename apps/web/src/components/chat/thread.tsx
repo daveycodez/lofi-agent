@@ -344,6 +344,19 @@ export function Thread({
     void sendMessage(text)
   }
 
+  /**
+   * Replaces the chat from message `index` on with `text`, sent again. Works
+   * mid-reply or mid-download: the current run stops first.
+   */
+  const resend = (index: number, text: string) => {
+    if (isLoading) stop()
+    onSend()
+    touchThread(threadId, text)
+    setAtBottom(true)
+    setMessages(messages.slice(0, index))
+    void sendMessage(text, { whenBusy: "interrupt" })
+  }
+
   const lastIsUser = messages.at(-1)?.role === "user"
 
   const composer = (
@@ -407,14 +420,11 @@ export function Thread({
                   <UserMessage
                     key={message.id}
                     text={messageText(message)}
-                    isRunning={isLoading}
-                    onEdit={(text) => {
-                      setMessages(messages.slice(0, index))
-                      send(text)
-                    }}
-                    onDelete={() =>
+                    onEdit={(text) => resend(index, text)}
+                    onDelete={() => {
+                      if (isLoading) stop()
                       setMessages(messages.filter((m) => m.id !== message.id))
-                    }
+                    }}
                   />
                 )
               }
@@ -634,12 +644,10 @@ function Composer({
 
 function UserMessage({
   text,
-  isRunning,
   onEdit,
   onDelete
 }: {
   text: string
-  isRunning: boolean
   onEdit: (text: string) => void
   onDelete: () => void
 }) {
@@ -664,13 +672,11 @@ function UserMessage({
 
   return (
     <div className="group flex items-end justify-end gap-2">
-      {!isRunning && (
-        <div>
-          <IconAction label="Edit message" onPress={() => setIsEditing(true)}>
-            <Pencil />
-          </IconAction>
-        </div>
-      )}
+      <div>
+        <IconAction label="Edit message" onPress={() => setIsEditing(true)}>
+          <Pencil />
+        </IconAction>
+      </div>
       <div className="max-w-[80%] rounded-2xl bg-default px-4 py-2 wrap-break-word whitespace-pre-wrap text-default-foreground">
         {text}
       </div>
