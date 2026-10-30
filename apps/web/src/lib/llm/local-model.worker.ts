@@ -936,6 +936,12 @@ function keepSaved(entry: SavedCache) {
     const dropped = savedCaches.pop()
     if (!dropped) break
     tokens -= dropped.ids.length
+    if (import.meta.env.DEV) {
+      ctx.postMessage({
+        type: "log",
+        text: `[cache] dropped a ${dropped.ids.length}-token cache`
+      })
+    }
     void disposeSaved(dropped)
   }
 }
@@ -950,33 +956,63 @@ function checkpoint(tf: TransformersModule, cache: Cache, length: number) {
 }
 
 /**
- * Takes the kept cache that saves the most reading for a prompt: as is when
- * the prompt continues what it read, cut back to the latest checkpoint the
- * prompt matches otherwise. None if no cache helps; the others stay kept.
- * Always leaves at least the prompt's last token to read. `common` is how
- * far the prompt matched a cache.
+ * Tokens a match must reach past the system prompt and tools to count as
+ * the same chat: role markers and the like are shared by every chat.
+ */
+const SAME_CHAT_TOKENS = 16
+
+/** A checkpoint's states, copied, for another cache to own. */
+const copyCheckpoint = (tf: TransformersModule, c: Checkpoint) => ({
+  length: c.length,
+  states: Object.fromEntries(
+    Object.entries(c.states).map(([name, t]) => [name, copyCacheTensor(tf, t)])
+  )
+})
+
+/**
+ * The kept cache that saves the most reading for a prompt, set up to read
+ * the rest. A cache the prompt continues is taken as is, and one it matches
+ * into the same chat is taken and cut back to the latest checkpoint it
+ * matches. A cache it matches only through the system prompt and tools
+ * (`systemEnd` tokens; another chat, or another run of a sub-agent) stays
+ * kept for its own chat, and that start is copied out of it instead. None
+ * if no cache helps. Always leaves at least the prompt's last token to
+ * read. `common` is how far the prompt matched a cache.
  */
 function reuseSaved(
   tf: TransformersModule,
   modelId: string,
-  ids: Array<number>
+  ids: Array<number>,
+  systemEnd: number
 ) {
   let best: { index: number; usable: number; common: number } | null = null
   let longestMatch = 0
+  const seen: Array<string> = []
   for (const [index, entry] of savedCaches.entries()) {
     if (entry.modelId !== modelId) continue
     const limit = Math.min(entry.ids.length, ids.length - 1)
     let common = 0
     while (common < limit && entry.ids[common] === ids[common]) common++
+    if (import.meta.env.DEV) {
+      seen.push(
+        `${entry.ids.length} tokens, matches ${common}, checkpoints ${entry.checkpoints.map((c) => c.length).join("/") || "none"}`
+      )
+    }
     longestMatch = Math.max(longestMatch, common)
     const usable =
       entry.ids.length === common
         ? common
         : (entry.checkpoints.filter((c) => c.length <= common).at(-1)?.length ??
           0)
-    if (usable > 0 && (!best || usable > best.usable)) {
+    if (usable >= SAME_CHAT_TOKENS && (!best || usable > best.usable)) {
       best = { index, usable, common }
     }
+  }
+  if (import.meta.env.DEV) {
+    ctx.postMessage({
+      type: "log",
+      text: `[cache] kept caches for a ${ids.length}-token prompt (system and tools ${systemEnd}): ${seen.join("; ") || "none"}`
+    })
   }
   if (!best) {
     return {
@@ -986,28 +1022,90 @@ function reuseSaved(
       common: longestMatch
     }
   }
-  const [entry] = savedCaches.splice(best.index, 1)
   const { common } = best
-  const checkpoints = entry.checkpoints.filter((c) => c.length <= common)
-  entry.checkpoints.filter((c) => c.length > common).forEach(disposeCheckpoint)
+  const entry = savedCaches[best.index]
   if (entry.ids.length === common) {
-    return { cache: entry.cache, cached: common, checkpoints, common }
+    savedCaches.splice(best.index, 1)
+    return {
+      cache: entry.cache,
+      cached: common,
+      checkpoints: entry.checkpoints,
+      common
+    }
   }
-  const back = checkpoints[checkpoints.length - 1]
+  const back = entry.checkpoints.filter((c) => c.length <= common).at(-1)
+  if (!back) throw new Error("No checkpoint to go back to.")
+  const keysValues = (tensor: Tensor) =>
+    copyCacheTensor(tf, tensor, back.length)
+  if (back.length > systemEnd + SAME_CHAT_TOKENS) {
+    // The same chat: take its cache, cut back.
+    savedCaches.splice(best.index, 1)
+    const checkpoints = entry.checkpoints.filter((c) => c.length <= common)
+    entry.checkpoints
+      .filter((c) => c.length > common)
+      .forEach(disposeCheckpoint)
+    const entries: Record<string, Tensor> = {}
+    for (const [name, tensor] of cacheTensors(entry.cache)) {
+      entries[name] = isKeysValues(name)
+        ? keysValues(tensor)
+        : copyCacheTensor(tf, back.states[name])
+    }
+    entry.cache.update(entries)
+    return { cache: entry.cache, cached: back.length, checkpoints, common }
+  }
+  // Another chat with the same start: copy the start, leave its cache be.
   const entries: Record<string, Tensor> = {}
   for (const [name, tensor] of cacheTensors(entry.cache)) {
     entries[name] = isKeysValues(name)
-      ? copyCacheTensor(tf, tensor, back.length)
+      ? keysValues(tensor)
       : copyCacheTensor(tf, back.states[name])
   }
-  entry.cache.update(entries)
-  return { cache: entry.cache, cached: back.length, checkpoints, common }
+  return {
+    cache: new tf.DynamicCache(entries),
+    cached: back.length,
+    checkpoints: entry.checkpoints
+      .filter((c) => c.length <= back.length)
+      .map((c) => copyCheckpoint(tf, c)),
+    common
+  }
+}
+
+/**
+ * How many tokens the system prompt and tools take at the start of a
+ * prompt, or 0 if there are none or they can't be told apart.
+ */
+function systemLength(
+  tokenizer: Tokenizer,
+  chat: Array<ChatTurn>,
+  tools: Array<ToolSpec>,
+  thinking: boolean,
+  ids: Array<number>
+) {
+  const system = chat[0]?.role === "system" ? [chat[0]] : []
+  if (system.length === 0 && tools.length === 0) return 0
+  try {
+    const text = tokenizer.apply_chat_template(system, {
+      ...(tools.length > 0 && { tools }),
+      add_generation_prompt: false,
+      tokenize: false,
+      enable_thinking: thinking
+    })
+    const prefix = Array.from(
+      tokenizer(text, { add_special_tokens: false }).input_ids.data,
+      Number
+    )
+    const matches =
+      prefix.length < ids.length && prefix.every((t, i) => t === ids[i])
+    return matches ? prefix.length : 0
+  } catch {
+    return 0
+  }
 }
 
 /**
  * Reads the prompt from token `from` up to its last token into the cache, a
- * step at a time; generate() reads the last token and replies. A step ends
- * at `branch`, if given, and `onBranch` gets the cache there.
+ * step at a time; generate() reads the last token and replies. Steps also
+ * end at each of `stops`, where `onStop` gets the cache.
  */
 async function readPrompt(
   tf: TransformersModule,
@@ -1016,7 +1114,8 @@ async function readPrompt(
   from: number,
   start: Cache | null,
   stopping: StoppingCriteria,
-  branch: { at: number; onBranch: (cache: Cache) => void } | null
+  stops: Array<number>,
+  onStop: (cache: Cache, at: number) => void
 ) {
   const length = inputIds.dims[1]
   // At least one token is left for generate(), which skips what the cache
@@ -1027,7 +1126,8 @@ async function readPrompt(
   for (let at = from; at < end && !stopping.interrupted;) {
     step = nextPromptStep(step)
     let stop = Math.min(at + step, end)
-    if (branch && at < branch.at && stop > branch.at) stop = branch.at
+    const next = stops.find((s) => s > at && s < stop)
+    if (next !== undefined) stop = next
     const size = stop - at
     const began = performance.now()
     const outputs = await model.forward({
@@ -1047,7 +1147,7 @@ async function readPrompt(
     }
     if (cache) cache.update(entries)
     else cache = new tf.DynamicCache(entries)
-    if (branch && stop === branch.at) branch.onBranch(cache)
+    if (stops.includes(stop)) onStop(cache, stop)
     nudgeGarbageCollector()
     logMemory(
       `prompt read ${stop} of ${length} tokens (${size} in ${Math.round(ms)} ms)`
@@ -1107,7 +1207,8 @@ async function generate(
   let firstToken: number | null = null
   let lastToken = 0
   // What the last run left in the cache that this prompt starts with.
-  const reused = reuseSaved(tf, loaded.modelId, ids)
+  const systemEnd = systemLength(tokenizer, chat, tools, thinking, ids)
+  const reused = reuseSaved(tf, loaded.modelId, ids, systemEnd)
   const timings = (): RunTimings => ({
     inputTokens: ids.length,
     cachedTokens: reused.cached,
@@ -1165,13 +1266,15 @@ async function generate(
         checkpoints.splice(1, 1).forEach(disposeCheckpoint)
       }
     }
-    // Where this prompt stopped matching the cache: the next prompt may
-    // match up to there too.
-    const branchAt = reused.common
-    const branch =
-      branchAt > reused.cached && branchAt < ids.length - 1
-        ? { at: branchAt, onBranch: (at: Cache) => addCheckpoint(at, branchAt) }
-        : null
+    // Checkpoints on the way: where the system prompt and tools end, which
+    // the next chat or sub-agent run repeats, and where this prompt stopped
+    // matching a kept cache past them, which the next prompt may match too.
+    const stops = [
+      systemEnd,
+      reused.common > systemEnd + SAME_CHAT_TOKENS ? reused.common : 0
+    ]
+      .filter((at) => at > reused.cached && at < ids.length - 1)
+      .sort((a, b) => a - b)
     cache = await unlessGpuLost(
       readPrompt(
         tf,
@@ -1180,7 +1283,8 @@ async function generate(
         reused.cached,
         cache,
         stopping,
-        branch
+        stops,
+        addCheckpoint
       )
     )
     if (stopping.interrupted) return timings()
