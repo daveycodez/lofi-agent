@@ -1,16 +1,15 @@
-/** The Settings modal: web search, and a custom system prompt for every model. */
+/** The Settings modal: a custom system prompt for every model. */
 import {
   Button,
   Description,
   Label,
   Modal,
-  Switch,
   TextArea,
   TextField
 } from "@heroui/react"
 import { useState } from "react"
 
-import { systemPromptStore, webSearchEnabledStore } from "#/lib/settings"
+import { systemPromptStore } from "#/lib/settings"
 
 export function SettingsModal({
   isOpen,
@@ -36,7 +35,6 @@ export function SettingsModal({
  * from the saved values.
  */
 function SettingsForm({ onDone }: { onDone: () => void }) {
-  const [webSearch, setWebSearch] = useState(webSearchEnabledStore.get)
   const [systemPrompt, setSystemPrompt] = useState(systemPromptStore.get)
   return (
     <>
@@ -45,20 +43,6 @@ function SettingsForm({ onDone }: { onDone: () => void }) {
         <Modal.Heading>Settings</Modal.Heading>
       </Modal.Header>
       <Modal.Body className="flex flex-col gap-6">
-        <Switch isSelected={webSearch} onChange={setWebSearch}>
-          <Switch.Content className="w-full justify-between">
-            <div className="flex flex-col gap-0.5">
-              <Label>Web Search</Label>
-              <Description>
-                Lets models search the web when a question needs it. Tries Exa,
-                then Parallel, then Firecrawl.
-              </Description>
-            </div>
-            <Switch.Control>
-              <Switch.Thumb />
-            </Switch.Control>
-          </Switch.Content>
-        </Switch>
         <TextField
           variant="secondary"
           value={systemPrompt}
@@ -71,8 +55,8 @@ function SettingsForm({ onDone }: { onDone: () => void }) {
             className="resize-y"
           />
           <Description>
-            Sent to every model at the start of each session, after today&apos;s
-            date. Kept in this browser only.
+            Sent to every model at the start of each session, before
+            today&apos;s date. Kept in this browser only.
           </Description>
         </TextField>
       </Modal.Body>
@@ -82,7 +66,6 @@ function SettingsForm({ onDone }: { onDone: () => void }) {
         </Button>
         <Button
           onPress={() => {
-            webSearchEnabledStore.set(webSearch)
             systemPromptStore.set(systemPrompt)
             onDone()
           }}

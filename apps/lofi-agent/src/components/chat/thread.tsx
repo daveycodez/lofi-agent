@@ -35,6 +35,7 @@ import {
 } from "@heroui/react"
 import type { UIMessage } from "@tanstack/ai"
 import { useChat } from "@tanstack/ai-react"
+import { splitThinking } from "@tanstack-ai-browser/transformers-js"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { ComponentProps, ReactNode } from "react"
 
@@ -43,14 +44,12 @@ import { ModelSelect } from "#/components/chat/model-select"
 import { ReplyStatsLine } from "#/components/chat/reply-stats"
 import { SourceList } from "#/components/chat/sources"
 import { useDictation } from "#/lib/dictation"
-import { checkMcpServers, useMcpTools } from "#/lib/mcp"
+import { browserChatConnection } from "#/lib/llm/chat"
+import { checkMcpServers } from "#/lib/mcp"
 import { parseSources } from "#/lib/sources"
-import { useWebSearchTools } from "#/lib/web-search"
 import type { Source } from "#/lib/sources"
-import { splitThinking } from "#/lib/thinking"
 import {
   canThink,
-  routedConnection,
   thinkingStore,
   useCurrentModel,
   useModelStatus
@@ -271,14 +270,6 @@ export function Thread({
   /** Called before each send (used to put the thread in the URL). */
   onSend: () => void
 }) {
-  // Built-in web search first: small models tend to pick the first tool that
-  // might fit. useChat runs these tools in the browser when called.
-  const webSearchTools = useWebSearchTools()
-  const mcpTools = useMcpTools()
-  const tools = useMemo(() => {
-    const names = new Set<string>(webSearchTools.map((t) => t.name))
-    return [...webSearchTools, ...mcpTools.filter((t) => !names.has(t.name))]
-  }, [webSearchTools, mcpTools])
   const {
     messages,
     sendMessage,
@@ -289,10 +280,10 @@ export function Thread({
     reload,
     error
   } = useChat({
-    connection: routedConnection,
+    // Replies run in the browser, with the MCP servers' tools.
+    connection: browserChatConnection,
     threadId,
-    persistence: chatPersistence,
-    tools
+    persistence: chatPersistence
   })
   // Connect to the user's MCP servers so their tools are ready.
   useEffect(checkMcpServers, [])

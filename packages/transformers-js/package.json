@@ -1,5 +1,5 @@
 {
-  "name": "@daveycodez/tanstack-ai-browser",
+  "name": "@tanstack-ai-browser/transformers-js",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -14,7 +14,12 @@
     "./package.json": "./package.json"
   },
   "nx": {
-    "name": "tanstack-ai-browser"
+    "name": "transformers-js"
   },
-  "dependencies": {}
+  "peerDependencies": {
+    "@tanstack/ai": "^1.0.0"
+  },
+  "devDependencies": {
+    "@tanstack/ai": "1.0.0"
+  }
 }

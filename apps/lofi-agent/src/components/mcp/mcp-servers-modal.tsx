@@ -1,10 +1,13 @@
 /**
- * The MCP servers modal: the user's own servers. Add one by URL, see whether
- * the browser can reach it and which tools it offers, turn it off, or remove
- * it.
+ * The MCP servers modal: the built-in Exa server, then the user's own. Add
+ * one by URL, see whether the browser can reach it and which tools it
+ * offers, turn it off, or remove it. Built-in servers can't be removed, and
+ * take an optional key.
  */
 import ArrowRotateRight from "@gravity-ui/icons/ArrowRotateRight"
+import Plus from "@gravity-ui/icons/Plus"
 import TrashBin from "@gravity-ui/icons/TrashBin"
+import Xmark from "@gravity-ui/icons/Xmark"
 import {
   Button,
   Chip,
@@ -19,7 +22,7 @@ import {
   TextField,
   Tooltip
 } from "@heroui/react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import {
   addMcpServer,
@@ -28,6 +31,7 @@ import {
   hasMcpServer,
   mcpStatusStore,
   removeMcpServer,
+  setBuiltInMcpToken,
   setMcpServerEnabled,
   useMcpServers
 } from "#/lib/mcp"
@@ -66,9 +70,9 @@ function McpServersSection() {
   return (
     <section className="flex flex-col gap-4">
       <p className="text-sm text-muted">
-        Give the model tools from remote MCP servers. Your browser connects to
-        each server directly, so the server has to allow connections from this
-        site.
+        Give the model tools from remote MCP servers. Exa&apos;s web search
+        comes built in. Your browser connects to each server directly, so the
+        server has to allow connections from this site.
       </p>
       {servers.length > 0 && (
         <ul className="flex flex-col gap-2">
@@ -93,18 +97,20 @@ function McpServerRow({ server }: { server: McpServer }) {
           </p>
           <p className="truncate text-xs text-muted">{server.url}</p>
         </div>
-        <Tooltip delay={300}>
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label={`Remove ${server.name}`}
-            onPress={() => removeMcpServer(server.id)}
-          >
-            <TrashBin className="text-danger" />
-          </Button>
-          <Tooltip.Content>Remove server</Tooltip.Content>
-        </Tooltip>
+        {!server.builtIn && (
+          <Tooltip delay={300}>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label={`Remove ${server.name}`}
+              onPress={() => removeMcpServer(server.id)}
+            >
+              <TrashBin className="text-danger" />
+            </Button>
+            <Tooltip.Content>Remove server</Tooltip.Content>
+          </Tooltip>
+        )}
         <Switch
           aria-label={`Use ${server.name}`}
           isSelected={server.enabled}
@@ -125,6 +131,9 @@ function McpServerRow({ server }: { server: McpServer }) {
         </Switch>
       </div>
 
+      {server.builtIn && server.tokenLabel && (
+        <BuiltInKeyField server={server} label={server.tokenLabel} />
+      )}
       {server.enabled && status?.state === "checking" && (
         <p className="flex items-center gap-2 text-xs text-muted">
           <Spinner size="sm" color="current" />
@@ -167,6 +176,42 @@ function McpServerRow({ server }: { server: McpServer }) {
   )
 }
 
+/**
+ * The optional key of a built-in server, saved when the field loses focus
+ * or on Enter.
+ */
+function BuiltInKeyField({
+  server,
+  label
+}: {
+  server: McpServer
+  label: string
+}) {
+  const [value, setValue] = useState(server.token ?? "")
+  const save = () => {
+    if (value.trim() !== (server.token ?? "")) {
+      setBuiltInMcpToken(server.id, value)
+    }
+  }
+  return (
+    <TextField
+      type="password"
+      value={value}
+      onChange={setValue}
+      onBlur={save}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") save()
+      }}
+    >
+      <Label>{label}</Label>
+      <Input placeholder="Optional" autoComplete="off" />
+      <Description>
+        Works without one at a free rate limit. Kept in this browser only.
+      </Description>
+    </TextField>
+  )
+}
+
 /** Accepts https URLs, plus http for servers on this computer. */
 function urlError(value: string) {
   try {
@@ -185,10 +230,23 @@ function urlError(value: string) {
   }
 }
 
+type HeaderRow = { id: number; name: string; value: string }
+
+/** A header name a browser can send: letters, digits and a few symbols. */
+const headerNameError = (value: string) =>
+  !value.trim() || /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value.trim())
+    ? null
+    : "Letters, digits and dashes only."
+
 function AddMcpServerForm() {
   const [url, setUrl] = useState("")
   const [name, setName] = useState("")
-  const [token, setToken] = useState("")
+  const [headers, setHeaders] = useState<Array<HeaderRow>>([])
+  const nextId = useRef(0)
+  const update = (id: number, change: Partial<HeaderRow>) =>
+    setHeaders((rows) =>
+      rows.map((row) => (row.id === id ? { ...row, ...change } : row))
+    )
 
   return (
     <Form
@@ -196,10 +254,11 @@ function AddMcpServerForm() {
       onSubmit={(e) => {
         e.preventDefault()
         if (urlError(url)) return
-        addMcpServer({ url, name, token })
+        if (headers.some((h) => headerNameError(h.name))) return
+        addMcpServer({ url, name, headers })
         setUrl("")
         setName("")
-        setToken("")
+        setHeaders([])
       }}
     >
       <TextField
@@ -214,21 +273,71 @@ function AddMcpServerForm() {
         <Input placeholder="https://example.com/mcp" />
         <FieldError />
       </TextField>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <TextField variant="secondary" value={name} onChange={setName}>
-          <Label>Name</Label>
-          <Input placeholder="Optional" />
-        </TextField>
-        <TextField
-          type="password"
-          variant="secondary"
-          value={token}
-          onChange={setToken}
+      <TextField variant="secondary" value={name} onChange={setName}>
+        <Label>Name</Label>
+        <Input placeholder="Optional" />
+      </TextField>
+      <div className="flex flex-col gap-2">
+        <div>
+          <p className="text-sm font-medium text-foreground">Headers</p>
+          <p className="text-xs text-muted">
+            Optional, for servers that take a key, like{" "}
+            <code>Authorization: Bearer …</code>. Sent with every request and
+            kept in this browser only.
+          </p>
+        </div>
+        {headers.map((row) => (
+          <div key={row.id} className="flex items-start gap-2">
+            <TextField
+              aria-label="Header name"
+              variant="secondary"
+              value={row.name}
+              onChange={(value) => update(row.id, { name: value })}
+              validate={headerNameError}
+              className="min-w-0 flex-1"
+            >
+              <Input placeholder="Name" autoComplete="off" />
+              <FieldError />
+            </TextField>
+            <TextField
+              aria-label="Header value"
+              type="password"
+              variant="secondary"
+              value={row.value}
+              onChange={(value) => update(row.id, { value })}
+              className="min-w-0 flex-1"
+            >
+              <Input placeholder="Value" autoComplete="off" />
+            </TextField>
+            <Tooltip delay={300}>
+              <Button
+                isIconOnly
+                variant="ghost"
+                aria-label="Remove header"
+                onPress={() =>
+                  setHeaders((rows) => rows.filter((r) => r.id !== row.id))
+                }
+              >
+                <Xmark />
+              </Button>
+              <Tooltip.Content>Remove header</Tooltip.Content>
+            </Tooltip>
+          </div>
+        ))}
+        <Button
+          size="sm"
+          variant="ghost"
+          className="self-start"
+          onPress={() =>
+            setHeaders((rows) => [
+              ...rows,
+              { id: nextId.current++, name: "", value: "" }
+            ])
+          }
         >
-          <Label>Access token</Label>
-          <Input placeholder="Optional" autoComplete="off" />
-          <Description>Kept in this browser only.</Description>
-        </TextField>
+          <Plus />
+          Add header
+        </Button>
       </div>
       <Button type="submit" className="self-start">
         Add Server

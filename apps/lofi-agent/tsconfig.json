@@ -24,5 +24,13 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
-  }
+  },
+  "references": [
+    {
+      "path": "../../packages/transformers-js"
+    },
+    {
+      "path": "../../packages/apfel"
+    }
+  ]
 }

@@ -4,7 +4,10 @@
   "files": [],
   "references": [
     {
-      "path": "./packages/tanstack-ai-browser"
+      "path": "./packages/transformers-js"
+    },
+    {
+      "path": "./packages/apfel"
     }
   ],
   "compilerOptions": {}

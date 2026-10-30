@@ -1,14 +1,18 @@
-import type { ConnectConnectionAdapter } from "@tanstack/ai-react"
+import {
+  modelStatus,
+  transformersJs
+} from "@tanstack-ai-browser/transformers-js"
+import type {
+  ModelStatus,
+  RunStats,
+  Sampling,
+  TransformersJsOptions
+} from "@tanstack-ai-browser/transformers-js"
+import { apfel, isApfelAvailable } from "@tanstack-ai-browser/apfel"
 import { useSyncExternalStore } from "react"
 
-import {
-  APFEL_MODEL,
-  APFEL_URL,
-  apfelConnection
-} from "#/lib/llm/apfel-connection"
-import { startReply } from "#/lib/llm/generation-stats"
-import { localModelConnection, localModelStatus } from "#/lib/llm/local-model"
-import type { LocalModelStatus } from "#/lib/llm/local-model"
+import { recordGeneration } from "#/lib/llm/generation-stats"
+import type { GenerationStats } from "#/lib/llm/generation-stats"
 import { createStore } from "#/lib/store"
 
 export type ModelId = "apple-fm" | "lfm3" | "lfm3-web" | "lfm2.5" | "lfm2.5-web"
@@ -49,111 +53,120 @@ const LFM2_5_WEB_ID =
   "daveycodez/LFM2.5-1.2B-Web@7cbec27ef76aac9be538a16dd5dd57d19328c654"
 const LFM2_5_WEB_THINKING_ID =
   "daveycodez/LFM2.5-1.2B-Thinking-Web@eac258e512896325899cf2be2bbd18b546c71706"
-const LOCAL_MODELS: Partial<Record<ModelId, string>> = {
-  lfm3: LFM3_ID,
-  "lfm3-web": LFM3_WEB_ID,
-  "lfm2.5": LFM2_5_ID,
-  "lfm2.5-web": LFM2_5_WEB_ID
-}
-/** The model each LFM2.5 option runs instead when Think is on. */
-const THINKING_MODELS: Partial<Record<ModelId, string>> = {
-  "lfm2.5": LFM2_5_THINKING_ID,
-  "lfm2.5-web": LFM2_5_WEB_THINKING_ID
-}
 
-/** LFM3 card, "General" (chat, tool use, agents, coding). */
-const lfm3Connection = (modelId: string, name: string) =>
-  localModelConnection({
-    modelId,
-    name,
-    sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.1 },
-    toolFormat: "lfm3",
-    thinking: () => thinkingStore.get()
-  })
-
-/**
- * LFM2.5 Instruct and Thinking, with each model card's sampling. The Think
- * toggle picks the Thinking model when the message is sent.
- */
-function lfm25Connection(
-  instructId: string,
-  thinkingId: string,
-  name: string
-): ConnectConnectionAdapter {
-  const instruct = localModelConnection({
-    modelId: instructId,
-    name,
-    sampling: { temperature: 0.1, top_k: 50, repetition_penalty: 1.05 },
-    toolFormat: "lfm2"
-  })
-  const thinking = localModelConnection({
-    modelId: thinkingId,
-    name: `${name} Thinking`,
-    sampling: { temperature: 0.05, top_k: 50, repetition_penalty: 1.05 },
-    toolFormat: "lfm2",
-    // Always thinks: give it the longer thinking budget.
-    thinking: () => true
-  })
+/** A model run's counts and timings, as the stats line takes them. */
+function generationStats({
+  inputTokens,
+  cachedTokens,
+  outputTokens,
+  firstTokenMs,
+  promptMs,
+  decodeMs
+}: RunStats): GenerationStats {
   return {
-    connect: (...args) =>
-      (thinkingStore.get() ? thinking : instruct).connect(...args)
+    inputTokens,
+    ...(cachedTokens > 0 && { cachedTokens }),
+    ...(promptMs !== null && { promptMs }),
+    outputTokens,
+    ...(firstTokenMs !== null && {
+      firstTokenMs,
+      decodeTokens: Math.max(outputTokens - 1, 0),
+      decodeMs
+    })
   }
 }
 
-export const MODELS: Array<{
-  id: ModelId
-  name: string
-  /** Provider logo in /public/icons (LobeHub icons, MIT). */
-  icon: string
-  connection: ConnectConnectionAdapter
-}> = [
+/** Each model call's counts go to the stats line, as it runs and at the end. */
+const onStats: TransformersJsOptions["onStats"] = (stats, run) =>
+  recordGeneration(run.threadId, run.callId, generationStats(stats), run.done)
+
+/** LFM3 card, "General" (chat, tool use, agents, coding). */
+const LFM3_SAMPLING: Sampling = {
+  temperature: 0.1,
+  top_k: 50,
+  repetition_penalty: 1.1
+}
+const LFM2_5_SAMPLING: Sampling = {
+  temperature: 0.1,
+  top_k: 50,
+  repetition_penalty: 1.05
+}
+const LFM2_5_THINKING_SAMPLING: Sampling = {
+  temperature: 0.05,
+  top_k: 50,
+  repetition_penalty: 1.05
+}
+
+const lfm3 = (modelId: string) =>
+  transformersJs(modelId, {
+    toolFormat: "lfm3",
+    sampling: LFM3_SAMPLING,
+    onStats,
+    debug: import.meta.env.DEV
+  })
+
+/** LFM2.5 Instruct, and its Thinking model when Think is on. */
+const lfm25 = (instructId: string, thinkingId: string) =>
+  transformersJs(instructId, {
+    toolFormat: "lfm2",
+    sampling: LFM2_5_SAMPLING,
+    thinking: { model: thinkingId, sampling: LFM2_5_THINKING_SAMPLING },
+    onStats,
+    debug: import.meta.env.DEV
+  })
+
+/** Apple's on-device model, through apfel on this Mac. */
+const appleFoundationModel = apfel({
+  onStats: (stats, run) =>
+    recordGeneration(run.threadId, run.callId, stats, run.done)
+})
+
+export const MODELS = [
   {
     id: "apple-fm",
     name: "Apple Foundation Model",
+    /** Provider logo in /public/icons (LobeHub icons, MIT). */
     icon: "/icons/apple.svg",
-    connection: apfelConnection
+    adapter: appleFoundationModel,
+    /** Runs outside the browser: no download to report. */
+    runs: null
   },
   {
     id: "lfm3",
     name: "LFM3 1.7B",
     icon: "/icons/liquid.svg",
-    connection: lfm3Connection(LFM3_ID, "LFM3")
+    adapter: lfm3(LFM3_ID),
+    /** The Hugging Face model it runs, with Think off and on. */
+    runs: { off: LFM3_ID, on: LFM3_ID }
   },
   {
     id: "lfm3-web",
     name: "LFM3 1.7B Web",
     icon: "/icons/liquid.svg",
-    connection: lfm3Connection(LFM3_WEB_ID, "LFM3 Web")
+    adapter: lfm3(LFM3_WEB_ID),
+    runs: { off: LFM3_WEB_ID, on: LFM3_WEB_ID }
   },
   {
     id: "lfm2.5",
     name: "LFM2.5 1.2B",
     icon: "/icons/liquid.svg",
-    connection: lfm25Connection(LFM2_5_ID, LFM2_5_THINKING_ID, "LFM2.5")
+    adapter: lfm25(LFM2_5_ID, LFM2_5_THINKING_ID),
+    runs: { off: LFM2_5_ID, on: LFM2_5_THINKING_ID }
   },
   {
     id: "lfm2.5-web",
     name: "LFM2.5 1.2B Web",
     icon: "/icons/liquid.svg",
-    connection: lfm25Connection(
-      LFM2_5_WEB_ID,
-      LFM2_5_WEB_THINKING_ID,
-      "LFM2.5 Web"
-    )
+    adapter: lfm25(LFM2_5_WEB_ID, LFM2_5_WEB_THINKING_ID),
+    runs: { off: LFM2_5_WEB_ID, on: LFM2_5_WEB_THINKING_ID }
   }
-]
-
-/** The Hugging Face model to run for `id`, given the Think toggle. */
-const localModelFor = (id: ModelId, thinking: boolean) =>
-  (thinking && THINKING_MODELS[id]) || LOCAL_MODELS[id]
-
-const IDLE = createStore<LocalModelStatus>({ state: "idle" })
-
-/** Loading status of a model; the Apple model is always idle here. */
-export const useModelStatus = (id: ModelId) => {
-  const modelId = localModelFor(id, thinkingStore.use())
-  return (modelId ? localModelStatus(modelId) : IDLE).use()
-}
+] satisfies Array<{
+  id: ModelId
+  name: string
+  icon: string
+  adapter: ReturnType<typeof transformersJs> | ReturnType<typeof apfel>
+  runs: { off: string; on: string } | null
+}>
 
 /**
  * The model to start with, and to fall back on: LFM3 Web runs anywhere,
@@ -181,18 +194,34 @@ const noopSubscribe = () => () => undefined
 const useIsApplePlatform = () =>
   useSyncExternalStore(noopSubscribe, isApplePlatform, () => false)
 
-const onPlatform = (id: ModelId, isApple: boolean): ModelId =>
-  id === "apple-fm" && !isApple ? DEFAULT_MODEL : id
+/**
+ * The pick, if this device offers it: the Apple model only on Apple
+ * devices, and a model no longer offered falls back to the default.
+ */
+const offered = (id: ModelId, isApple: boolean): ModelId =>
+  MODELS.some((m) => m.id === id) && (id !== "apple-fm" || isApple)
+    ? id
+    : DEFAULT_MODEL
 
-export const currentModel = () =>
-  onPlatform(modelStore.get(), isApplePlatform())
+export const currentModel = () => offered(modelStore.get(), isApplePlatform())
 export const useCurrentModel = () =>
-  onPlatform(modelStore.use(), useIsApplePlatform())
+  offered(modelStore.use(), useIsApplePlatform())
 
 /** Models to offer in the picker on this device. */
-export const useModels = () => {
+export function useModels() {
   const isApple = useIsApplePlatform()
   return MODELS.filter((m) => m.id !== "apple-fm" || isApple)
+}
+
+const IDLE = createStore<ModelStatus>({ state: "idle" })
+
+/** Loading status of the model the Think toggle would run for `id`. */
+export function useModelStatus(id: ModelId): ModelStatus {
+  const runs = modelInfo(id).runs
+  const thinking = thinkingStore.use()
+  const status = runs ? modelStatus(thinking ? runs.on : runs.off) : null
+  const store = status ?? { subscribe: IDLE.subscribe, get: IDLE.get }
+  return useSyncExternalStore(store.subscribe, store.get, store.get)
 }
 
 /** Result of the last Apple model check, shown next to the picker. */
@@ -201,35 +230,8 @@ export const afmStatus = createStore<"idle" | "checking" | "unavailable">(
 )
 
 /**
- * Asks apfel's /v1/models whether Apple's model is there. Reaching localhost
- * from a website makes Chrome ask for permission, so this only runs when the
+ * Whether Apple's model is reachable through apfel. Reaching localhost from
+ * a website makes Chrome ask for permission, so this only runs when the
  * user picks the Apple model.
  */
-export async function checkAfm() {
-  try {
-    const res = await fetch(APFEL_URL.replace("/chat/completions", "/models"), {
-      signal: AbortSignal.timeout(10_000)
-    })
-    const body = res.ok
-      ? ((await res.json()) as { data?: Array<{ id: string }> })
-      : null
-    return body?.data?.some((m) => m.id === APFEL_MODEL) ?? false
-  } catch {
-    return false
-  }
-}
-
-/** Sends each run to whichever model is selected when the user hits send. */
-export const routedConnection: ConnectConnectionAdapter = {
-  connect(messages, data, abortSignal, runContext) {
-    // A run after the user's message starts a reply; runs after tool calls
-    // go on with it.
-    if (messages.at(-1)?.role === "user") startReply(runContext.threadId)
-    return modelInfo(currentModel()).connection.connect(
-      messages,
-      data,
-      abortSignal,
-      runContext
-    )
-  }
-}
+export const checkAfm = () => isApfelAvailable()

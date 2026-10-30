@@ -11,7 +11,15 @@ import type {
   ToolSpec,
   WorkerRequest,
   WorkerResponse
-} from "./local-model-protocol"
+} from "./protocol"
+
+/**
+ * Diagnostics (memory and cache logs, error stacks) when the page started
+ * the worker with debug on: it's named "…:debug" then, which the worker can
+ * read before any message arrives.
+ */
+const DEBUG =
+  (globalThis as { name?: string }).name?.endsWith(":debug") ?? false
 
 const TRANSFORMERS_URL =
   "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2"
@@ -268,13 +276,13 @@ function trackGpu() {
     if (key) owners.set(created, { device: this, key })
     gpu.churn.buffers++
     gpu.churn.bufferBytes += descriptor.size
-    if (import.meta.env.DEV && descriptor.size >= 256 * 1024) {
+    if (DEBUG && descriptor.size >= 256 * 1024) {
       createdSizes.push(
         `${(descriptor.size / 1e6).toFixed(1)}MB/u${descriptor.usage}`
       )
     }
     sizes.set(created, descriptor.size)
-    if (import.meta.env.DEV) liveBuffers.set(created, descriptor.size)
+    if (DEBUG) liveBuffers.set(created, descriptor.size)
     gpu.liveBytes += descriptor.size
     gpu.peakBytes = Math.max(gpu.peakBytes, gpu.liveBytes)
     return created
@@ -314,7 +322,7 @@ function trackGpu() {
     }
     release(this)
   }
-  if (import.meta.env.DEV) countGpuWork()
+  if (DEBUG) countGpuWork()
   const requestDevice = adapter.requestDevice
   adapter.requestDevice = async function (descriptor) {
     const requested = await requestDevice.call(this, descriptor)
@@ -365,7 +373,7 @@ function trackWasm() {
     }
   }
 }
-if (import.meta.env.DEV) trackWasm()
+if (DEBUG) trackWasm()
 
 /** Counts WebGPU objects made and work sent, which buffer sizes don't show. */
 function countGpuWork() {
@@ -416,7 +424,7 @@ let lastChurn = { ...gpu.churn }
 
 /** Logs memory use to the page's console, in dev only. */
 function logMemory(step: string) {
-  if (!import.meta.env.DEV) return
+  if (!DEBUG) return
   const mb = (bytes: number) => Math.round(bytes / 1e6)
   let wasmBytes = 0
   for (const memory of wasmMemories) wasmBytes += memory.buffer.byteLength
@@ -974,7 +982,7 @@ function keepSaved(tf: TransformersModule, entry: SavedCache) {
     const before = savedCaches[i].ids.length
     if (trimSaved(tf, savedCaches[i])) {
       tokens -= before - savedCaches[i].ids.length
-      if (import.meta.env.DEV) {
+      if (DEBUG) {
         ctx.postMessage({
           type: "log",
           text: `[cache] cut a ${before}-token cache to ${savedCaches[i].ids.length}`
@@ -989,7 +997,7 @@ function keepSaved(tf: TransformersModule, entry: SavedCache) {
     const dropped = savedCaches.pop()
     if (!dropped) break
     tokens -= dropped.ids.length
-    if (import.meta.env.DEV) {
+    if (DEBUG) {
       ctx.postMessage({
         type: "log",
         text: `[cache] dropped a ${dropped.ids.length}-token cache`
@@ -1046,7 +1054,7 @@ function reuseSaved(
     const limit = Math.min(entry.ids.length, ids.length - 1)
     let common = 0
     while (common < limit && entry.ids[common] === ids[common]) common++
-    if (import.meta.env.DEV) {
+    if (DEBUG) {
       seen.push(
         `${entry.ids.length} tokens, matches ${common}, checkpoints ${entry.checkpoints.map((c) => c.length).join("/") || "none"}`
       )
@@ -1061,7 +1069,7 @@ function reuseSaved(
       best = { index, usable, common }
     }
   }
-  if (import.meta.env.DEV) {
+  if (DEBUG) {
     ctx.postMessage({
       type: "log",
       text: `[cache] kept caches for a ${ids.length}-token prompt (system and tools ${systemEnd}): ${seen.join("; ") || "none"}`
@@ -1330,7 +1338,7 @@ function saveToDisk(
     } finally {
       handle.close()
     }
-    if (import.meta.env.DEV) {
+    if (DEBUG) {
       ctx.postMessage({
         type: "log",
         text: `[cache] saved ${ids.length} tokens to disk (${Math.round((dataStart + offset) / 1e6)} MB)`
@@ -1720,7 +1728,7 @@ async function generate(
       checkpoints: [checkpoint(tf, fromDisk, systemEnd)],
       common: Math.max(reused.common, systemEnd)
     }
-    if (import.meta.env.DEV) {
+    if (DEBUG) {
       ctx.postMessage({
         type: "log",
         text: `[cache] loaded ${systemEnd} tokens from disk in ${Math.round(performance.now() - readStarted)} ms`
@@ -1733,7 +1741,7 @@ async function generate(
   const checkpoints = reused.checkpoints
   /** Every token the model has read, prompt and reply, once it's replied. */
   let sequence: Array<number> = ids
-  if (import.meta.env.DEV) {
+  if (DEBUG) {
     ctx.postMessage({
       type: "log",
       text: `[cache] ${reused.cached} of ${ids.length} prompt tokens already read`
@@ -1820,7 +1828,7 @@ async function generate(
       await cache.dispose().catch(() => undefined)
     }
     logMemory(`reply finished, ${outputTokens} tokens`)
-    if (import.meta.env.DEV) {
+    if (DEBUG) {
       ctx.postMessage({
         type: "log",
         text: `[memory] live buffers: ${liveBreakdown()}`
@@ -1851,7 +1859,7 @@ ctx.onmessage = ({ data }) => {
     generate(data.id, data.chat, data.tools, data.thinking, data.sampling)
       .then((stats) => ctx.postMessage({ type: "done", id: data.id, stats }))
       .catch((error: unknown) => {
-        if (import.meta.env.DEV && error instanceof Error) {
+        if (DEBUG && error instanceof Error) {
           ctx.postMessage({ type: "log", text: `[error] ${error.stack}` })
         }
         ctx.postMessage({

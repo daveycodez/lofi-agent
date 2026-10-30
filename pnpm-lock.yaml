@@ -238,6 +238,12 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.1.18
         version: 4.3.3(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))
+      '@tanstack-ai-browser/apfel':
+        specifier: workspace:*
+        version: link:../../packages/apfel
+      '@tanstack-ai-browser/transformers-js':
+        specifier: workspace:*
+        version: link:../../packages/transformers-js
       '@tanstack/ai':
         specifier: 1.0.0
         version: 1.0.0(zod@4.6.7)
@@ -324,7 +330,17 @@ importers:
         specifier: ^4.70.0
         version: 4.154.0(@types/node@22.20.5)
 
-  packages/tanstack-ai-browser: {}
+  packages/apfel:
+    devDependencies:
+      '@tanstack/ai':
+        specifier: 1.0.0
+        version: 1.0.0(zod@4.6.7)
+
+  packages/transformers-js:
+    devDependencies:
+      '@tanstack/ai':
+        specifier: 1.0.0
+        version: 1.0.0(zod@4.6.7)
 
 packages:
 

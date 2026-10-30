@@ -5,7 +5,7 @@
  */
 import type { MessagePart, UIMessage } from "@tanstack/ai"
 
-import { splitThinking } from "#/lib/thinking"
+import { splitThinking } from "@tanstack-ai-browser/transformers-js"
 
 type ToolResult = Extract<MessagePart, { type: "tool-result" }>
 

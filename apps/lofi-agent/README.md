@@ -11,7 +11,7 @@ A chat app that runs small language models entirely in your browser. Models are 
 - **Download once.** Model weights (about 0.8 to 1.1 GB per model) are saved to the browser's Origin Private File System and loaded from disk on later visits.
 - **Reuses work between runs.** The model keeps what it has already read, so a follow-up message, the next step after a tool call, or a new session with the same system prompt only reads what's new. The system prompt and tools are also saved to disk, so they aren't read again after a reload.
 
-What does leave your device: web search queries (if web search is on), calls to MCP servers you add, and the downloads of model files (Hugging Face) and the runtime (jsDelivr).
+What does leave your device: calls to MCP servers (Exa's web search, if it's on, and those you add), and the downloads of model files (Hugging Face) and the runtime (jsDelivr).
 
 ## Models
 
@@ -21,15 +21,15 @@ What does leave your device: web search queries (if web search is on), calls to 
 | LFM3 1.7B                   | The `onnx-community` ONNX export of LFM3.                                                                                                                                                             |
 | LFM2.5 1.2B                 | Liquid AI's ONNX builds. With Think on, it runs the separate LFM2.5 1.2B Thinking model.                                                                                                              |
 | LFM2.5 1.2B Web             | The same weights, re-exported so reading a prompt computes output for the last token only. Long prompts (for example, with web search results) crashed iPhone Safari without this.                    |
-| Apple Foundation Model      | Apple's on-device model, served on your Mac by [apfel](https://apfel.franzai.com). Shown on Apple devices only; needs a Mac (see Requirements).                                                       |
+| Apple Foundation Model      | Apple's on-device model, served on your Mac by [apfel](https://apfel.franzai.com), through `@tanstack-ai-browser/apfel`. Shown on Apple devices only; needs a Mac (see Requirements).                 |
 
 The "Web" builds are published under [`daveycodez` on Hugging Face](https://huggingface.co/daveycodez) and pinned to a commit. Models that can reason before answering have a Think toggle in the composer, on by default.
 
 ## Features
 
 - Streaming replies with collapsible thinking, Markdown, math (KaTeX) and syntax-highlighted code
-- Web search tool, on by default: tries Exa, then Parallel, then Firecrawl through their public MCP endpoints. No API keys needed. Results show as numbered source chips the reply can cite.
-- MCP servers: add any Streamable HTTP server by URL, with an optional bearer token. The browser connects directly, so the server must allow this site (CORS).
+- Web search through Exa's MCP server, built in and on by default: works without a key at a free rate limit, or with your Exa API key. Results show as numbered source chips the reply can cite.
+- MCP servers: add any Streamable HTTP server by URL, with optional HTTP headers for its key (for example `Authorization: Bearer …` or `x-api-key`). The browser connects directly, so the server must allow this site (CORS).
 - Sessions saved in the browser (messages in IndexedDB, the session list in localStorage)
 - Sidebar with search, pinned sessions and date groups; rename, pin, archive and delete sessions, or delete them all
 - Edit a sent message and resend it, even while the model is still replying
@@ -37,7 +37,7 @@ The "Web" builds are published under [`daveycodez` on Hugging Face](https://hugg
 - Copy a whole session as plain text, including thinking, tool calls and their results
 - A stats line under the composer for the latest reply: tokens in, cached, out and total, prompt reading and generation speed, and time to first token
 - Voice input through the browser's speech recognition, where available
-- Settings: turn web search on or off, and write a system prompt sent with every session (before the current date)
+- Settings: a system prompt sent with every session (before the current date)
 - Light, dark and system themes
 - Add to Home Screen: installs as an app with its own icon, and keeps the downloaded model more reliably than a Safari tab
 
@@ -86,9 +86,10 @@ apps/lofi-agent/           the app (Nx project "lofi-agent")
   src/components/chat/     thread, composer, sidebar, model picker, Apple setup
   src/components/mcp/      MCP servers dialog
   src/components/settings/ settings dialog
-  src/lib/llm/             models, the WebGPU worker, Apple model connection,
-                           tool-call parsing, reply stats
-  src/lib/                 web search, MCP, chat storage, settings, dictation,
+  src/lib/llm/             models and their adapters, the chat() connection,
+                           reply stats
+  src/lib/                 MCP (with the built-in Exa server), sources, chat
+                           storage, settings, dictation,
                            Markdown helpers
   wrangler.jsonc           Cloudflare Worker config
 ```
@@ -96,8 +97,9 @@ apps/lofi-agent/           the app (Nx project "lofi-agent")
 ## Tech stack
 
 - [TanStack Start](https://tanstack.com/start) and TanStack Router with React 19, on Vite
-- [TanStack AI](https://tanstack.com/ai) for chat state, tool calls, IndexedDB persistence and the MCP client
-- [Transformers.js](https://huggingface.co/docs/transformers.js) 4.3.2 and onnxruntime-web on WebGPU, loaded from jsDelivr at runtime
+- [TanStack AI](https://tanstack.com/ai): `chat()` in the browser with the adapters from this repo, `useChat`, IndexedDB persistence and the MCP client
+- [`@tanstack-ai-browser/transformers-js`](../../packages/transformers-js): Transformers.js 4.3.2 and onnxruntime-web on WebGPU, loaded from jsDelivr at runtime
+- [`@tanstack-ai-browser/apfel`](../../packages/apfel): Apple's on-device model through apfel
 - [HeroUI](https://heroui.com) v3, Tailwind CSS v4 and Gravity UI icons
 - TanStack Markdown, tanstack-markdown-math (KaTeX) and TanStack Highlight
 - Cloudflare Workers for hosting
