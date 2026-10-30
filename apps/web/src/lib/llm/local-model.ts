@@ -116,6 +116,22 @@ function post(message: WorkerRequest) {
   worker.postMessage(message)
 }
 
+/**
+ * Asks the browser to keep this site's storage, so a downloaded model isn't
+ * deleted to free space or, in Safari, after 7 days without a visit (which
+ * means downloading it again). Browsers may say no; it's only a request.
+ * Only pages can ask, not workers.
+ */
+let askedToKeep = false
+function keepDownloads() {
+  if (askedToKeep || typeof navigator === "undefined") return
+  askedToKeep = true
+  navigator.storage
+    ?.persist?.()
+    .then((kept) => console.info(`[download] storage kept: ${kept}`))
+    .catch(() => undefined)
+}
+
 /** Loads a model (downloading it the first time), replacing any other. */
 export function loadLocalModel(modelId: string) {
   if (loaded?.modelId === modelId) return loaded.load.promise
@@ -132,6 +148,7 @@ export function loadLocalModel(modelId: string) {
   })
   promise.catch(() => undefined)
   loaded = { modelId, load: { promise, resolve, reject } }
+  keepDownloads()
   // The worker reports whether this is a download or a cached load.
   localModelStatus(modelId).set({ state: "loading", progress: 0, cached: true })
   post({ type: "load", modelId })
@@ -365,12 +382,14 @@ async function* generateOnce(options: {
 /** A run's counts and timings, as the stats line takes them. */
 function generationStats({
   inputTokens,
+  cachedTokens,
   outputTokens,
   firstTokenMs,
   decodeMs
 }: RunTimings): GenerationStats {
   return {
     inputTokens,
+    ...(cachedTokens > 0 && { cachedTokens }),
     outputTokens,
     ...(firstTokenMs !== null && {
       firstTokenMs,
@@ -415,7 +434,7 @@ export function localModelConnection(options: {
         return
       }
 
-      // The date and time, and the user's system prompt from Settings.
+      // The date, and the user's system prompt from Settings.
       const chat: Array<ChatTurn> = [
         { role: "system", content: currentSystemPrompt() },
         ...toChatTurns(messages, toolFormat)

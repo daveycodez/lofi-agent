@@ -17,15 +17,33 @@ const TRANSFORMERS_URL =
   "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2"
 
 /* Minimal shapes of the Transformers.js APIs used here. */
+/** An onnxruntime-web tensor, as Transformers.js tensors hold them. */
+type OrtTensor = {
+  type: string
+  dims: ReadonlyArray<number>
+  gpuBuffer?: GPUBuffer
+  constructor: {
+    fromGpuBuffer: (
+      buffer: GPUBuffer,
+      options: { dataType: string; dims: Array<number>; dispose: () => void }
+    ) => OrtTensor
+  }
+}
 type Tensor = {
   dims: Array<number>
   location?: string
+  data: ArrayLike<number | bigint>
+  ort_tensor: OrtTensor
   slice: (...ranges: Array<null | [number, number]>) => Tensor
   dispose: () => void
 }
-/** The model's memory of the text so far: attention keys/values and conv states. */
-type Cache = {
+/**
+ * The model's memory of the text so far: attention keys/values
+ * ("past_key_values.*") and conv states ("past_conv.*"), by input name.
+ */
+type Cache = Record<string, Tensor> & {
   update: (entries: Record<string, Tensor>) => void
+  get_seq_length: () => number
   dispose: () => Promise<void>
 }
 type Tokenizer = {
@@ -60,7 +78,10 @@ type TransformersModule = {
   ) => unknown
   InterruptableStoppingCriteria: new () => StoppingCriteria
   DynamicCache: new (entries: Record<string, Tensor>) => Cache
-  Tensor: new (type: string, data: unknown, dims: Array<number>) => Tensor
+  Tensor: {
+    new (type: string, data: unknown, dims: Array<number>): Tensor
+    new (ortTensor: OrtTensor): Tensor
+  }
   ones: (dims: Array<number>) => Tensor
   env: {
     fetch: typeof fetch
@@ -141,6 +162,8 @@ function liveBreakdown() {
 let createdSizes: Array<string> = []
 
 const gpu = {
+  /** ONNX Runtime's GPU device, once it has one. */
+  device: null as GPUDevice | null,
   liveBytes: 0,
   peakBytes: 0,
   lost: null as string | null,
@@ -184,6 +207,12 @@ const POOL_STALE_REQUESTS = 512
 const MAP_READ_OR_WRITE = 0x1 | 0x2
 /** Free buffers kept per size and usage. */
 const POOL_PER_SIZE = 12
+
+/**
+ * Buffers of odd sizes made here (cut-down caches), destroyed for real
+ * rather than kept as spares nothing would ask for.
+ */
+const unpooledBuffers = new WeakSet<GPUBuffer>()
 
 /** The pool a buffer request can be served from, or null. */
 function poolKey(descriptor: GPUBufferDescriptor) {
@@ -235,7 +264,7 @@ function trackGpu() {
     if (key) owners.set(created, { device: this, key })
     gpu.churn.buffers++
     gpu.churn.bufferBytes += descriptor.size
-    if (descriptor.size >= 256 * 1024) {
+    if (import.meta.env.DEV && descriptor.size >= 256 * 1024) {
       createdSizes.push(
         `${(descriptor.size / 1e6).toFixed(1)}MB/u${descriptor.usage}`
       )
@@ -269,7 +298,7 @@ function trackGpu() {
   }
   buffer.destroy = function () {
     // A large buffer is kept for the next request of its size, not destroyed.
-    const owner = owners.get(this)
+    const owner = unpooledBuffers.has(this) ? undefined : owners.get(this)
     if (owner) {
       const pool = poolFor(owner.device)
       const free = pool.get(owner.key) ?? []
@@ -285,6 +314,7 @@ function trackGpu() {
   const requestDevice = adapter.requestDevice
   adapter.requestDevice = async function (descriptor) {
     const requested = await requestDevice.call(this, descriptor)
+    gpu.device = requested
     void requested.lost.then((info) => {
       gpu.lost = `${info.reason}${info.message ? `: ${info.message}` : ""}`
       for (const notify of lostWaiters) notify()
@@ -549,17 +579,33 @@ async function downloadWeights(
   const handle = await openSync(
     await dir.getFileHandle(files.file, { create: true })
   )
+  // Download speed goes to the console every tenth of the file and at the
+  // end, to tell a slow network from a slow phone.
+  const started = performance.now()
+  const logSpeed = (bytes: number, label: string) => {
+    const seconds = (performance.now() - started) / 1000
+    ctx.postMessage({
+      type: "log",
+      text: `[download] ${label}: ${Math.round(bytes / 1e6)} of ${Math.round(total / 1e6)} MB in ${seconds.toFixed(1)} s, ${(bytes / 1e6 / seconds).toFixed(1)} MB/s`
+    })
+  }
   try {
     handle.truncate(0)
     let written = 0
+    let nextLog = total / 10
     const reader = res.body.getReader()
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
       written += handle.write(value, { at: written })
       if (total) onProgress(written / total)
+      if (total && written >= nextLog && written < total) {
+        logSpeed(written, `${Math.round((written / total) * 100)}%`)
+        nextLog += total / 10
+      }
     }
     handle.flush()
+    logSpeed(written, "done")
   } finally {
     handle.close()
   }
@@ -695,6 +741,8 @@ function load(modelId: string) {
   if (current?.modelId === modelId) return current.runtime
   const previous = current?.runtime
   const runtime = (async () => {
+    // The saved cache belongs to the previous model.
+    await discardSaved()
     await previous?.then((r) => r.model.dispose()).catch(() => undefined)
     void removeOldCopies(modelId)
     return loadRuntime(modelId)
@@ -736,11 +784,31 @@ const MIN_REPLY_TOKENS = 32
 class ContextLimitError extends Error {}
 
 /**
- * Prompt tokens read per step. iPhone Safari's GPU process crashed reading
- * an 868-token prompt in one step (a web search's results, or a pasted
- * article), while short prompts and long replies were fine.
+ * How long one step of reading a prompt should take. WebKit crashes its GPU
+ * process when a command buffer hasn't finished 3 s after it was sent, and
+ * ONNX Runtime sends a whole step's work at once (microsoft/onnxruntime#33753),
+ * so every step must finish well inside that: an 868-token step crashed an
+ * iPhone, and 256-token steps late in a 7,600-token prompt took ~2.6 s there.
+ * A Mac reads 256 tokens in ~0.1 s. So steps are sized from how fast the
+ * last one went.
  */
-const PROMPT_CHUNK = 256
+const PROMPT_STEP_MS = 1500
+/** Tokens in a step before any has been timed, which an iPhone handles. */
+const FIRST_PROMPT_STEP = 256
+const MIN_PROMPT_STEP = 32
+const MAX_PROMPT_STEP = 1024
+/** Tokens per ms of the last prompt step, carried over to the next prompt. */
+let promptRate: number | null = null
+
+/** Tokens for the next prompt step; `previous` is null for a prompt's first. */
+function nextPromptStep(previous: number | null) {
+  if (promptRate === null) return FIRST_PROMPT_STEP
+  const fit = Math.round(promptRate * PROMPT_STEP_MS)
+  // At most double from one step to the next, and start a prompt at no more
+  // than twice the untimed size: one fast step can be a fluke.
+  const cap = Math.min((previous ?? FIRST_PROMPT_STEP) * 2, MAX_PROMPT_STEP)
+  return Math.max(MIN_PROMPT_STEP, Math.min(fit, cap))
+}
 
 /** Transformers.js's names for a model output's place in the cache. */
 const cacheName = (output: string) =>
@@ -750,49 +818,212 @@ const cacheName = (output: string) =>
     .replace("present_recurrent", "past_recurrent")
     .replace("present", "past_key_values")
 
+/** A cache's tensors by name (its methods live on its prototype). */
+const cacheTensors = (cache: Cache) =>
+  Object.entries(cache) as Array<[string, Tensor]>
+
+/** Attention keys/values, which grow a row per token and can be cut short. */
+const isKeysValues = (name: string) => name.startsWith("past_key_values.")
+
+/** GPUBufferUsage.STORAGE | COPY_SRC | COPY_DST. */
+const CACHE_BUFFER_USAGE = 0x80 | 0x4 | 0x8
+
 /**
- * Reads all but the end of a long prompt into the model's cache, a chunk at
- * a time, so no single GPU step grows with the prompt. generate() reads the
- * rest and replies. Null for a prompt short enough to read in one step.
+ * A copy of a cache tensor on the GPU. With `length`, keys/values shaped
+ * [batch, heads, tokens, head size] keep each head's first `length` tokens.
+ */
+function copyCacheTensor(
+  tf: TransformersModule,
+  tensor: Tensor,
+  length?: number
+): Tensor {
+  const source = tensor.ort_tensor.gpuBuffer
+  const device = gpu.device
+  if (!source || !device) throw new Error("The model's cache isn't on the GPU.")
+  const dims = [...tensor.dims]
+  const bytes = tensor.ort_tensor.type === "float16" ? 2 : 4
+  let target = dims
+  let pieces = 1
+  let from = dims.reduce((a, b) => a * b, 1) * bytes
+  let to = from
+  if (length !== undefined) {
+    const [batch, heads, tokens, size] = dims
+    target = [batch, heads, length, size]
+    pieces = batch * heads
+    from = tokens * size * bytes
+    to = length * size * bytes
+  }
+  const buffer = device.createBuffer({
+    size: pieces * to,
+    usage: CACHE_BUFFER_USAGE
+  })
+  unpooledBuffers.add(buffer)
+  const encoder = device.createCommandEncoder()
+  for (let i = 0; i < pieces; i++) {
+    encoder.copyBufferToBuffer(source, i * from, buffer, i * to, to)
+  }
+  device.queue.submit([encoder.finish()])
+  return new tf.Tensor(
+    tensor.ort_tensor.constructor.fromGpuBuffer(buffer, {
+      dataType: tensor.ort_tensor.type,
+      dims: target,
+      dispose: () => buffer.destroy()
+    })
+  )
+}
+
+/*
+ * Prompt caching. The model's cache from the last run is kept, so the next
+ * run reads only what's new instead of the whole chat again: after a tool
+ * call, the next prompt is the last one plus the call and its result; a
+ * follow-up message repeats the chat up to the last reply. Keys/values can
+ * be cut back to any length, but conv states hold only the latest position,
+ * so they're also saved at points to go back to (checkpoints): where each
+ * prompt ends, and where a prompt stopped matching the cache (in a new chat,
+ * usually the end of the system prompt and tools, which the next chat
+ * repeats). ~22 KB per token of GPU memory, plus 0.3 MB per checkpoint.
+ */
+type Checkpoint = { length: number; states: Record<string, Tensor> }
+type SavedCache = {
+  modelId: string
+  /** The tokens the cache has read, in order. */
+  ids: Array<number>
+  cache: Cache
+  /** Ascending by length. */
+  checkpoints: Array<Checkpoint>
+}
+let saved: SavedCache | null = null
+/** Checkpoints kept: the oldest (shortest) and the latest ones. */
+const MAX_CHECKPOINTS = 6
+
+const disposeCheckpoint = (checkpoint: Checkpoint) => {
+  for (const tensor of Object.values(checkpoint.states)) tensor.dispose()
+}
+
+/** Frees the saved cache, if any. */
+async function discardSaved() {
+  const previous = saved
+  saved = null
+  if (!previous) return
+  previous.checkpoints.forEach(disposeCheckpoint)
+  await previous.cache.dispose().catch(() => undefined)
+}
+
+/** The conv (and other non-attention) states of a cache, copied. */
+function checkpoint(tf: TransformersModule, cache: Cache, length: number) {
+  const states: Record<string, Tensor> = {}
+  for (const [name, tensor] of cacheTensors(cache)) {
+    if (!isKeysValues(name)) states[name] = copyCacheTensor(tf, tensor)
+  }
+  return { length, states }
+}
+
+/**
+ * Takes the saved cache for a prompt: as is when the prompt continues what
+ * it read, cut back to the latest checkpoint the prompt matches otherwise,
+ * or none. Always leaves at least the prompt's last token to read. `common`
+ * is how far the prompt matched the cache.
+ */
+function reuseSaved(
+  tf: TransformersModule,
+  modelId: string,
+  ids: Array<number>
+) {
+  const previous = saved
+  saved = null
+  if (!previous) {
+    return {
+      cache: null,
+      cached: 0,
+      checkpoints: [] as Array<Checkpoint>,
+      common: 0
+    }
+  }
+  const limit = Math.min(previous.ids.length, ids.length - 1)
+  let common = 0
+  if (previous.modelId === modelId) {
+    while (common < limit && previous.ids[common] === ids[common]) common++
+  }
+  const none = {
+    cache: null,
+    cached: 0,
+    checkpoints: [] as Array<Checkpoint>,
+    common
+  }
+  const checkpoints = previous.checkpoints.filter((c) => c.length <= common)
+  previous.checkpoints
+    .filter((c) => c.length > common)
+    .forEach(disposeCheckpoint)
+  if (previous.modelId === modelId && previous.ids.length === common) {
+    return { cache: previous.cache, cached: common, checkpoints, common }
+  }
+  const back = checkpoints.at(-1)
+  if (!back) {
+    checkpoints.forEach(disposeCheckpoint)
+    void previous.cache.dispose().catch(() => undefined)
+    return none
+  }
+  const entries: Record<string, Tensor> = {}
+  for (const [name, tensor] of cacheTensors(previous.cache)) {
+    entries[name] = isKeysValues(name)
+      ? copyCacheTensor(tf, tensor, back.length)
+      : copyCacheTensor(tf, back.states[name])
+  }
+  previous.cache.update(entries)
+  return { cache: previous.cache, cached: back.length, checkpoints, common }
+}
+
+/**
+ * Reads the prompt from token `from` up to its last token into the cache, a
+ * step at a time; generate() reads the last token and replies. A step ends
+ * at `branch`, if given, and `onBranch` gets the cache there.
  */
 async function readPrompt(
   tf: TransformersModule,
   model: Model,
   inputIds: Tensor,
-  stopping: StoppingCriteria
+  from: number,
+  start: Cache | null,
+  stopping: StoppingCriteria,
+  branch: { at: number; onBranch: (cache: Cache) => void } | null
 ) {
   const length = inputIds.dims[1]
   // At least one token is left for generate(), which skips what the cache
   // already holds; with none left it would read the whole prompt again.
-  const end = Math.floor((length - 1) / PROMPT_CHUNK) * PROMPT_CHUNK
-  if (end === 0) return null
-  let cache: Cache | null = null
-  try {
-    for (let start = 0; start < end; start += PROMPT_CHUNK) {
-      if (stopping.interrupted) break
-      const stop = start + PROMPT_CHUNK
-      const outputs = await model.forward({
-        input_ids: inputIds.slice(null, [start, stop]),
-        attention_mask: tf.ones([1, stop]),
-        ...(cache && { past_key_values: cache }),
-        // Logits for the last token only (the default here is every token).
-        num_logits_to_keep: new tf.Tensor("int64", [1n], [])
-      })
-      const entries: Record<string, Tensor> = {}
-      for (const [name, tensor] of Object.entries(outputs)) {
-        if (name.startsWith("present")) entries[cacheName(name)] = tensor
-        else if (tensor.location === "gpu-buffer") tensor.dispose()
-      }
-      if (cache) cache.update(entries)
-      else cache = new tf.DynamicCache(entries)
-      nudgeGarbageCollector()
-      logMemory(`prompt read ${stop} of ${length} tokens`)
+  const end = length - 1
+  let cache = start
+  let step: number | null = null
+  for (let at = from; at < end && !stopping.interrupted;) {
+    step = nextPromptStep(step)
+    let stop = Math.min(at + step, end)
+    if (branch && at < branch.at && stop > branch.at) stop = branch.at
+    const size = stop - at
+    const began = performance.now()
+    const outputs = await model.forward({
+      input_ids: inputIds.slice(null, [at, stop]),
+      attention_mask: tf.ones([1, stop]),
+      ...(cache && { past_key_values: cache }),
+      // Logits for the last token only (the default here is every token).
+      num_logits_to_keep: new tf.Tensor("int64", [1n], [])
+    })
+    const ms = performance.now() - began
+    // Tiny steps are mostly fixed costs: they'd make the rate look slow.
+    if (size >= MIN_PROMPT_STEP) promptRate = size / ms
+    const entries: Record<string, Tensor> = {}
+    for (const [name, tensor] of Object.entries(outputs)) {
+      if (name.startsWith("present")) entries[cacheName(name)] = tensor
+      else if (tensor.location === "gpu-buffer") tensor.dispose()
     }
-    return cache
-  } catch (error) {
-    await cache?.dispose()
-    throw error
+    if (cache) cache.update(entries)
+    else cache = new tf.DynamicCache(entries)
+    if (branch && stop === branch.at) branch.onBranch(cache)
+    nudgeGarbageCollector()
+    logMemory(
+      `prompt read ${stop} of ${length} tokens (${size} in ${Math.round(ms)} ms)`
+    )
+    at = stop
   }
+  return cache
 }
 
 /** How often a reply's counts go to the page while it generates. */
@@ -823,7 +1054,8 @@ async function generate(
     ctx.postMessage({ type: "token", id, text: "<think>" })
   }
   const inputs = tokenizer(prompt, { add_special_tokens: false })
-  gpu.promptTokens = inputs.input_ids.dims[1]
+  const ids = Array.from(inputs.input_ids.data, Number)
+  gpu.promptTokens = ids.length
   // The reply gets what's left of the context limit.
   const room = CONTEXT_LIMIT - gpu.promptTokens
   if (room < MIN_REPLY_TOKENS) {
@@ -843,10 +1075,11 @@ async function generate(
   let outputTokens = 0
   let firstToken: number | null = null
   let lastToken = 0
+  // What the last run left in the cache that this prompt starts with.
+  const reused = reuseSaved(tf, loaded.modelId, ids)
   const timings = (): RunTimings => ({
-    inputTokens: inputs.input_ids.dims[1],
-    // Every run reads the whole prompt, so none of it is cached. Reusing the
-    // cache between runs would report its length here as cachedTokens.
+    inputTokens: ids.length,
+    cachedTokens: reused.cached,
     outputTokens,
     firstTokenMs: firstToken === null ? null : firstToken - requested,
     decodeMs: firstToken === null ? 0 : lastToken - firstToken
@@ -882,13 +1115,47 @@ async function generate(
       if (text) ctx.postMessage({ type: "token", id, text })
     }
   })
-  let cache: Cache | null = null
+  let cache: Cache | null = reused.cache
+  const checkpoints = reused.checkpoints
+  /** Every token the model has read, prompt and reply, once it's replied. */
+  let sequence: Array<number> = ids
+  if (import.meta.env.DEV) {
+    ctx.postMessage({
+      type: "log",
+      text: `[cache] ${reused.cached} of ${ids.length} prompt tokens already read`
+    })
+  }
   try {
+    const addCheckpoint = (at: Cache, length: number) => {
+      checkpoints.push(checkpoint(tf, at, length))
+      // Keep the oldest (often the end of the system prompt and tools, which
+      // new chats share) and the latest.
+      if (checkpoints.length > MAX_CHECKPOINTS) {
+        checkpoints.splice(1, 1).forEach(disposeCheckpoint)
+      }
+    }
+    // Where this prompt stopped matching the cache: the next prompt may
+    // match up to there too.
+    const branchAt = reused.common
+    const branch =
+      branchAt > reused.cached && branchAt < ids.length - 1
+        ? { at: branchAt, onBranch: (at: Cache) => addCheckpoint(at, branchAt) }
+        : null
     cache = await unlessGpuLost(
-      readPrompt(tf, model, inputs.input_ids, stopping)
+      readPrompt(
+        tf,
+        model,
+        inputs.input_ids,
+        reused.cached,
+        cache,
+        stopping,
+        branch
+      )
     )
     if (stopping.interrupted) return timings()
-    await unlessGpuLost(
+    if (cache) addCheckpoint(cache, ids.length - 1)
+    // generate() reads the rest of the prompt and updates the cache in place.
+    const output = (await unlessGpuLost(
       model.generate({
         ...inputs,
         ...(cache && {
@@ -901,15 +1168,32 @@ async function generate(
         streamer,
         stopping_criteria: [stopping]
       })
-    )
+    )) as Tensor
+    sequence = Array.from(output.data, Number)
   } catch (error) {
     // The model's GPU memory is gone with the device: load it again next time.
     if (gpu.lost && current === loaded) current = null
+    checkpoints.forEach(disposeCheckpoint)
+    checkpoints.length = 0
+    await cache?.dispose().catch(() => undefined)
+    cache = null
     throw error
   } finally {
     running.delete(id)
-    // generate() keeps a cache it was given; this one is done.
-    await cache?.dispose().catch(() => undefined)
+    // Keep the cache for the next run. It holds every token it has read
+    // (the last token generated isn't read until the next step).
+    if (cache && current === loaded) {
+      const length = cache.get_seq_length()
+      saved = {
+        modelId: loaded.modelId,
+        ids: sequence.slice(0, length),
+        cache,
+        checkpoints
+      }
+    } else if (cache) {
+      checkpoints.forEach(disposeCheckpoint)
+      await cache.dispose().catch(() => undefined)
+    }
     logMemory(`reply finished, ${outputTokens} tokens`)
     if (import.meta.env.DEV) {
       ctx.postMessage({

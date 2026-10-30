@@ -53,7 +53,7 @@ function contentText(content: ModelMessage["content"]) {
 function toOpenAIMessages(
   messages: Array<UIMessage> | Array<ModelMessage>
 ): Array<OpenAIMessage> {
-  // The date and time, and the user's system prompt from Settings.
+  // The date, and the user's system prompt from Settings.
   const out: Array<OpenAIMessage> = [
     { role: "system", content: currentSystemPrompt() }
   ]

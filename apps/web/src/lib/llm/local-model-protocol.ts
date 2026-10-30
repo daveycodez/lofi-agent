@@ -27,8 +27,10 @@ export type Sampling = {
 
 /** Token counts and timings of one generation, measured in the worker. */
 export type RunTimings = {
-  /** Tokens of the prompt the model read. */
+  /** Tokens of the prompt, including any already in the model's cache. */
   inputTokens: number
+  /** Tokens at the start of the prompt the model had read on an earlier run. */
+  cachedTokens: number
   /** Tokens the model generated (the end-of-turn token included). */
   outputTokens: number
   /** From the request to the first generated token, in ms; null if none. */
