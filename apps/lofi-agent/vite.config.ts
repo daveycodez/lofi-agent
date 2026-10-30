@@ -7,6 +7,12 @@ import viteReact from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 import { cloudflare } from "@cloudflare/vite-plugin"
 
+/** Same as src/start.ts, for the dev and preview servers. */
+const CROSS_ORIGIN_ISOLATION = {
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "credentialless"
+}
+
 const config = defineConfig({
   // "@tanstack-ai-browser/source" points this repo's packages at their TypeScript sources,
   // so the demo runs on them without building them first.
@@ -23,8 +29,11 @@ const config = defineConfig({
   // and through ngrok tunnels, which give it the HTTPS that WebGPU needs.
   server: {
     host: true,
-    allowedHosts: [".local", ".ngrok.dev", ".ngrok.app", ".ngrok-free.app"]
+    allowedHosts: [".local", ".ngrok.dev", ".ngrok.app", ".ngrok-free.app"],
+    // Cross-origin isolation, as in production (see src/start.ts).
+    headers: CROSS_ORIGIN_ISOLATION
   },
+  preview: { headers: CROSS_ORIGIN_ISOLATION },
   plugins: [
     devtools(),
     cloudflare({ viteEnvironment: { name: "ssr" } }),
