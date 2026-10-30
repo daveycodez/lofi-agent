@@ -24,6 +24,10 @@ export type ModelStatus =
       progress: number
       /** True when the files come from the browser's storage, not the network. */
       cached: boolean
+      /** Bytes downloaded so far, while downloading. */
+      loadedBytes?: number
+      /** Bytes of all the model's files, while downloading. */
+      totalBytes?: number
     }
   | { state: "ready" }
   | { state: "error"; message: string }
@@ -75,7 +79,11 @@ function handleMessage({ data }: MessageEvent<WorkerResponse>) {
     modelStatus(data.modelId).set({
       state: "loading",
       progress: data.progress,
-      cached: data.cached
+      cached: data.cached,
+      ...(data.totalBytes !== undefined && {
+        loadedBytes: data.loadedBytes ?? 0,
+        totalBytes: data.totalBytes
+      })
     })
   } else if (data.type === "ready") {
     modelStatus(data.modelId).set({ state: "ready" })

@@ -82,7 +82,16 @@ export type WorkerRequest =
   | { type: "stop"; id: string }
 
 export type WorkerResponse =
-  | { type: "progress"; modelId: string; progress: number; cached: boolean }
+  | {
+      type: "progress"
+      modelId: string
+      progress: number
+      cached: boolean
+      /** Bytes of the model's files downloaded so far, while downloading. */
+      loadedBytes?: number
+      /** Bytes of all the model's files, while downloading. */
+      totalBytes?: number
+    }
   | { type: "ready"; modelId: string }
   | { type: "load-error"; modelId: string; message: string }
   | { type: "token"; id: string; text: string }

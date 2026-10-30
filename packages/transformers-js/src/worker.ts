@@ -719,12 +719,12 @@ async function isDownloaded(modelId: string, weights: Array<WeightsFile>) {
 
 /**
  * Downloads the weights files to disk, one after another, writing each
- * network chunk as it arrives. Progress is across all of them.
+ * network chunk as it arrives. Progress is in bytes across all of them.
  */
 async function downloadWeights(
   modelId: string,
   weights: Array<WeightsFile>,
-  onProgress: (progress: number) => void
+  onProgress: (loaded: number, total: number) => void
 ) {
   const dir = await navigator.storage.getDirectory()
   const total = weights.reduce((sum, w) => sum + w.size, 0)
@@ -734,7 +734,7 @@ async function downloadWeights(
       modelId,
       file,
       (written) => {
-        if (total) onProgress((before + written) / total)
+        if (total) onProgress(before + written, total)
       },
       dir
     )
@@ -993,15 +993,17 @@ async function loadRuntime(
   ctx.postMessage({ type: "progress", modelId, progress: 0, cached })
   // Whole percents only; the download stream reports every chunk.
   let lastPercent = -1
-  await downloadWeights(modelId, weights, (progress) => {
-    const percent = Math.floor(progress * 100)
+  await downloadWeights(modelId, weights, (loaded, total) => {
+    const percent = Math.floor((loaded / total) * 100)
     if (percent === lastPercent) return
     lastPercent = percent
     ctx.postMessage({
       type: "progress",
       modelId,
       progress: percent / 100,
-      cached: false
+      cached: false,
+      loadedBytes: loaded,
+      totalBytes: total
     })
   })
   ctx.postMessage({ type: "progress", modelId, progress: 0, cached: true })
