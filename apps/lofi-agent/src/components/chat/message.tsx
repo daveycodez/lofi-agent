@@ -13,7 +13,7 @@ import Pencil from "@gravity-ui/icons/Pencil"
 import TrashBin from "@gravity-ui/icons/TrashBin"
 import Volume from "@gravity-ui/icons/Volume"
 import VolumeXmark from "@gravity-ui/icons/VolumeXmark"
-import { Alert, Button, Dropdown, Label, Spinner } from "@heroui/react"
+import { Alert, Button, Dropdown, Label } from "@heroui/react"
 import type { UIMessage } from "@tanstack/ai"
 import type { MessageProps } from "@tanstack/ai-react/ui"
 import { useContext, useEffect, useMemo, useState } from "react"
@@ -158,6 +158,11 @@ function AssistantMessage({ message }: { message: UIMessage }) {
     (p) => p.type === "thinking" && p.content.trim()
   )
   const hasAnswer = !!text || hasTools
+  // After a tool's result the model reads it before it writes again.
+  const last = message.parts.at(-1)
+  const afterTool =
+    last?.type === "tool-result" ||
+    (last?.type === "tool-call" && last.output !== undefined)
   const shownError = isLast && !isLoading ? error : undefined
 
   const reply = useMemo(
@@ -170,7 +175,9 @@ function AssistantMessage({ message }: { message: UIMessage }) {
       <ReplyContext.Provider value={reply}>
         <MessageParts message={message} />
       </ReplyContext.Provider>
-      {isRunning && !hasAnswer && !hasThinking && <Working />}
+      {isRunning && ((!hasAnswer && !hasThinking) || afterTool) && (
+        <Working />
+      )}
       {text && sources && sources.all.length > 0 && (
         <SourceList sources={sources.all} />
       )}
@@ -255,33 +262,31 @@ const formatBytes = (bytes: number) =>
     : `${Math.round(bytes / 1e6)} MB`
 
 /**
- * A spinner until the reply starts. A model downloads when the first
- * message is sent to it: meanwhile, which model and how much of it is
- * here, shimmering like "Thinking…".
+ * What the model is doing until it writes, shimmering like "Thinking…": a
+ * model downloads when the first message is sent to it (which model, and
+ * how much of it is here), then loads into memory; after that it reads the
+ * prompt, as it does on every turn and after every tool result.
  */
 function Working() {
   const model = useSelectedModel()
   const status = useModelStatus(model)
+  const loading = status.state === "loading" ? status : null
   const downloading =
-    status.state === "loading" && !status.cached && status.progress < 1
-      ? status
-      : null
+    loading && !loading.cached && loading.progress < 1 ? loading : null
+  const label = downloading
+    ? `Downloading ${modelInfo(model).name}… ${
+        downloading.totalBytes
+          ? `${formatBytes(downloading.loadedBytes ?? 0)} of ${formatBytes(downloading.totalBytes)}`
+          : `${Math.round(downloading.progress * 100)}%`
+      }`
+    : loading
+      ? "Loading…"
+      : "Processing…"
   // A row as tall as the Thoughts toggle, centered as its label is, so
   // nothing moves when the reply takes its place.
   return (
     <div className="flex min-h-8 w-fit items-center py-1 text-sm text-muted">
-      {downloading ? (
-        <span className="text-shimmer">
-          {`Downloading ${modelInfo(model).name}… `}
-          {downloading.totalBytes
-            ? `${formatBytes(downloading.loadedBytes ?? 0)} of ${formatBytes(downloading.totalBytes)}`
-            : `${Math.round(downloading.progress * 100)}%`}
-        </span>
-      ) : (
-        // Not every model thinks: a spinner until the reply starts, and
-        // "Thinking…" only on the thinking itself.
-        <Spinner size="sm" color="current" aria-label="Waiting for the reply" />
-      )}
+      <span className="text-shimmer">{label}</span>
     </div>
   )
 }
