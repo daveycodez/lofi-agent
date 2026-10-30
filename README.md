@@ -56,7 +56,7 @@ pnpm nx run-many -t typecheck lint     # every project
 
 Releases run from GitHub Actions: **Actions → Release → Run workflow**. [Nx Release](https://nx.dev/features/manage-releases) works out each package's next version from its conventional commits since its last tag (or takes the version you type), updates its `CHANGELOG.md`, commits and tags it (`transformers-js@0.0.2`), publishes it to npm with provenance, and creates a GitHub release. Tick **dry run** to see what would happen first.
 
-Publishing needs an `NPM_TOKEN` repository secret, or [trusted publishing](https://docs.npmjs.com/trusted-publishers) set up on npm for both packages with the workflow `release.yml`.
+Publishing uses npm [trusted publishing](https://docs.npmjs.com/trusted-publishers), set up on npm for both packages with the workflow `release.yml`, so no npm token is stored in the repository.
 
 You need Node.js and pnpm (the repo pins `pnpm@12.6.0` in `packageManager`). See the [demo's README](apps/lofi-agent/README.md) for its features, requirements and deployment.
 

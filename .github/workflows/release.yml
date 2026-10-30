@@ -45,7 +45,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
       - run: pnpm install --frozen-lockfile
 
@@ -61,6 +60,7 @@ jobs:
           FIRST_RELEASE: ${{ inputs.first-release && '--first-release' || '' }}
           DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # An npm token, until trusted publishing is set up for both packages.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # npm trusted publishing: pnpm trades the workflow's OIDC token
+          # (id-token: write above) for a one-time publish token. No npm
+          # secret is needed, and provenance is added automatically.
           NPM_CONFIG_PROVENANCE: true
