@@ -240,13 +240,15 @@ type Runtime = {
 }
 
 /**
- * Threads for a model on the CPU: every core the browser reports (ONNX
- * Runtime's own default is half, up to 4). On an M3 Ultra, 4 threads wrote
- * 3.0 tokens/s, 8 wrote 5.5 and 16 wrote 8.8. Several threads need a
- * cross-origin isolated page; without one it's a single thread whatever
- * this says.
+ * Threads for a model on the CPU: half the cores the browser reports, as
+ * wllama does (ONNX Runtime's own default is half, up to 4), which leaves
+ * cores for the page and keeps a phone's slowest cores out of the work. On
+ * an M3 Ultra, 4 threads wrote 3.0 tokens/s, 8 wrote 5.5 and 16 wrote 8.8.
+ * Several threads need a cross-origin isolated page; without one it's a
+ * single thread whatever this says.
  */
-const cpuThreads = () => Math.max(1, navigator.hardwareConcurrency || 4)
+const cpuThreads = () =>
+  Math.max(1, Math.floor((navigator.hardwareConcurrency || 1) / 2))
 
 /**
  * WebGPU if this browser has it and can get a GPU adapter, else the CPU.
