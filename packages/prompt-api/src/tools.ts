@@ -1,9 +1,11 @@
 /**
- * Tool calls for the built-in model. Chrome's Prompt API has no tool use
- * for web pages yet (a session asked for tool calls fails to start), but it
- * has guided generation: `responseConstraint` holds the reply to a JSON
- * Schema. So each step that has tools works in two constrained calls, on
- * copies of the session (`clone()`), before anything is generated for real:
+ * Tool calls for the built-in model. The Prompt API spec has tool use (open
+ * loop: the session writes tool calls, the page runs them and sends back
+ * their results), but Chrome doesn't ship it to web pages yet, so where the
+ * browser lacks it (`supportsNativeTools`), tools work through guided
+ * generation instead: `responseConstraint` holds the reply to a JSON Schema.
+ * Each step that has tools works in two constrained calls, on copies of the
+ * session (`clone()`), before anything is generated for real:
  *
  * 1. The decision: `{"action": "answer" | <tool name>}`.
  * 2. For a tool, its arguments, held to the tool's input schema.
@@ -13,9 +15,11 @@
  * question about current events; with the decision constrained it picked
  * right 10 times in 10 (4 tool calls, 6 answers).
  */
-import type { ModelMessage, Tool } from "@tanstack/ai"
+import type { Tool } from "@tanstack/ai"
 
-import type { LanguageModelMessage } from "./types.js"
+import { baseOptions } from "./model.js"
+import { languageModel, toolClasses } from "./types.js"
+import type { LanguageModelTool } from "./types.js"
 
 type JsonSchema = Record<string, unknown>
 
@@ -195,58 +199,57 @@ export function parseArguments(
   }
 }
 
-function contentText(content: ModelMessage["content"]) {
-  if (typeof content === "string") return content
-  return (content ?? [])
-    .map((part) => (part.type === "text" ? part.content : ""))
-    .join("")
-}
-
-/** A tool call as the model sees it in the conversation. */
+/** A tool call as the model sees it in the conversation, without native tool use. */
 export function toolCallText(name: string, args: unknown) {
   return JSON.stringify({ tool: name, arguments: args ?? {} })
 }
 
-/** A tool's result as the model reads it, or the error a failed tool gave. */
-function toolResultText(m: ModelMessage, name: string | undefined) {
-  const tool = name ?? "the tool"
-  if (m.error) return `${tool} failed: ${m.error}`
-  const text = contentText(m.content)
-  return `Result of ${tool}:\n${text && text !== "null" ? text : "nothing."}`
-}
+/** Tools as the browser takes them, for its own tool use. */
+export const toLanguageModelTools = (
+  tools: ReadonlyArray<Tool>
+): Array<LanguageModelTool> =>
+  tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description ?? "",
+    inputSchema: inputSchemaOf(tool)
+  }))
+
+const nativeSupport = new Map<string, Promise<boolean>>()
 
 /**
- * The conversation as Prompt API messages. Tool calls are the assistant's
- * `{"tool", "arguments"}` JSON, as the model wrote them, and tool results
- * are user messages. Every step is kept, earlier turns' tool calls and
- * results included, so a session that has read a conversation can take the
- * next request by appending only what's new.
+ * Whether this browser runs tools itself (the spec's open-loop tool use):
+ * it has the tool message classes, and `availability()` takes a session
+ * that writes tool calls. Checked once per set of languages.
  */
-export function toPromptMessages(
-  messages: ReadonlyArray<ModelMessage>
-): Array<LanguageModelMessage> {
-  const out: Array<LanguageModelMessage> = []
-  const toolNames = new Map<string, string>()
-  for (const m of messages) {
-    const content = contentText(m.content)
-    if (m.role === "tool") {
-      const name = m.toolCallId ? toolNames.get(m.toolCallId) : undefined
-      out.push({ role: "user", content: toolResultText(m, name) })
-    } else if (m.role === "assistant" && m.toolCalls?.length) {
-      const calls = m.toolCalls.map((call) => {
-        toolNames.set(call.id, call.function.name)
-        return toolCallText(
-          call.function.name,
-          parseArguments(call.function.arguments) ?? {}
-        )
+export function supportsNativeTools(
+  languages: ReadonlyArray<string>
+): Promise<boolean> {
+  const api = languageModel()
+  if (!api || !toolClasses()) return Promise.resolve(false)
+  const key = languages.join(",")
+  let supported = nativeSupport.get(key)
+  if (!supported) {
+    supported = api
+      .availability({
+        ...baseOptions(languages, { nativeTools: true }),
+        tools: [
+          {
+            name: "check",
+            description: "Checks whether tools work.",
+            inputSchema: { type: "object", properties: {} }
+          }
+        ]
       })
-      out.push({
-        role: "assistant",
-        content: [content, ...calls].filter(Boolean).join("\n")
-      })
-    } else if (content) {
-      out.push({ role: m.role === "user" ? "user" : "assistant", content })
-    }
+      .then(
+        (availability) => availability !== "unavailable",
+        () => false
+      )
+    nativeSupport.set(key, supported)
   }
-  return out
+  return supported
+}
+
+/** Turns native tool use off for these languages, after a session refused it. */
+export function noNativeTools(languages: ReadonlyArray<string>) {
+  nativeSupport.set(languages.join(","), Promise.resolve(false))
 }

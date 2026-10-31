@@ -14,8 +14,15 @@ export {
   promptApiAvailability,
   promptApiContextWindow,
   promptApiModel,
-  promptApiStatus
+  promptApiStatus,
+  PromptApiError
 } from "./model.js"
-export type { Availability, ModelStatus, PromptApiModelInfo } from "./model.js"
+export type {
+  Availability,
+  MediaInput,
+  ModelStatus,
+  PromptApiModelInfo,
+  SamplingMode
+} from "./model.js"
 export { destroyPromptApiSessions } from "./sessions.js"
 export type { Store } from "./store.js"

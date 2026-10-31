@@ -21,28 +21,43 @@ import type {
 } from "@tanstack/ai/adapters"
 
 import {
+  assistantMessage,
+  mediaIn,
+  toLanguageModelMessages,
+  toPromptMessages
+} from "./messages.js"
+import type { PromptMessage } from "./messages.js"
+import {
   baseOptions,
   DEFAULT_LANGUAGES,
-  loadPromptApiModel,
-  NO_PROMPT_API
+  NO_PROMPT_API,
+  PromptApiError
 } from "./model.js"
+import type { MediaInput } from "./model.js"
 import { leaseSession } from "./sessions.js"
 import type { Lease } from "./sessions.js"
 import {
   decisionSchema,
   inputSchemaOf,
+  noNativeTools,
   parseArguments,
   parseDecision,
+  supportsNativeTools,
   toGuidedSchema,
+  toLanguageModelTools,
   toolCallText,
-  toolsPrompt,
-  toPromptMessages
+  toolsPrompt
 } from "./tools.js"
 import { languageModel } from "./types.js"
 import type {
+  LanguageModelContent,
   LanguageModelCreateOptions,
   LanguageModelMessage,
-  LanguageModelSession
+  LanguageModelOutput,
+  LanguageModelSession,
+  LanguageModelToolCall,
+  QuotaExceededError,
+  SamplingMode
 } from "./types.js"
 
 /** The model: whichever one the browser provides. */
@@ -55,24 +70,32 @@ export type PromptApiTextConfig = {
    * safety filters for the output language.
    */
   languages?: ReadonlyArray<string>
+  /**
+   * Whether to use the browser's own tool use where it has it (the spec's
+   * open-loop tool use, which Chrome doesn't ship to web pages yet): true
+   * by default. Off, or where the browser lacks it, tools go through guided
+   * generation. A specific `toolChoice` always does.
+   */
+  nativeTools?: boolean
+  /**
+   * Called when a conversation outgrows the context window and the browser
+   * drops its oldest turns (never the system prompt) to make room.
+   */
+  onContextOverflow?: (event: { threadId: string | undefined }) => void
 }
 
 /**
  * Per-call `modelOptions`. A session's sampling is set when it starts, so a
- * change starts a new session. Chrome ignores all of these on web pages
- * unless the page is in its Sampling Parameters origin trial.
+ * change starts a new session.
  */
 export type PromptApiModelOptions = {
-  /** Sampling preset, "most-predictable" to "most-creative" ("balanced" by default). */
-  samplingMode?:
-    | "most-predictable"
-    | "predictable"
-    | "slightly-predictable"
-    | "balanced"
-    | "slightly-creative"
-    | "creative"
-    | "most-creative"
-  /** Raw sampling, for extensions; give both or neither. */
+  /**
+   * Sampling preset, "most-predictable" to "most-creative" ("balanced" by
+   * default). Chrome takes it on web pages only in its Sampling Parameters
+   * origin trial.
+   */
+  samplingMode?: SamplingMode
+  /** Raw sampling, for extensions (web pages ignore it); `samplingMode` wins. */
   temperature?: number
   topK?: number
 }
@@ -88,12 +111,17 @@ export type PromptApiProviderUsageDetails = {
   promptMs?: number
   /** From the first generated text to the last. */
   decodeMs?: number
-  /** Tokens generated after the first one, over `decodeMs`. */
+  /**
+   * Tokens generated after the first one, over `decodeMs`: an estimate (the
+   * Prompt API counts tokens for a whole message, not as they're written).
+   */
   decodeTokens?: number
   /** Tokens the session holds after the call. */
   contextUsage?: number
   /** Tokens it can hold. */
   contextWindow?: number
+  /** True when the browser dropped the oldest turns to make room during the call. */
+  contextOverflow?: boolean
 }
 
 type PromptApiReasoning = never
@@ -111,23 +139,37 @@ const errorText = (error: unknown) =>
 
 /** What a failed prompt means for the user. */
 function promptErrorText(error: unknown) {
+  if (error instanceof PromptApiError) return error.message
   if (error instanceof DOMException) {
     if (error.name === "QuotaExceededError") {
-      const { requested, quota } = error as DOMException & {
-        requested?: number
-        quota?: number
-      }
+      const { requested, quota, contextWindow } = error as QuotaExceededError
+      const free = quota ?? contextWindow
       const sizes =
-        requested && quota
-          ? ` (it needs ${requested} tokens; the model holds ${quota})`
+        requested && free !== undefined
+          ? ` (it needs ${requested} tokens; ${free} are free)`
           : ""
       return `This is too long for the built-in model${sizes}. Start a new chat or send something shorter.`
     }
     if (error.name === "NotSupportedError") {
       return `The built-in model can't do this: ${error.message}`
     }
+    if (error.name === "SecurityError") {
+      return "The built-in model can't read that image: it's from another site that doesn't allow it (CORS)."
+    }
+    if (error.name === "EncodingError") {
+      return "The built-in model can't read that image or audio: its format isn't supported."
+    }
   }
   return `The built-in model failed: ${errorText(error)}`
+}
+
+/** Whether an error is the browser refusing a session with tools. */
+function refusedTools(error: unknown) {
+  const cause = error instanceof PromptApiError ? error.cause : error
+  return (
+    cause instanceof TypeError ||
+    (cause instanceof DOMException && cause.name === "NotSupportedError")
+  )
 }
 
 /** A model call's token counts as TanStack AI usage, with its timings. */
@@ -147,16 +189,30 @@ function usageOf(
   return usage
 }
 
-/** Tokens a call wrote: the session's growth, else measured from its text. */
-async function outputTokens(
-  session: LanguageModelSession,
-  grew: number,
-  text: string
-) {
-  if (grew > 0) return grew
-  // The session dropped old turns to make room: count the reply itself.
-  return text ? session.measureContextUsage(text).catch(() => 0) : 0
-}
+/**
+ * Tokens of what the model wrote, measured once it's done (so the count
+ * never holds up the reply). The rest of the session is the prompt.
+ */
+const replyTokens = (session: LanguageModelSession, text: string) =>
+  text ? session.measureContextUsage(text).catch(() => 0) : Promise.resolve(0)
+
+/** A prompt's reply as text, from a session that may answer in pieces. */
+const textOf = (output: LanguageModelOutput) =>
+  typeof output === "string"
+    ? output
+    : output
+        .map((part) => (part.type === "text" ? String(part.value) : ""))
+        .join("")
+
+/** A streamed chunk's pieces: a text delta, or pieces with tool calls. */
+const piecesOf = (
+  chunk: string | LanguageModelContent | Array<LanguageModelContent>
+): Array<LanguageModelContent> =>
+  typeof chunk === "string"
+    ? [{ type: "text", value: chunk }]
+    : Array.isArray(chunk)
+      ? chunk
+      : [chunk]
 
 /**
  * The tool calls of the current turn (since the last user message), as
@@ -177,14 +233,31 @@ function currentTurnCalls(messages: ReadonlyArray<ModelMessage>) {
   )
 }
 
+/** The conversation split where the model last spoke. */
+function splitAtLastReply(conversation: Array<PromptMessage>) {
+  const lastReply = conversation.map((m) => m.role).lastIndexOf("assistant")
+  return {
+    prior: conversation.slice(0, lastReply + 1),
+    input: conversation.slice(lastReply + 1)
+  }
+}
+
 let ids = 0
 const nextId = (prefix: string) =>
   `${prefix}_${Date.now().toString(36)}_${(ids++).toString(36)}`
 
+/** A call's session and what it reads. */
+type Prepared = {
+  lease: Lease
+  prior: Array<PromptMessage>
+  inputMessages: Array<PromptMessage>
+  input: Array<LanguageModelMessage>
+}
+
 export class PromptApiTextAdapter extends BaseTextAdapter<
   PromptApiTextModel,
   PromptApiModelOptions,
-  readonly ["text"],
+  readonly ["text", "image", "audio"],
   MetadataByModality,
   ReadonlyArray<string>,
   unknown,
@@ -195,24 +268,106 @@ export class PromptApiTextAdapter extends BaseTextAdapter<
   readonly name = "prompt-api" as const
   override readonly provider = "prompt-api" as const
   override readonly api = "prompt-api" as const
-  override readonly inputModalities = ["text"] as const
+  override readonly inputModalities = ["text", "image", "audio"] as const
   private readonly languages: ReadonlyArray<string>
+  private readonly nativeTools: boolean
+  private readonly onContextOverflow: PromptApiTextConfig["onContextOverflow"]
 
   constructor(config: PromptApiTextConfig = {}) {
     super({}, "built-in")
     this.languages = config.languages ?? DEFAULT_LANGUAGES
+    this.nativeTools = config.nativeTools ?? true
+    this.onContextOverflow = config.onContextOverflow
   }
 
-  /** Session options: text in the languages set, and any sampling asked for. */
+  /**
+   * Session options: text in the languages set, the conversation's images
+   * and audio, the browser's own tools if it runs them, and any sampling.
+   */
   private createOptions(
-    modelOptions: PromptApiModelOptions | undefined
+    modelOptions: PromptApiModelOptions | undefined,
+    {
+      media,
+      tools
+    }: { media: ReadonlyArray<MediaInput>; tools?: ReadonlyArray<Tool> }
   ): LanguageModelCreateOptions {
     const { samplingMode, temperature, topK } = modelOptions ?? {}
     return {
-      ...baseOptions(this.languages),
+      ...baseOptions(this.languages, { media, nativeTools: !!tools }),
+      ...(tools && { tools: toLanguageModelTools(tools) }),
       ...(samplingMode !== undefined && { samplingMode }),
       ...(temperature !== undefined && { temperature }),
       ...(topK !== undefined && { topK })
+    }
+  }
+
+  /** The session for a call, having read everything before its input. */
+  private async prepare(
+    options: TextOptions<PromptApiModelOptions>,
+    tools: Array<Tool>,
+    native: boolean,
+    signal: AbortSignal | undefined
+  ): Promise<Prepared> {
+    const conversation = toPromptMessages(options.messages, {
+      nativeTools: native
+    })
+    // What's new since the model's last message is this call's input; the
+    // rest, a session may have read already.
+    const { prior, input: inputMessages } = splitAtLastReply(conversation)
+    if (inputMessages.length === 0) {
+      throw new PromptApiError(
+        "There's no message for the built-in model to answer."
+      )
+    }
+    const system = [
+      ...normalizeSystemPrompts(options.systemPrompts).map((p) => p.content),
+      ...(tools.length > 0 && !native ? [toolsPrompt(tools)] : [])
+    ].join("\n\n")
+    const media = new Map<string, Promise<Blob>>()
+    const lease = await leaseSession({
+      threadId: options.threadId,
+      system,
+      prior,
+      options: this.createOptions(options.modelOptions, {
+        media: mediaIn(conversation),
+        tools: native ? tools : undefined
+      }),
+      signal,
+      media
+    })
+    if (lease.miss) {
+      options.logger.provider(
+        `provider=prompt-api new session: ${lease.miss}`,
+        { threadId: options.threadId }
+      )
+    }
+    try {
+      const input = await toLanguageModelMessages(inputMessages, media)
+      return { lease, prior, inputMessages, input }
+    } catch (error) {
+      lease.discard()
+      throw error
+    }
+  }
+
+  /** The session's size, and whether it dropped old turns, for usage. */
+  private sessionDetails(
+    lease: Lease,
+    threadId: string | undefined,
+    logger: TextOptions["logger"]
+  ): PromptApiProviderUsageDetails {
+    const overflowed = lease.overflowed()
+    if (overflowed) {
+      logger.provider(
+        "provider=prompt-api context overflow: the oldest turns were dropped",
+        { threadId }
+      )
+      this.onContextOverflow?.({ threadId })
+    }
+    return {
+      contextUsage: lease.session.contextUsage,
+      contextWindow: lease.session.contextWindow,
+      ...(overflowed && { contextOverflow: true })
     }
   }
 
@@ -236,6 +391,42 @@ export class PromptApiTextAdapter extends BaseTextAdapter<
       message,
       error: { message }
     })
+    const toolCallEvents = (
+      toolCallId: string,
+      name: string,
+      input: Record<string, unknown>,
+      index: number
+    ): Array<AdapterYieldChunk> => {
+      const args = JSON.stringify(input)
+      return [
+        {
+          type: EventType.TOOL_CALL_START,
+          toolCallId,
+          toolCallName: name,
+          parentMessageId: messageId,
+          index,
+          model,
+          timestamp: timestamp()
+        },
+        {
+          type: EventType.TOOL_CALL_ARGS,
+          toolCallId,
+          delta: args,
+          args,
+          model,
+          timestamp: timestamp()
+        },
+        {
+          type: EventType.TOOL_CALL_END,
+          toolCallId,
+          toolCallName: name,
+          args,
+          input,
+          model,
+          timestamp: timestamp()
+        }
+      ]
+    }
     const startedAt = performance.now()
 
     yield {
@@ -250,112 +441,161 @@ export class PromptApiTextAdapter extends BaseTextAdapter<
       yield runError(NO_PROMPT_API)
       return
     }
-    try {
-      await loadPromptApiModel({ languages: this.languages, signal })
-    } catch (error) {
-      if (signal?.aborted) return
-      yield runError(errorText(error))
-      return
-    }
 
     const tools = options.toolChoice === "none" ? [] : (options.tools ?? [])
-    const system = [
-      ...normalizeSystemPrompts(options.systemPrompts).map((p) => p.content),
-      ...(tools.length > 0 ? [toolsPrompt(tools)] : [])
-    ].join("\n\n")
-    // What's new since the model's last message is this call's input; the
-    // rest, a session may have read already.
-    const conversation = toPromptMessages(options.messages)
-    const lastReply = conversation.map((m) => m.role).lastIndexOf("assistant")
-    const prior = conversation.slice(0, lastReply + 1)
-    const input = conversation.slice(lastReply + 1)
-    if (input.length === 0) {
-      yield runError("There's no message for the built-in model to answer.")
-      return
-    }
+    const choice = options.toolChoice
+    let native =
+      tools.length > 0 &&
+      this.nativeTools &&
+      (choice === undefined || choice === "auto") &&
+      (await supportsNativeTools(this.languages))
     logger.request(
-      `activity=chat provider=prompt-api model=${model} messages=${options.messages.length} tools=${tools.length} stream=true`,
+      `activity=chat provider=prompt-api model=${model} messages=${options.messages.length} tools=${tools.length} nativeTools=${native} stream=true`,
       { provider: "prompt-api", model }
     )
 
-    let lease: Lease
-    try {
-      lease = await leaseSession({
-        threadId,
-        system,
-        prior,
-        options: this.createOptions(options.modelOptions),
-        signal
-      })
-    } catch (error) {
-      if (signal?.aborted) return
-      logger.errors("prompt-api session failed", {
-        error,
-        source: "prompt-api.chatStream"
-      })
-      yield runError(promptErrorText(error))
-      return
-    }
-    const { session } = lease
-    // Given back only once the call has ended well; freed otherwise (an
-    // abort, an error, or the stream left unread).
-    let released = false
-    const contextWindow = session.contextWindow
+    // A kept session the browser destroyed (it shows only once used) is
+    // replaced once, if nothing was sent yet.
+    let retried = false
+    for (;;) {
+      let prepared: Prepared
+      for (;;) {
+        try {
+          prepared = await this.prepare(options, tools, native, signal)
+          break
+        } catch (error) {
+          if (signal?.aborted) return
+          if (native && refusedTools(error)) {
+            // The browser said it runs tools, then refused a session with them.
+            logger.provider("provider=prompt-api native tools refused", {
+              error
+            })
+            noNativeTools(this.languages)
+            native = false
+            continue
+          }
+          logger.errors("prompt-api session failed", {
+            error,
+            source: "prompt-api.chatStream"
+          })
+          yield runError(promptErrorText(error))
+          return
+        }
+      }
+      const { lease, prior, inputMessages, input } = prepared
+      const { session } = lease
+      // Given back only once the call has ended well; freed otherwise (an
+      // abort, an error, or the stream left unread).
+      let released = false
+      let sent = false
 
-    try {
-      const before = session.contextUsage
-      const inputTokens = await session.measureContextUsage(input)
-      const call =
-        tools.length > 0
-          ? await this.decideToolCall(session, input, tools, options, signal)
-          : undefined
+      try {
+        const call =
+          tools.length > 0 && !native
+            ? await this.decideToolCall(session, input, tools, options, signal)
+            : undefined
 
-      if (call) {
-        const callText = toolCallText(call.name, call.args)
-        // The session reads the step as the next request will send it.
-        await session.append(
-          [...input, { role: "assistant", content: callText }],
-          { signal }
-        )
-        const decidedAt = performance.now()
-        const completionTokens = await outputTokens(
+        if (call) {
+          const callText = toolCallText(call.name, call.args)
+          // The session reads the step as the next request will send it.
+          await session.append(
+            [...input, { role: "assistant", content: callText }],
+            { signal }
+          )
+          const decidedAt = performance.now()
+          const toolCallId = nextId("tool")
+          const completionTokens = await replyTokens(session, callText)
+          lease.release([
+            ...prior,
+            ...inputMessages,
+            { role: "assistant", content: callText }
+          ])
+          released = true
+          yield* toolCallEvents(toolCallId, call.name, call.args, 0)
+          yield {
+            type: EventType.RUN_FINISHED,
+            runId,
+            threadId,
+            model,
+            timestamp: timestamp(),
+            finishReason: "tool_calls",
+            usage: usageOf(
+              session.contextUsage - completionTokens,
+              completionTokens,
+              lease.cachedTokens,
+              {
+                firstTokenMs: decidedAt - startedAt,
+                ...this.sessionDetails(lease, threadId, logger)
+              }
+            )
+          }
+          return
+        }
+
+        // The answer, streamed as the model writes it; with the browser's
+        // own tools, its tool calls come after any text.
+        const promptAt = performance.now()
+        let first = 0
+        let last = 0
+        let text = ""
+        const written: Array<LanguageModelToolCall> = []
+        for await (const chunk of session.promptStreaming(input, { signal })) {
+          for (const piece of piecesOf(chunk)) {
+            if (piece.type === "tool-call") {
+              written.push(piece.value as LanguageModelToolCall)
+              continue
+            }
+            if (piece.type !== "text" || typeof piece.value !== "string")
+              continue
+            const delta = piece.value
+            if (!delta) continue
+            last = performance.now()
+            if (!first) {
+              first = last
+              sent = true
+              yield {
+                type: EventType.TEXT_MESSAGE_START,
+                messageId,
+                role: "assistant",
+                model,
+                timestamp: timestamp()
+              }
+            }
+            text += delta
+            yield {
+              type: EventType.TEXT_MESSAGE_CONTENT,
+              messageId,
+              delta,
+              content: text,
+              model,
+              timestamp: timestamp()
+            }
+          }
+        }
+        if (first) {
+          yield {
+            type: EventType.TEXT_MESSAGE_END,
+            messageId,
+            model,
+            timestamp: timestamp()
+          }
+        }
+        const calls = written.map((c) => ({
+          callId: c.callId || nextId("tool"),
+          name: c.name,
+          arguments: c.arguments ?? {}
+        }))
+        const completionTokens = await replyTokens(
           session,
-          session.contextUsage - before - inputTokens,
-          callText
+          [text, ...calls.map((c) => toolCallText(c.name, c.arguments))]
+            .filter(Boolean)
+            .join("\n")
         )
-        lease.release([
-          ...prior,
-          ...input,
-          { role: "assistant", content: callText }
-        ])
+        const reply = assistantMessage(text, calls, native)
+        lease.release([...prior, ...inputMessages, ...(reply ? [reply] : [])])
         released = true
-        const toolCallId = nextId("tool")
-        const args = JSON.stringify(call.args)
-        yield {
-          type: EventType.TOOL_CALL_START,
-          toolCallId,
-          toolCallName: call.name,
-          parentMessageId: messageId,
-          index: 0,
-          model,
-          timestamp: timestamp()
-        }
-        yield {
-          type: EventType.TOOL_CALL_ARGS,
-          toolCallId,
-          delta: args,
-          args,
-          model,
-          timestamp: timestamp()
-        }
-        yield {
-          type: EventType.TOOL_CALL_END,
-          toolCallId,
-          toolCallName: call.name,
-          args,
-          input: call.args,
-          model,
-          timestamp: timestamp()
+        for (const [index, c] of calls.entries()) {
+          yield* toolCallEvents(c.callId, c.name, c.arguments, index)
         }
         yield {
           type: EventType.RUN_FINISHED,
@@ -363,96 +603,44 @@ export class PromptApiTextAdapter extends BaseTextAdapter<
           threadId,
           model,
           timestamp: timestamp(),
-          finishReason: "tool_calls",
+          finishReason: calls.length > 0 ? "tool_calls" : "stop",
           usage: usageOf(
-            before + inputTokens,
+            session.contextUsage - completionTokens,
             completionTokens,
             lease.cachedTokens,
             {
-              firstTokenMs: decidedAt - startedAt,
-              contextUsage: session.contextUsage,
-              contextWindow
+              ...(first && {
+                firstTokenMs: first - startedAt,
+                promptMs: lease.createMs + (first - promptAt),
+                decodeMs: last - first,
+                decodeTokens: Math.max(completionTokens - 1, 0)
+              }),
+              ...this.sessionDetails(lease, threadId, logger)
             }
           )
         }
         return
-      }
-
-      // The answer, streamed as the model writes it.
-      const promptAt = performance.now()
-      let first = 0
-      let last = 0
-      let text = ""
-      for await (const delta of session.promptStreaming(input, { signal })) {
-        if (!delta) continue
-        last = performance.now()
-        if (!first) {
-          first = last
-          yield {
-            type: EventType.TEXT_MESSAGE_START,
-            messageId,
-            role: "assistant",
-            model,
-            timestamp: timestamp()
-          }
+      } catch (error) {
+        if (signal?.aborted) return
+        const destroyed =
+          error instanceof DOMException && error.name === "InvalidStateError"
+        if (destroyed && lease.reused && !sent && !retried) {
+          logger.provider(
+            "provider=prompt-api the kept session was destroyed; starting a new one",
+            { threadId }
+          )
+          retried = true
+          continue
         }
-        text += delta
-        yield {
-          type: EventType.TEXT_MESSAGE_CONTENT,
-          messageId,
-          delta,
-          content: text,
-          model,
-          timestamp: timestamp()
-        }
+        logger.errors("prompt-api prompt failed", {
+          error,
+          source: "prompt-api.chatStream"
+        })
+        yield runError(promptErrorText(error))
+        return
+      } finally {
+        if (!released) lease.discard()
       }
-      if (first) {
-        yield {
-          type: EventType.TEXT_MESSAGE_END,
-          messageId,
-          model,
-          timestamp: timestamp()
-        }
-      }
-      const completionTokens = await outputTokens(
-        session,
-        session.contextUsage - before - inputTokens,
-        text
-      )
-      lease.release([...prior, ...input, { role: "assistant", content: text }])
-      released = true
-      yield {
-        type: EventType.RUN_FINISHED,
-        runId,
-        threadId,
-        model,
-        timestamp: timestamp(),
-        finishReason: "stop",
-        usage: usageOf(
-          before + inputTokens,
-          completionTokens,
-          lease.cachedTokens,
-          {
-            ...(first && {
-              firstTokenMs: first - startedAt,
-              promptMs: lease.createMs + (first - promptAt),
-              decodeMs: last - first,
-              decodeTokens: Math.max(completionTokens - 1, 0)
-            }),
-            contextUsage: session.contextUsage,
-            contextWindow
-          }
-        )
-      }
-    } catch (error) {
-      if (signal?.aborted) return
-      logger.errors("prompt-api prompt failed", {
-        error,
-        source: "prompt-api.chatStream"
-      })
-      yield runError(promptErrorText(error))
-    } finally {
-      if (!released) lease.discard()
     }
   }
 
@@ -509,30 +697,34 @@ export class PromptApiTextAdapter extends BaseTextAdapter<
   ): Promise<StructuredOutputResult<unknown>> {
     const { chatOptions, outputSchema } = options
     const signal = chatOptions.abortController?.signal
-    await loadPromptApiModel({ languages: this.languages, signal })
-    const conversation = toPromptMessages(chatOptions.messages)
-    const lastReply = conversation.map((m) => m.role).lastIndexOf("assistant")
-    const input = conversation.slice(lastReply + 1)
+    const conversation = toPromptMessages(chatOptions.messages, {
+      nativeTools: false
+    })
+    const { prior, input: inputMessages } = splitAtLastReply(conversation)
+    const media = new Map<string, Promise<Blob>>()
     const lease = await leaseSession({
       // A session of its own, freed after.
       threadId: undefined,
       system: normalizeSystemPrompts(chatOptions.systemPrompts)
         .map((p) => p.content)
         .join("\n\n"),
-      prior: conversation.slice(0, lastReply + 1),
-      options: this.createOptions(chatOptions.modelOptions),
-      signal
+      prior,
+      options: this.createOptions(chatOptions.modelOptions, {
+        media: mediaIn(conversation)
+      }),
+      signal,
+      media
     })
     const { session } = lease
     try {
-      const before = session.contextUsage
-      const inputTokens =
-        input.length > 0 ? await session.measureContextUsage(input) : 0
-      const ask = (schema: object) =>
-        session.prompt(input.length > 0 ? input : "Answer.", {
-          responseConstraint: schema,
-          signal
-        })
+      const input =
+        inputMessages.length > 0
+          ? await toLanguageModelMessages(inputMessages, media)
+          : "Answer."
+      const ask = async (schema: object) =>
+        textOf(
+          await session.prompt(input, { responseConstraint: schema, signal })
+        )
       let rawText: string
       try {
         rawText = await ask(outputSchema)
@@ -543,20 +735,21 @@ export class PromptApiTextAdapter extends BaseTextAdapter<
           throw error
         rawText = await ask(toGuidedSchema(outputSchema))
       }
-      const completionTokens = await outputTokens(
-        session,
-        session.contextUsage - before - inputTokens,
-        rawText
-      )
+      const completionTokens = await replyTokens(session, rawText)
       try {
         return {
           data: JSON.parse(rawText) as unknown,
           rawText,
           model: this.model,
-          usage: usageOf(before + inputTokens, completionTokens, 0, {
-            contextUsage: session.contextUsage,
-            contextWindow: session.contextWindow
-          })
+          usage: usageOf(
+            session.contextUsage - completionTokens,
+            completionTokens,
+            0,
+            {
+              contextUsage: session.contextUsage,
+              contextWindow: session.contextWindow
+            }
+          )
         }
       } catch {
         throw new Error(
@@ -581,7 +774,7 @@ async function promptCopy(
 ) {
   const copy = await session.clone({ signal })
   try {
-    return await copy.prompt(input, { ...options, signal })
+    return textOf(await copy.prompt(input, { ...options, signal }))
   } finally {
     copy.destroy()
   }

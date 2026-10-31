@@ -6,13 +6,13 @@
  * edited or regenerated message, another system prompt) starts a new
  * session from the whole conversation.
  */
-import { languageModel } from "./types.js"
+import { createLanguageModel } from "./model.js"
+import { keyOf, toLanguageModelMessages } from "./messages.js"
+import type { PromptMessage } from "./messages.js"
 import type {
   LanguageModelCreateOptions,
-  LanguageModelMessage,
   LanguageModelSession
 } from "./types.js"
-import { noteContextWindow } from "./model.js"
 
 /** Sessions kept at once, most recently used first; older ones are freed. */
 const MAX_SESSIONS = 4
@@ -24,11 +24,11 @@ type Entry = {
   /** The messages the session has read, after the system prompt. */
   history: Array<string>
   busy: boolean
+  /** Set when the browser drops old turns to make room; read per call. */
+  overflowed: boolean
 }
 
 const entries = new Map<string, Entry>()
-
-const keyOf = (m: LanguageModelMessage) => `${m.role}\u0000${m.content}`
 
 const startsWith = (list: Array<string>, start: Array<string>) =>
   start.length <= list.length && start.every((key, i) => list[i] === key)
@@ -40,8 +40,14 @@ export type Lease = {
   cachedTokens: number
   /** Time spent creating the session (reading the conversation), in ms. */
   createMs: number
+  /** Why the thread's kept session couldn't be used, if it had one. */
+  miss?: string
+  /** True for the thread's kept session, false for one made for this call. */
+  reused: boolean
+  /** Whether the browser dropped old turns to make room since the lease began. */
+  overflowed: () => boolean
   /** Gives the session back, having read `history` (after the system prompt). */
-  release: (history: Array<LanguageModelMessage>) => void
+  release: (history: Array<PromptMessage>) => void
   /** Frees the session: after an abort or error, what it holds is unknown. */
   discard: () => void
 }
@@ -49,31 +55,38 @@ export type Lease = {
 /**
  * A session for a conversation that has read `system` and `prior`: the
  * thread's own if it has read a start of them (the rest is appended), else
- * a new one.
+ * a new one. `media` caches the images and audio loaded for the call.
  */
 export async function leaseSession({
   threadId,
   system,
   prior,
   options,
-  signal
+  signal,
+  media
 }: {
   threadId: string | undefined
   system: string
-  prior: Array<LanguageModelMessage>
+  prior: Array<PromptMessage>
   options: LanguageModelCreateOptions
   signal: AbortSignal | undefined
+  media?: Map<string, Promise<Blob>>
 }): Promise<Lease> {
   const setup = JSON.stringify({ system, options })
   const keys = prior.map(keyOf)
   const entry = threadId ? entries.get(threadId) : undefined
+  let miss: string | undefined
+  if (entry) {
+    miss = entry.busy
+      ? "another call of this thread holds its session"
+      : entry.setup !== setup
+        ? "the system prompt, tools or options changed"
+        : startsWith(keys, entry.history)
+          ? undefined
+          : "the conversation changed (an edited, regenerated or rewritten message)"
+  }
 
-  if (
-    entry &&
-    !entry.busy &&
-    entry.setup === setup &&
-    startsWith(keys, entry.history)
-  ) {
+  if (entry && !miss) {
     entry.busy = true
     // Most recently used last.
     entries.delete(threadId as string)
@@ -81,14 +94,24 @@ export async function leaseSession({
     const cachedTokens = entry.session.contextUsage
     const started = performance.now()
     const gap = prior.slice(entry.history.length)
+    entry.overflowed = false
     try {
-      if (gap.length > 0) await entry.session.append(gap, { signal })
+      if (gap.length > 0) {
+        await entry.session.append(await toLanguageModelMessages(gap, media), {
+          signal
+        })
+      }
+      entry.history = keys
+      return {
+        ...lease(threadId, entry, cachedTokens, performance.now() - started),
+        reused: true
+      }
     } catch (error) {
       drop(threadId as string, entry)
-      throw error
+      if (signal?.aborted) throw error
+      // The session couldn't take them (it was destroyed, say): start over.
+      miss = `the kept session failed (${error instanceof Error ? error.message : String(error)})`
     }
-    entry.history = keys
-    return lease(threadId, entry, cachedTokens, performance.now() - started)
   }
 
   // Another run of this thread holds its session (it shouldn't happen):
@@ -96,8 +119,16 @@ export async function leaseSession({
   const shared = !entry?.busy
   if (entry && shared && threadId) drop(threadId, entry)
   const started = performance.now()
-  const session = await createSession(system, prior, options, signal)
-  const created: Entry = { session, setup, history: keys, busy: true }
+  const created: Entry = {
+    session: await createSession(system, prior, options, signal, media),
+    setup,
+    history: keys,
+    busy: true,
+    overflowed: false
+  }
+  created.session.addEventListener("contextoverflow", () => {
+    created.overflowed = true
+  })
   if (threadId && shared) {
     entries.set(threadId, created)
     for (const [id, old] of entries) {
@@ -105,12 +136,16 @@ export async function leaseSession({
       if (!old.busy) drop(id, old)
     }
   }
-  return lease(
-    threadId && shared ? threadId : undefined,
-    created,
-    0,
-    performance.now() - started
-  )
+  return {
+    ...lease(
+      threadId && shared ? threadId : undefined,
+      created,
+      0,
+      performance.now() - started
+    ),
+    reused: false,
+    ...(miss && { miss })
+  }
 }
 
 function lease(
@@ -118,11 +153,12 @@ function lease(
   entry: Entry,
   cachedTokens: number,
   createMs: number
-): Lease {
+): Omit<Lease, "reused"> {
   return {
     session: entry.session,
     cachedTokens,
     createMs,
+    overflowed: () => entry.overflowed,
     release: (history) => {
       if (!threadId) return entry.session.destroy()
       entry.history = history.map(keyOf)
@@ -140,41 +176,49 @@ function drop(threadId: string, entry: Entry) {
   entry.session.destroy()
 }
 
-const isQuotaError = (error: unknown) =>
-  error instanceof DOMException && error.name === "QuotaExceededError"
+/** The conversation without its oldest turn: up to the next user message. */
+function withoutOldestTurn(messages: Array<PromptMessage>) {
+  const next = messages.findIndex((m, i) => i > 0 && m.role === "user")
+  return next > 0 ? messages.slice(next) : []
+}
 
 /**
- * A new session that has read the system prompt and the conversation. If
- * the conversation doesn't fit, its oldest turns are left out until it
- * does, as the session itself does when a conversation outgrows it.
+ * A new session that has read the system prompt and the conversation. Only
+ * the system prompt is an initial prompt, which the browser never drops;
+ * the conversation is appended, so when it later outgrows the context the
+ * browser drops its oldest turns. If it doesn't fit now, its oldest turns
+ * are left out (measured first, not tried) until it does.
  */
 async function createSession(
   system: string,
-  prior: Array<LanguageModelMessage>,
+  prior: Array<PromptMessage>,
   options: LanguageModelCreateOptions,
-  signal: AbortSignal | undefined
+  signal: AbortSignal | undefined,
+  media: Map<string, Promise<Blob>> | undefined
 ) {
-  const api = languageModel()
-  if (!api) throw new Error("No Prompt API in this browser.")
-  let rest = prior
-  for (;;) {
-    try {
-      const session = await api.create({
-        ...options,
-        initialPrompts: [
-          ...(system ? [{ role: "system" as const, content: system }] : []),
-          ...rest
-        ],
-        signal
-      })
-      noteContextWindow(session)
-      return session
-    } catch (error) {
-      if (!isQuotaError(error) || rest.length === 0) throw error
-      // Leave out the oldest turn: up to the next user message after it.
-      const next = rest.findIndex((m, i) => i > 0 && m.role === "user")
-      rest = next > 0 ? rest.slice(next) : []
+  const session = await createLanguageModel(
+    {
+      ...options,
+      ...(system && { initialPrompts: [{ role: "system", content: system }] })
+    },
+    signal
+  )
+  try {
+    let rest = prior
+    while (rest.length > 0) {
+      const input = await toLanguageModelMessages(rest, media)
+      const room = session.contextWindow - session.contextUsage
+      const needed = await session.measureContextUsage(input, { signal })
+      if (needed <= room) {
+        await session.append(input, { signal })
+        break
+      }
+      rest = withoutOldestTurn(rest)
     }
+    return session
+  } catch (error) {
+    session.destroy()
+    throw error
   }
 }
 
