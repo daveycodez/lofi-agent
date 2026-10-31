@@ -322,16 +322,16 @@ export const useHasWebGpu = () =>
   useSyncExternalStore(webGpu.subscribe, webGpu.get, () => true)
 
 /**
- * Whether the WebGL 2 engine runs here: WebGL 2 with float render targets
- * on an OffscreenCanvas. No until checked, in the browser.
+ * Whether the WebGL engine runs here: WebGL 2 with float render targets
+ * and big enough textures, on an OffscreenCanvas. No until checked, in the
+ * browser; hydration reads the server's answer (no), so the page matches.
  */
 const webGl2 = createStore(false)
 if (typeof window !== "undefined") {
-  // After the first render, so it matches the prerendered page.
   void Promise.resolve().then(() => webGl2.set(hasWebGl2()))
 }
 
-const useHasWebGl2 = () =>
+export const useHasWebGl2 = () =>
   useSyncExternalStore(webGl2.subscribe, webGl2.get, () => false)
 
 /**

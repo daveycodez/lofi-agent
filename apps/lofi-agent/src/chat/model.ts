@@ -14,6 +14,7 @@ import {
   isApplePlatform,
   offered,
   useHasBuiltInModel,
+  useHasWebGl2,
   useHasWebGpu,
   useIsApplePlatform
 } from "./models"
@@ -33,8 +34,10 @@ export const selectedModel = () =>
   offered(modelSetting.get(), isApplePlatform(), hasWebGpuNow())
 
 export const useSelectedModel = () => {
-  // The built-in model is offered once the browser's check is back.
+  // The built-in model and the WebGL models are offered once the browser's
+  // checks are back.
   useHasBuiltInModel()
+  useHasWebGl2()
   return offered(modelSetting.use(), useIsApplePlatform(), useHasWebGpu())
 }
 
