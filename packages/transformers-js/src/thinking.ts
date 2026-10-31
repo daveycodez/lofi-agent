@@ -76,8 +76,8 @@ export type ReplyPiece = { kind: "thinking" | "answer"; text: string }
 /**
  * Splits a reply into thinking and answer while it streams. A reply that
  * starts with the open marker (`<think>`) is thinking until the close
- * (`</think>`); the rest is the answer. Markers split across tokens are held
- * back until they are complete.
+ * (`</think>`); the rest is the answer, with any stray close left out.
+ * Markers split across tokens are held back until they are complete.
  */
 export function createThinkingSplitter({
   open: OPEN,
@@ -134,8 +134,13 @@ export function createThinkingSplitter({
         buffer = buffer.slice(end + CLOSE.length)
         state = "answer"
       } else {
-        pieces.push(...answer(buffer))
-        buffer = ""
+        // A close in the answer is dropped: a model told not to think
+        // sometimes still thinks a little and closes it, and what it wrote
+        // has already streamed as the answer.
+        buffer = buffer.split(CLOSE).join("")
+        const keep = partialTag(buffer, CLOSE)
+        pieces.push(...answer(buffer.slice(0, buffer.length - keep)))
+        buffer = buffer.slice(buffer.length - keep)
         return pieces
       }
     }

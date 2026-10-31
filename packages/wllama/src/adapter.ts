@@ -214,6 +214,17 @@ function thinkingKwargs(
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error)
 
+/** Where a reply's thinking ends; llama.cpp leaves it in the text when thinking is off. */
+const THINK_CLOSE = "</think>"
+
+/** Length of the longest end of `text` that could be the start of `THINK_CLOSE`. */
+function partialClose(text: string) {
+  for (let n = Math.min(THINK_CLOSE.length - 1, text.length); n > 0; n--) {
+    if (THINK_CLOSE.startsWith(text.slice(-n))) return n
+  }
+  return 0
+}
+
 let calls = 0
 const nextId = (prefix: string) =>
   `${prefix}_${Date.now().toString(36)}_${(calls++).toString(36)}`
@@ -313,6 +324,42 @@ export class WllamaTextAdapter<
       } satisfies AdapterYieldChunk
     }
 
+    /** The end of the text so far that could be the start of a stray close. */
+    let held = ""
+    const addText = function* (raw: string, final = false) {
+      // A stray `</think>` is dropped: told not to think, a model sometimes
+      // still thinks a little and closes it, and llama.cpp then leaves the
+      // close in the text, after what has already streamed as the answer.
+      let visible = (held + raw).split(THINK_CLOSE).join("")
+      const keep = final ? 0 : partialClose(visible)
+      held = visible.slice(visible.length - keep)
+      visible = visible.slice(0, visible.length - keep)
+      // The answer starts at its first visible character: the newlines
+      // after thinking, or before a tool call, aren't a reply.
+      const piece = textStarted ? visible : visible.trimStart()
+      if (!piece) return
+      yield* endReasoning()
+      if (!textStarted) {
+        textStarted = true
+        yield {
+          type: EventType.TEXT_MESSAGE_START,
+          messageId,
+          role: "assistant",
+          model,
+          timestamp: timestamp()
+        } satisfies AdapterYieldChunk
+      }
+      text += piece
+      yield {
+        type: EventType.TEXT_MESSAGE_CONTENT,
+        messageId,
+        delta: piece,
+        content: text,
+        model,
+        timestamp: timestamp()
+      } satisfies AdapterYieldChunk
+    }
+
     try {
       await loadModel(model).catch((error: unknown) => {
         throw new Error(`Couldn't load ${model}: ${errorText(error)}`)
@@ -370,33 +417,7 @@ export class WllamaTextAdapter<
           }
         }
 
-        // The answer starts at its first visible character: the newlines
-        // after thinking, or before a tool call, aren't a reply.
-        const piece = textStarted
-          ? (delta.content ?? "")
-          : (delta.content ?? "").trimStart()
-        if (piece) {
-          yield* endReasoning()
-          if (!textStarted) {
-            textStarted = true
-            yield {
-              type: EventType.TEXT_MESSAGE_START,
-              messageId,
-              role: "assistant",
-              model,
-              timestamp: timestamp()
-            }
-          }
-          text += piece
-          yield {
-            type: EventType.TEXT_MESSAGE_CONTENT,
-            messageId,
-            delta: piece,
-            content: text,
-            model,
-            timestamp: timestamp()
-          }
-        }
+        if (delta.content) yield* addText(delta.content)
 
         for (const part of delta.tool_calls ?? []) {
           yield* endReasoning()
@@ -437,6 +458,7 @@ export class WllamaTextAdapter<
       if (!signal?.aborted) failure = errorText(contextError(error, context))
     }
 
+    if (held) yield* addText("", true)
     yield* endReasoning()
     for (const call of toolCalls.values()) {
       if (!call.started) continue
