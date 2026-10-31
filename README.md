@@ -7,6 +7,7 @@
 | Package                                                            | What it runs                                                                                                                       |
 | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
 | [`@tanstack-ai-browser/transformers-js`](packages/transformers-js) | [Transformers.js](https://huggingface.co/docs/transformers.js) models on WebGPU in a Web Worker, tuned to work in Safari on iPhone |
+| [`@tanstack-ai-browser/webgl`](packages/webgl)                     | LFM3 on the package's own WebGL 2 inference engine (GGUF or ONNX weights), for browsers without WebGPU                             |
 | [`@tanstack-ai-browser/wllama`](packages/wllama)                   | GGUF models on the CPU with [wllama](https://github.com/ngxson/wllama) (llama.cpp in WebAssembly), no WebGPU needed                |
 | [`@tanstack-ai-browser/prompt-api`](packages/prompt-api)           | The browser's built-in model through the Prompt API: Gemini Nano in Chrome, Phi-4-mini in Edge                                     |
 | [`@tanstack-ai-browser/apfel`](packages/apfel)                     | Apple's on-device Foundation Model, served on a Mac by [apfel](https://apfel.franzai.com)                                          |
@@ -44,6 +45,7 @@ Swapping the adapter switches models; swapping `useChat`'s connection to `fetchS
 ```
 packages/transformers-js/       @tanstack-ai-browser/transformers-js
 packages/apfel/                 @tanstack-ai-browser/apfel
+packages/webgl/                 @tanstack-ai-browser/webgl
 packages/wllama/                @tanstack-ai-browser/wllama
 packages/prompt-api/            @tanstack-ai-browser/prompt-api
 apps/lofi-agent/                the demo app, hosted on Cloudflare Workers
