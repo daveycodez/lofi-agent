@@ -54,6 +54,11 @@ export type ModelId =
   | "lfm3-webgl"
   | "lfm3-web-webgl"
   | "lfm3-onnx-webgl"
+  | "lfm2.5-webgl"
+  | "lfm2.5-thinking-webgl"
+  | "lfm2.5-web-webgl"
+  | "lfm2.5-thinking-web-webgl"
+  | "lfm2.5-350m-webgl"
   | "built-in"
 
 /** Where the app reaches apfel on this Mac: its default address. */
@@ -117,9 +122,9 @@ const gguf = (id: ModelId, name: string, model: WllamaTextModel) => ({
 })
 
 /**
- * LFM3 on the package's own WebGL 2 engine, for devices without WebGPU: it
- * reads prompts on the GPU, about three times as fast as the CPU on a
- * Pixel 10 Pro.
+ * LFM3 and LFM2.5 on the package's own WebGL 2 engine, for devices without
+ * WebGPU: it reads prompts on the GPU, about three times as fast as the CPU
+ * on a Pixel 10 Pro.
  */
 const webgl = (id: ModelId, name: string, model: WebGlTextModel) => ({
   id,
@@ -184,7 +189,24 @@ export const MODELS = [
   gguf("lfm2.5-350m-gguf", "LFM2.5 350M GGUF", "LiquidAI/LFM2.5-350M-GGUF"),
   webgl("lfm3-onnx-webgl", "LFM3 1.7B WebGL", "onnx-community/LFM3-1.7B-ONNX"),
   webgl("lfm3-web-webgl", "LFM3 1.7B Web WebGL", "daveycodez/LFM3-1.7B-Web"),
-  webgl("lfm3-webgl", "LFM3 1.7B GGUF WebGL", "LiquidAI/LFM3-1.7B-GGUF")
+  webgl("lfm3-webgl", "LFM3 1.7B GGUF WebGL", "LiquidAI/LFM3-1.7B-GGUF"),
+  webgl(
+    "lfm2.5-webgl",
+    "LFM2.5 1.2B WebGL",
+    "LiquidAI/LFM2.5-1.2B-Instruct-ONNX"
+  ),
+  webgl(
+    "lfm2.5-thinking-webgl",
+    "LFM2.5 1.2B Thinking WebGL",
+    "LiquidAI/LFM2.5-1.2B-Thinking-ONNX"
+  ),
+  webgl("lfm2.5-web-webgl", "LFM2.5 1.2B Web WebGL", "daveycodez/LFM2.5-1.2B-Web"),
+  webgl(
+    "lfm2.5-thinking-web-webgl",
+    "LFM2.5 1.2B Thinking Web WebGL",
+    "daveycodez/LFM2.5-1.2B-Thinking-Web"
+  ),
+  webgl("lfm2.5-350m-webgl", "LFM2.5 350M WebGL", "LiquidAI/LFM2.5-350M-ONNX")
 ] satisfies Array<{
   id: ModelId
   name: string
