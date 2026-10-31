@@ -15,6 +15,13 @@ import {
 } from "@tanstack-ai-browser/wllama"
 import type { WllamaTextModel } from "@tanstack-ai-browser/wllama"
 import {
+  hasWebGl2,
+  modelStatus as webglModelStatus,
+  WEBGL_MODEL_REASONING,
+  webglText
+} from "@tanstack-ai-browser/webgl"
+import type { WebGlTextModel } from "@tanstack-ai-browser/webgl"
+import {
   APFEL_BASE_URL,
   apfelText,
   isApfelAvailable
@@ -44,6 +51,9 @@ export type ModelId =
   | "lfm2.5-gguf"
   | "lfm2.5-thinking-gguf"
   | "lfm2.5-350m-gguf"
+  | "lfm3-webgl"
+  | "lfm3-web-webgl"
+  | "lfm3-onnx-webgl"
   | "built-in"
 
 /** Where the app reaches apfel on this Mac: its default address. */
@@ -106,6 +116,20 @@ const gguf = (id: ModelId, name: string, model: WllamaTextModel) => ({
   reasoning: WLLAMA_MODEL_REASONING[model] as ModelReasoning | undefined
 })
 
+/**
+ * LFM3 on the package's own WebGL 2 engine, for devices without WebGPU: it
+ * reads prompts on the GPU, about three times as fast as the CPU on a
+ * Pixel 10 Pro.
+ */
+const webgl = (id: ModelId, name: string, model: WebGlTextModel) => ({
+  id,
+  name,
+  icon: "/icons/liquid.svg",
+  adapter: webglText(model),
+  status: webglModelStatus(model) as ModelStatusStore | null,
+  needsWebGpu: false,
+  reasoning: WEBGL_MODEL_REASONING[model] as ModelReasoning | undefined
+})
 
 export const MODELS = [
   {
@@ -157,7 +181,10 @@ export const MODELS = [
     "LFM2.5 1.2B Thinking GGUF",
     "LiquidAI/LFM2.5-1.2B-Thinking-GGUF"
   ),
-  gguf("lfm2.5-350m-gguf", "LFM2.5 350M GGUF", "LiquidAI/LFM2.5-350M-GGUF")
+  gguf("lfm2.5-350m-gguf", "LFM2.5 350M GGUF", "LiquidAI/LFM2.5-350M-GGUF"),
+  webgl("lfm3-onnx-webgl", "LFM3 1.7B WebGL", "onnx-community/LFM3-1.7B-ONNX"),
+  webgl("lfm3-web-webgl", "LFM3 1.7B Web WebGL", "daveycodez/LFM3-1.7B-Web"),
+  webgl("lfm3-webgl", "LFM3 1.7B GGUF WebGL", "LiquidAI/LFM3-1.7B-GGUF")
 ] satisfies Array<{
   id: ModelId
   name: string
@@ -167,20 +194,22 @@ export const MODELS = [
     | ReturnType<typeof apfelText>
     | ReturnType<typeof wllamaText>
     | ReturnType<typeof promptApiText>
+    | ReturnType<typeof webglText>
   status: ModelStatusStore | null
   needsWebGpu: boolean
   reasoning: ModelReasoning | undefined
 }>
 
 /**
- * The picker's sections: each adapter's provider (its `name`), in order,
- * with the name shown as the section's heading.
+ * The picker's sections: each adapter's provider (its `name`), in
+ * alphabetical order, with the name shown as the section's heading.
  */
 export const PROVIDERS = [
   { id: "apfel", name: "apfel" },
   { id: "prompt-api", name: "Prompt API" },
   { id: "transformers-js", name: "Transformers.js" },
-  { id: "wllama", name: "wllama" }
+  { id: "webgl", name: "WebGL" },
+  { id: "wllama", name: "Wllama" }
 ] as const
 
 /**
@@ -293,6 +322,19 @@ export const useHasWebGpu = () =>
   useSyncExternalStore(webGpu.subscribe, webGpu.get, () => true)
 
 /**
+ * Whether the WebGL 2 engine runs here: WebGL 2 with float render targets
+ * on an OffscreenCanvas. No until checked, in the browser.
+ */
+const webGl2 = createStore(false)
+if (typeof window !== "undefined") {
+  // After the first render, so it matches the prerendered page.
+  void Promise.resolve().then(() => webGl2.set(hasWebGl2()))
+}
+
+const useHasWebGl2 = () =>
+  useSyncExternalStore(webGl2.subscribe, webGl2.get, () => false)
+
+/**
  * Whether the browser offers its built-in model: Chrome or Edge with the
  * Prompt API, on a device that can run it (downloaded or not). No until
  * the check is back. Other Chromium builds are left out: Chromium for
@@ -315,6 +357,7 @@ const canRun = (id: ModelId, isApple: boolean, hasGpu: boolean) =>
   isModelId(id) &&
   (id !== "apple-fm" || isApple) &&
   (id !== "built-in" || builtIn.get()) &&
+  (modelInfo(id).adapter.name !== "webgl" || webGl2.get()) &&
   (hasGpu || !modelInfo(id).needsWebGpu)
 
 /**
@@ -333,6 +376,7 @@ export function useModels() {
   const isApple = useIsApplePlatform()
   const hasGpu = useHasWebGpu()
   useHasBuiltInModel()
+  useHasWebGl2()
   return MODELS.filter((m) => canRun(m.id, isApple, hasGpu))
 }
 

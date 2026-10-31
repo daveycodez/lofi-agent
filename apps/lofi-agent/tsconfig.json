@@ -38,6 +38,9 @@
     },
     {
       "path": "../../packages/prompt-api"
+    },
+    {
+      "path": "../../packages/webgl"
     }
   ]
 }
