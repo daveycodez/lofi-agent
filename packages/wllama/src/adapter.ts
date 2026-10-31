@@ -26,7 +26,7 @@ import type {
   ChatCompletionMessage,
   ChatCompletionTool,
   ResultTimings
-} from "@wllama/wllama/esm/index.js"
+} from "../vendor/wllama/index.js"
 
 import {
   completeChat,

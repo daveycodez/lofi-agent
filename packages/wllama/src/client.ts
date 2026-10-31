@@ -4,12 +4,13 @@
  * the previous one. Models download once to the Origin Private File
  * System, and load from there afterwards, offline included.
  */
-import { LoggerWithoutDebug, Wllama } from "@wllama/wllama/esm/index.js"
+import { BUILD_ID } from "../vendor/wllama/build-id.js"
+import { LoggerWithoutDebug, Wllama } from "../vendor/wllama/index.js"
 import type {
   ChatCompletionChunk,
   ChatCompletionParams,
   ChatCompletionResponse
-} from "@wllama/wllama/esm/index.js"
+} from "../vendor/wllama/index.js"
 
 import { modelMeta, modelUrl } from "./model-meta.js"
 import type { WllamaTextModel } from "./model-meta.js"
@@ -81,7 +82,8 @@ export function configureRuntime(next: RuntimeOptions) {
 
 // This package's builds of wllama (scripts/build-wasm.sh): llama.cpp new
 // enough for LFM3, with its WebAssembly SIMD kernels, which wllama's own
-// builds leave out. The main builds' JavaScript glue is wllama's, unchanged.
+// builds leave out. wllama's JavaScript (vendor/wllama) comes from the same
+// build, with slot state save and restore added.
 
 /**
  * The full URL of a file of this package's `wasm/`, from its URL next to
@@ -231,6 +233,117 @@ function keepDownloads() {
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error)
 
+// The model's state after a chat (what it has read, as llama.cpp's slot
+// save file), kept in the Origin Private File System so the first message
+// after a reload doesn't read the system prompt and tools again: llama.cpp
+// reuses the start of the prompt that matches the restored one, and a state
+// that doesn't match is simply not reused. One per model, saved again when
+// the system prompt or tools change.
+
+const STATE_DIR = "wllama-state"
+
+/** What a saved state is for: the model's file, the build that saved it, and the prefix it starts with. */
+type StateInfo = {
+  url: string
+  build: string
+  prefix: string
+  savedAt: number
+}
+
+const debug = (...args: unknown[]) => {
+  if (options.debug) console.debug("[wllama state]", ...args)
+}
+
+/** The model's files in STATE_DIR. */
+const stateFiles = async (model: WllamaTextModel) => {
+  const root = await navigator.storage.getDirectory()
+  const dir = await root.getDirectoryHandle(STATE_DIR, { create: true })
+  const name = model.replace(/[^\w.-]/g, "_")
+  return { dir, data: `${name}.bin`, info: `${name}.json` }
+}
+
+/** The system prompt and tools of a request, as a short hash and its length. */
+function prefixKey(request: ChatRequest) {
+  const text = JSON.stringify([
+    request.messages.filter((message) => message.role === "system"),
+    request.tools ?? []
+  ])
+  // FNV-1a: a collision only skips a save.
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193)
+  }
+  return `${(hash >>> 0).toString(16)}:${text.length}`
+}
+
+/** The loaded model's build and saved prefix, set by startLoad. */
+let state: { model: WllamaTextModel; build: string; prefix?: string } | null =
+  null
+let saving = false
+
+/** Saves the model's state after a chat, unless one with the same system prompt and tools is saved. */
+async function saveState(
+  model: WllamaTextModel,
+  wllama: Wllama,
+  request: ChatRequest
+) {
+  const current = state
+  const prefix = prefixKey(request)
+  if (current?.model !== model || current.prefix === prefix || saving) return
+  saving = true
+  try {
+    const start = performance.now()
+    const data = await wllama.saveSlotState()
+    const saved = performance.now()
+    const { dir, data: dataName, info: infoName } = await stateFiles(model)
+    const info: StateInfo = {
+      url: modelUrl(model),
+      build: current.build,
+      prefix,
+      savedAt: Date.now()
+    }
+    const write = async (name: string, content: FileSystemWriteChunkType) => {
+      const file = await dir.getFileHandle(name, { create: true })
+      const writable = await file.createWritable()
+      await writable.write(content)
+      await writable.close()
+    }
+    // wllama's copy of the bytes, not its shared memory.
+    await write(dataName, data as Uint8Array<ArrayBuffer>)
+    await write(infoName, JSON.stringify(info))
+    current.prefix = prefix
+    debug(
+      `saved ${(data.byteLength / 1e6).toFixed(1)} MB in ${Math.round(saved - start)} ms (+${Math.round(performance.now() - saved)} ms to write)`
+    )
+  } catch (error) {
+    debug("not saved:", error)
+  } finally {
+    saving = false
+  }
+}
+
+/** Restores the model's saved state, if it's from this build. */
+async function restoreState(model: WllamaTextModel, wllama: Wllama) {
+  const current = state
+  try {
+    const start = performance.now()
+    const { dir, data, info: infoName } = await stateFiles(model)
+    const file = async (name: string) =>
+      (await dir.getFileHandle(name)).getFile()
+    const info = JSON.parse(await (await file(infoName)).text()) as StateInfo
+    if (info.url !== modelUrl(model) || info.build !== current?.build) return
+    const bytes = new Uint8Array(await (await file(data)).arrayBuffer())
+    const read = performance.now()
+    const tokens = await wllama.restoreSlotState(bytes)
+    current.prefix = info.prefix
+    debug(
+      `restored ${tokens} tokens, ${(bytes.byteLength / 1e6).toFixed(1)} MB, in ${Math.round(performance.now() - read)} ms (+${Math.round(read - start)} ms to read)`
+    )
+  } catch (error) {
+    debug("not restored:", error)
+  }
+}
+
 async function startLoad(
   model: WllamaTextModel,
   wllama: Wllama,
@@ -239,7 +352,9 @@ async function startLoad(
   const status = modelStatus(model)
   const url = modelUrl(model)
   const meta = modelMeta(model)
-  if (needsCompat()) useCompat(wllama, await compatBuild())
+  const compat = needsCompat() ? await compatBuild() : null
+  if (compat) useCompat(wllama, compat)
+  state = { model, build: `${BUILD_ID} ${compat?.wasm ?? mainWasmUrl()}` }
   // A model already in storage loads from it, without the network.
   const saved = await wllama.modelManager.getModels()
   const cached = saved.some((m) => m.url === url)
@@ -268,6 +383,7 @@ async function startLoad(
       })
     }
   })
+  await restoreState(model, wllama)
   return wllama
 }
 
@@ -339,11 +455,15 @@ export async function streamChat(
   signal?: AbortSignal
 ): Promise<AsyncIterable<ChatCompletionChunk>> {
   const wllama = await loadModel(model)
-  return wllama.createChatCompletion({
+  const chunks = await wllama.createChatCompletion({
     ...request,
     stream: true,
     ...(signal && { abortSignal: signal })
   })
+  return (async function* () {
+    yield* chunks
+    void saveState(model, wllama, request)
+  })()
 }
 
 /** A whole chat completion from `model`, loading it first. */
@@ -354,11 +474,13 @@ export async function completeChat(
 ): Promise<ChatCompletionResponse> {
   const wllama = await loadModel(model)
   try {
-    return await wllama.createChatCompletion({
+    const response = await wllama.createChatCompletion({
       ...request,
       stream: false,
       ...(signal && { abortSignal: signal })
     })
+    void saveState(model, wllama, request)
+    return response
   } catch (error) {
     throw contextError(error, modelMeta(model).context)
   }

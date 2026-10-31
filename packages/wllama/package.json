@@ -41,6 +41,7 @@
     "src",
     "dist",
     "wasm",
+    "vendor",
     "!**/*.tsbuildinfo"
   ],
   "publishConfig": {
@@ -54,8 +55,5 @@
   },
   "devDependencies": {
     "@tanstack/ai": "1.0.0"
-  },
-  "dependencies": {
-    "@wllama/wllama": "3.8.1"
   }
 }

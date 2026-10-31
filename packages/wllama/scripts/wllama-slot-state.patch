@@ -1,0 +1,418 @@
+diff --git a/cpp/glue.hpp b/cpp/glue.hpp
+index 9b338ce..d529741 100644
+--- a/cpp/glue.hpp
++++ b/cpp/glue.hpp
+@@ -695,3 +695,39 @@ struct glue_msg_test_backend_ops_res
+   GLUE_FIELD(int, retcode)
+   GLUE_FIELD(bool, success)
+ };
++
++/////////
++
++struct glue_msg_slot_save_req
++{
++  GLUE_HANDLER("slsv_req")
++  GLUE_FIELD(int, id_slot)
++};
++
++struct glue_msg_slot_save_res
++{
++  GLUE_HANDLER("slsv_res")
++  GLUE_FIELD(bool, success)
++  GLUE_FIELD(str, message)
++  GLUE_FIELD(int, id_slot)
++  GLUE_FIELD(int, n_tokens)
++  GLUE_FIELD(raw, data)
++};
++
++/////////
++
++struct glue_msg_slot_restore_req
++{
++  GLUE_HANDLER("slrs_req")
++  GLUE_FIELD(int, id_slot)
++  GLUE_FIELD(raw, data)
++};
++
++struct glue_msg_slot_restore_res
++{
++  GLUE_HANDLER("slrs_res")
++  GLUE_FIELD(bool, success)
++  GLUE_FIELD(str, message)
++  GLUE_FIELD(int, id_slot)
++  GLUE_FIELD(int, n_tokens)
++};
+diff --git a/cpp/wllama-context.h b/cpp/wllama-context.h
+index 1538551..b25bcc8 100644
+--- a/cpp/wllama-context.h
++++ b/cpp/wllama-context.h
+@@ -277,6 +277,9 @@ struct wllama_context
+   };
+   std::unordered_map<int, decision_request> decision_reqs; // keyed by req_id
+ 
++  // the slot of the last finished completion, the default for slot_save / slot_restore
++  int last_id_slot = -1;
++
+   struct console
+   {
+     struct spinner
+@@ -865,6 +868,10 @@ struct wllama_context
+     const bool has_more = rd.has_next();
+ 
+     json data_json;
++    if (result && !is_error && dynamic_cast<server_task_result_cmpl_final *>(result.get()))
++    {
++      last_id_slot = result->id_slot;
++    }
+     if (result)
+     {
+       if (auto *embd = dynamic_cast<server_task_result_embd *>(result.get()))
+@@ -938,6 +945,110 @@ struct wllama_context
+     return res;
+   }
+ 
++  // slot_save / slot_restore run llama-server's own slot save and restore,
++  // through a file in the worker's memory: the slot's memory (attention cache,
++  // recurrent state), its context checkpoints and its tokens. A restored slot
++  // is reused like any other: its tokens are compared with the next prompt.
++
++  static constexpr const char *SLOT_STATE_PATH = "/tmp/wllama-slot-state.bin";
++
++  // runs a slot task; returns the error message, empty on success
++  std::string run_slot_task(server_task_type type, int id_slot, server_task_result_ptr &out)
++  {
++    auto rd = ctx_server.get_response_reader();
++    server_task task(type);
++    task.id = rd.get_new_id();
++    task.slot_action.id_slot = id_slot;
++    task.slot_action.filename = SLOT_STATE_PATH;
++    task.slot_action.filepath = SLOT_STATE_PATH;
++    rd.post_task(std::move(task));
++    // no request is running (checked by the callers), so the task runs now
++    run_loop();
++    auto [result, is_error] = get_next_result(rd);
++    if (!result)
++      return "no result";
++    if (is_error)
++    {
++      json err = result->to_json();
++      return err.value("message", std::string("unknown error"));
++    }
++    out = std::move(result);
++    return "";
++  }
++
++  // the slot to save or restore: the given one, else the last completion's, else 0
++  int pick_slot(int id_slot)
++  {
++    if (id_slot >= 0)
++      return id_slot;
++    return last_id_slot >= 0 ? last_id_slot : 0;
++  }
++
++  glue_msg_slot_save_res action_slot_save(const char *req_raw)
++  {
++    PARSE_REQ(glue_msg_slot_save_req);
++    glue_msg_slot_save_res res;
++    const int id_slot = pick_slot(req.id_slot.value);
++    res.id_slot.value = id_slot;
++    res.n_tokens.value = 0;
++    if (!readers.empty())
++    {
++      // llama-server would defer the task until the slot is free
++      res.success.value = false;
++      res.message.value = "a request is running";
++      return res;
++    }
++    server_task_result_ptr result;
++    std::string err = run_slot_task(SERVER_TASK_TYPE_SLOT_SAVE, id_slot, result);
++    if (err.empty())
++    {
++      auto *saved = dynamic_cast<server_task_result_slot_save_load *>(result.get());
++      res.n_tokens.value = saved ? (int)saved->n_tokens : 0;
++      std::ifstream f(SLOT_STATE_PATH, std::ios::binary);
++      res.data.buf.assign(std::istreambuf_iterator<char>(f), {});
++      if (res.data.buf.empty())
++        err = "empty state file";
++    }
++    std::remove(SLOT_STATE_PATH);
++    res.success.value = err.empty();
++    res.message.value = err;
++    return res;
++  }
++
++  glue_msg_slot_restore_res action_slot_restore(const char *req_raw)
++  {
++    PARSE_REQ(glue_msg_slot_restore_req);
++    glue_msg_slot_restore_res res;
++    const int id_slot = pick_slot(req.id_slot.value);
++    res.id_slot.value = id_slot;
++    res.n_tokens.value = 0;
++    if (!readers.empty())
++    {
++      res.success.value = false;
++      res.message.value = "a request is running";
++      return res;
++    }
++    std::string err;
++    {
++      std::ofstream f(SLOT_STATE_PATH, std::ios::binary);
++      f.write(req.data.buf.data(), req.data.buf.size());
++      if (!f)
++        err = "cannot write the state file";
++    }
++    server_task_result_ptr result;
++    if (err.empty())
++      err = run_slot_task(SERVER_TASK_TYPE_SLOT_RESTORE, id_slot, result);
++    if (err.empty())
++    {
++      auto *restored = dynamic_cast<server_task_result_slot_save_load *>(result.get());
++      res.n_tokens.value = restored ? (int)restored->n_tokens : 0;
++    }
++    std::remove(SLOT_STATE_PATH);
++    res.success.value = err.empty();
++    res.message.value = err;
++    return res;
++  }
++
+   glue_msg_test_backend_ops_res action_test_backend_ops(const char *req_raw)
+   {
+     PARSE_REQ(glue_msg_test_backend_ops_req);
+diff --git a/cpp/wllama-fs.h b/cpp/wllama-fs.h
+index 18b9288..54bdd0c 100644
+--- a/cpp/wllama-fs.h
++++ b/cpp/wllama-fs.h
+@@ -65,7 +65,9 @@ extern "C"
+   {
+     wllama_fs::make_sure_ready();
+     FILE *f = __real_fopen(path, mode);
+-    if (f)
++    // Only model files are read from the page; others (a slot state file)
++    // are in the worker's memory.
++    if (f && (strncmp(path, "models/", 7) == 0 || strncmp(path, "/models/", 8) == 0))
+     {
+       s_file_path_map[f] = path;
+     }
+diff --git a/cpp/wllama.cpp b/cpp/wllama.cpp
+index b499be1..6b875e1 100644
+--- a/cpp/wllama.cpp
++++ b/cpp/wllama.cpp
+@@ -117,6 +117,8 @@ extern "C" const char *wllama_action(const char *name, const char *req_raw)
+     WLLAMA_ACTION(get_result)
+     WLLAMA_ACTION(cancel)
+     WLLAMA_ACTION(test_backend_ops)
++    WLLAMA_ACTION(slot_save)
++    WLLAMA_ACTION(slot_restore)
+ 
+     else
+     {
+diff --git a/src/glue/messages.ts b/src/glue/messages.ts
+index bf8e4af..023df70 100644
+--- a/src/glue/messages.ts
++++ b/src/glue/messages.ts
+@@ -674,6 +674,94 @@ export const GLUE_MESSAGE_PROTOTYPES: { [name: string]: GlueMessageProto } = {
+         "isNullable": false
+       }
+     ]
++  },
++  "slsv_req": {
++    "name": "slsv_req",
++    "structName": "glue_msg_slot_save_req",
++    "className": "GlueMsgSlotSaveReq",
++    "fields": [
++      {
++        "type": "int",
++        "name": "id_slot",
++        "isNullable": false
++      }
++    ]
++  },
++  "slsv_res": {
++    "name": "slsv_res",
++    "structName": "glue_msg_slot_save_res",
++    "className": "GlueMsgSlotSaveRes",
++    "fields": [
++      {
++        "type": "bool",
++        "name": "success",
++        "isNullable": false
++      },
++      {
++        "type": "str",
++        "name": "message",
++        "isNullable": false
++      },
++      {
++        "type": "int",
++        "name": "id_slot",
++        "isNullable": false
++      },
++      {
++        "type": "int",
++        "name": "n_tokens",
++        "isNullable": false
++      },
++      {
++        "type": "raw",
++        "name": "data",
++        "isNullable": false
++      }
++    ]
++  },
++  "slrs_req": {
++    "name": "slrs_req",
++    "structName": "glue_msg_slot_restore_req",
++    "className": "GlueMsgSlotRestoreReq",
++    "fields": [
++      {
++        "type": "int",
++        "name": "id_slot",
++        "isNullable": false
++      },
++      {
++        "type": "raw",
++        "name": "data",
++        "isNullable": false
++      }
++    ]
++  },
++  "slrs_res": {
++    "name": "slrs_res",
++    "structName": "glue_msg_slot_restore_res",
++    "className": "GlueMsgSlotRestoreRes",
++    "fields": [
++      {
++        "type": "bool",
++        "name": "success",
++        "isNullable": false
++      },
++      {
++        "type": "str",
++        "name": "message",
++        "isNullable": false
++      },
++      {
++        "type": "int",
++        "name": "id_slot",
++        "isNullable": false
++      },
++      {
++        "type": "int",
++        "name": "n_tokens",
++        "isNullable": false
++      }
++    ]
+   }
+ };
+ 
+@@ -872,5 +960,37 @@ export interface GlueMsgTestBackendOpsRes {
+   success: boolean;
+ }
+ 
++// struct glue_msg_slot_save_req
++export interface GlueMsgSlotSaveReq {
++  _name: "slsv_req";
++  id_slot: number;
++}
++
++// struct glue_msg_slot_save_res
++export interface GlueMsgSlotSaveRes {
++  _name: "slsv_res";
++  success: boolean;
++  message: string;
++  id_slot: number;
++  n_tokens: number;
++  data: Uint8Array;
++}
++
++// struct glue_msg_slot_restore_req
++export interface GlueMsgSlotRestoreReq {
++  _name: "slrs_req";
++  id_slot: number;
++  data: Uint8Array;
++}
++
++// struct glue_msg_slot_restore_res
++export interface GlueMsgSlotRestoreRes {
++  _name: "slrs_res";
++  success: boolean;
++  message: string;
++  id_slot: number;
++  n_tokens: number;
++}
++
+ 
+-export type GlueMsg = GlueMsgError | GlueMsgLoadReq | GlueMsgLoadRes | GlueMsgCompletionReq | GlueMsgCompletionRes | GlueMsgEmbeddingReq | GlueMsgEmbeddingRes | GlueMsgRerankReq | GlueMsgRerankRes | GlueMsgSystemoneReq | GlueMsgSystemoneRes | GlueMsgGetResultReq | GlueMsgGetResultRes | GlueMsgCancelReq | GlueMsgCancelRes | GlueMsgTestBackendOpsReq | GlueMsgTestBackendOpsRes;
++export type GlueMsg = GlueMsgError | GlueMsgLoadReq | GlueMsgLoadRes | GlueMsgCompletionReq | GlueMsgCompletionRes | GlueMsgEmbeddingReq | GlueMsgEmbeddingRes | GlueMsgRerankReq | GlueMsgRerankRes | GlueMsgSystemoneReq | GlueMsgSystemoneRes | GlueMsgGetResultReq | GlueMsgGetResultRes | GlueMsgCancelReq | GlueMsgCancelRes | GlueMsgTestBackendOpsReq | GlueMsgTestBackendOpsRes | GlueMsgSlotSaveReq | GlueMsgSlotSaveRes | GlueMsgSlotRestoreReq | GlueMsgSlotRestoreRes;
+diff --git a/src/wllama.ts b/src/wllama.ts
+index 6ecbb68..988e04e 100644
+--- a/src/wllama.ts
++++ b/src/wllama.ts
+@@ -24,6 +24,8 @@ import type {
+   GlueMsgGetResultRes,
+   GlueMsgLoadRes,
+   GlueMsgTestBackendOpsRes,
++  GlueMsgSlotSaveRes,
++  GlueMsgSlotRestoreRes,
+ } from './glue/messages';
+ import { LIBLLAMA_VERSION } from './workers-code/generated';
+ import type {
+@@ -910,6 +912,58 @@ export class Wllama {
+     }
+   }
+ 
++  /**
++   * Save the state of a slot: its KV cache (and recurrent state, if any), its context checkpoints and its tokens, as llama-server's slot save file.
++   *
++   * Restore it with `restoreSlotState` into the same model, loaded with the same parameters and the same wllama build, to skip reading that prompt again, for example after a page reload. The state is only valid for that model: store it keyed by the model.
++   *
++   * Fails while a completion is running.
++   * @param idSlot The slot to save. By default, the slot of the last completion.
++   * @returns The state, as bytes
++   */
++  async saveSlotState(idSlot: number = -1): Promise<Uint8Array> {
++    this.checkModelLoaded();
++    const result = await this.proxy.wllamaAction<GlueMsgSlotSaveRes>(
++      'slot_save',
++      { _name: 'slsv_req', id_slot: idSlot }
++    );
++    if (!result.success) {
++      throw new WllamaError(
++        `Failed to save slot ${result.id_slot}: ${result.message}`,
++        'inference_error'
++      );
++    }
++    return result.data;
++  }
++
++  /**
++   * Restore a slot state saved with `saveSlotState`.
++   *
++   * The next completion reuses the restored state as far as its prompt starts with the same tokens, as with any cached prompt, so a state that doesn't match the prompt only means no reuse.
++   *
++   * Fails while a completion is running, or if the state doesn't fit the loaded model and context.
++   * @param data The state, from `saveSlotState`
++   * @param idSlot The slot to restore into. By default, the slot of the last completion, or slot 0 before any.
++   * @returns The number of tokens restored
++   */
++  async restoreSlotState(
++    data: Uint8Array,
++    idSlot: number = -1
++  ): Promise<number> {
++    this.checkModelLoaded();
++    const result = await this.proxy.wllamaAction<GlueMsgSlotRestoreRes>(
++      'slot_restore',
++      { _name: 'slrs_req', id_slot: idSlot, data }
++    );
++    if (!result.success) {
++      throw new WllamaError(
++        `Failed to restore slot ${result.id_slot}: ${result.message}`,
++        'inference_error'
++      );
++    }
++    return result.n_tokens;
++  }
++
+   /**
+    * Unload the model and free all memory.
+    *

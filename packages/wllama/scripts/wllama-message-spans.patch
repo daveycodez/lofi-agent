@@ -1,0 +1,28 @@
+diff --git a/cpp/wllama-context.h b/cpp/wllama-context.h
+index b25bcc8..fd5d67e 100644
+--- a/cpp/wllama-context.h
++++ b/cpp/wllama-context.h
+@@ -325,9 +325,20 @@ struct wllama_context
+           meta->logit_bias_eog,
+           body);
+       task.params.res_type = res_type;
+-      task.cli_prompt = prompt;
+-      task.cli_files = files;
+-      task.cli = true;
++      if (!meta->has_mtmd)
++      {
++        // tokenized here, not by the server's CLI path, so that the chat
++        // session finds the messages in the tokens: the server places context
++        // checkpoints at user messages, which lets models that can't roll
++        // their memory back (recurrent, SWA) reuse a shared system prompt
++        task.tokens = std::move(tokenize_input_prompts(vocab, nullptr, prompt, true, true, mtmd_helper_init_opt_default())[0]);
++      }
++      else
++      {
++        task.cli_prompt = prompt;
++        task.cli_files = files;
++        task.cli = true;
++      }
+       task.apply_chat_session(chat_session);
+ 
+       std::vector<server_task> tasks;
