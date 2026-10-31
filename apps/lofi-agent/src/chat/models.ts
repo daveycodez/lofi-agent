@@ -40,6 +40,7 @@ export type ModelId =
   | "lfm2.5-thinking-web"
   | "lfm2-tool"
   | "lfm2.5-350m"
+  | "lfm3-gguf"
   | "lfm2.5-gguf"
   | "lfm2.5-thinking-gguf"
   | "lfm2.5-350m-gguf"
@@ -149,6 +150,7 @@ export const MODELS = [
   ),
   local("lfm2-tool", "LFM2 1.2B Tool", "onnx-community/LFM2-1.2B-Tool-ONNX"),
   local("lfm2.5-350m", "LFM2.5 350M", "LiquidAI/LFM2.5-350M-ONNX"),
+  gguf("lfm3-gguf", "LFM3 1.7B GGUF", "LiquidAI/LFM3-1.7B-GGUF"),
   gguf("lfm2.5-gguf", "LFM2.5 1.2B GGUF", "LiquidAI/LFM2.5-1.2B-Instruct-GGUF"),
   gguf(
     "lfm2.5-thinking-gguf",

@@ -26,7 +26,8 @@ What does leave your device: calls to MCP servers (Exa's web search, if it's on,
 | LFM2.5 1.2B Thinking Web    | LFM2.5 Thinking, re-exported the same way.                                                                                                                                                                    |
 | LFM2 1.2B Tool              | Liquid AI's LFM2 1.2B tuned for short, precise tool calls without thinking (onnx-community's build). The default where there's no WebGPU.                                                                     |
 | LFM2.5 350M                 | Liquid AI's smallest LFM2.5 (about 255 MB on WebGPU, 294 MB on the CPU): the quickest, especially without WebGPU, for short answers and tool calls rather than knowledge or code.                             |
-| LFM2.5 1.2B GGUF            | Liquid AI's GGUF build of LFM2.5 Instruct (Q4_K_M, 731 MB), run by llama.cpp on the CPU through `@tanstack-ai-browser/wllama`, with or without WebGPU.                                                        |
+| LFM3 1.7B GGUF              | Liquid AI's GGUF build of LFM3 (Q4_K_M, 1.10 GB), run by llama.cpp on the CPU through `@tanstack-ai-browser/wllama`, with or without WebGPU. Thinking on or off.                                              |
+| LFM2.5 1.2B GGUF            | Liquid AI's GGUF build of LFM2.5 Instruct (Q4_K_M, 731 MB), on the CPU the same way.                                                                                                                          |
 | LFM2.5 1.2B Thinking GGUF   | LFM2.5 Thinking's GGUF build, on the CPU the same way: always reasons before answering.                                                                                                                       |
 | LFM2.5 350M GGUF            | LFM2.5 350M's GGUF build (229 MB): on the CPU, the quickest of all.                                                                                                                                           |
 | Apple Foundation Model      | Apple's on-device model, served on your Mac by [apfel](https://apfel.franzai.com), through `@tanstack-ai-browser/apfel`. Shown on Apple devices only; needs a Mac (see Requirements).                         |
@@ -34,7 +35,7 @@ What does leave your device: calls to MCP servers (Exa's web search, if it's on,
 
 The GGUF models are in the picker's wllama section. They run on the CPU, WebGPU or not: on half the cores (wllama's default) where the page is cross-origin isolated (see `src/start.ts`), in every browser, Safari and Firefox included, since the site's headers use `Cross-Origin-Embedder-Policy: require-corp`. On an M3 Ultra, LFM2.5 1.2B GGUF writes about 76 tokens/s, against 5 to 9 for its ONNX builds on the CPU.
 
-The "Web" builds are published under [`daveycodez` on Hugging Face](https://huggingface.co/daveycodez) and pinned to a commit. Models whose thinking can be switched on and off (LFM3 and Gemma 4) get a Thinking row in the model picker, Off or On, on by default; the picker's button says "Thinking" while it's on. A model that declared more reasoning levels would offer each of them by name.
+The "Web" builds are published under [`daveycodez` on Hugging Face](https://huggingface.co/daveycodez) and pinned to a commit. Models whose thinking can be switched on and off (LFM3, its GGUF build included, and Gemma 4) get a Thinking row in the model picker, Off or On, on by default; the picker's button says "Thinking" while it's on. A model that declared more reasoning levels would offer each of them by name.
 
 ## Features
 
@@ -126,7 +127,7 @@ apps/lofi-agent/           the app (Nx project "lofi-agent")
 - [TanStack AI](https://tanstack.com/ai): `chat()` in the browser with the adapters from this repo, the headless chat kit (`@tanstack/ai-react/ui`) with `useChat`, and the MCP client
 - [TanStack DB](https://tanstack.com/db): IndexedDB collections for everything the app saves, chat persistence included
 - [`@tanstack-ai-browser/transformers-js`](../../packages/transformers-js): Transformers.js 4.3.2 and onnxruntime-web on WebGPU, loaded from jsDelivr at runtime
-- [`@tanstack-ai-browser/wllama`](../../packages/wllama): wllama 3.8.1 (llama.cpp in WebAssembly) for the GGUF models, on the CPU
+- [`@tanstack-ai-browser/wllama`](../../packages/wllama): wllama 3.8.1 (llama.cpp in WebAssembly), built on a newer llama.cpp for LFM3, for the GGUF models, on the CPU
 - [`@tanstack-ai-browser/apfel`](../../packages/apfel): Apple's on-device model through apfel
 - [`@tanstack-ai-browser/prompt-api`](../../packages/prompt-api): the browser's built-in model through the Prompt API
 - [HeroUI](https://heroui.com) v3, Tailwind CSS v4 and Gravity UI icons

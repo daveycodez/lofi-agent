@@ -3,6 +3,7 @@ import baseConfig from "../../eslint.config.mjs"
 export default [
   ...baseConfig,
   {
-    ignores: ["**/out-tsc"]
+    // wasm/ holds the compat build's Emscripten glue.
+    ignores: ["**/out-tsc", "wasm"]
   }
 ]

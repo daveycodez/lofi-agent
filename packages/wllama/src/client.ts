@@ -47,23 +47,23 @@ export function modelStatus(model: WllamaTextModel): Store<ModelStatus> {
 /** Options that apply to the runtime, so to every model. */
 export type RuntimeOptions = {
   /**
-   * Where wllama's WebAssembly file is served. By default the bundler
-   * emits it from `@wllama/wllama` (see the README).
+   * Where wllama's main WebAssembly file is served, for every browser that
+   * runs the main build. By default the bundler emits this package's
+   * builds (`wasm/`, see the README and scripts/build-wasm.sh).
    */
   wasmUrl?: string
   /**
-   * Where this package's faster build of wllama is served
-   * (`wasm/wllama-relaxed.wasm`), or `false` to use wllama's own. Browsers
-   * whose relaxed SIMD reads signed values (Chrome and Firefox on ARM) use
-   * it; by default the bundler emits it from this package. See
-   * scripts/build-wasm.sh.
+   * Where this package's relaxed SIMD build is served
+   * (`wasm/wllama-relaxed.wasm`), or `false` to use the main build without
+   * it. Browsers with relaxed SIMD (Chrome, Firefox) use it; by default the
+   * bundler emits it from this package.
    */
   relaxedSimdWasmUrl?: string | false
   /**
-   * Where wllama's compat build is served: its WebAssembly file and its
-   * worker script. Browsers without JSPI or 64-bit WebAssembly memory
-   * (Safari) run it instead of the main build, which doesn't run there. By
-   * default the bundler emits both from `@wllama/wllama-compat`.
+   * Where the compat build is served: its WebAssembly file and its worker
+   * script. Browsers without JSPI or 64-bit WebAssembly memory (Safari) run
+   * it instead of the main build, which doesn't run there. By default the
+   * bundler emits both from this package (`wasm/wllama-compat.*`).
    */
   compat?: { wasm: string; worker: string }
   /** CPU threads. wllama's default otherwise: half the cores. */
@@ -79,38 +79,30 @@ export function configureRuntime(next: RuntimeOptions) {
   options = { ...options, ...next }
 }
 
+// This package's builds of wllama (scripts/build-wasm.sh): llama.cpp new
+// enough for LFM3, with its WebAssembly SIMD kernels, which wllama's own
+// builds leave out. The main builds' JavaScript glue is wllama's, unchanged.
+
+/** The main build. */
 const defaultWasmUrl = () =>
-  new URL("@wllama/wllama/esm/wasm/wllama.wasm", import.meta.url).href
+  new URL("../wasm/wllama.wasm", import.meta.url).href
 
 /**
- * wllama's main build with llama.cpp's WebAssembly SIMD kernels, which
- * wllama's own build leaves out, and relaxed SIMD dot products: about twice
- * as fast at reading prompts. Its JavaScript glue is wllama's, unchanged.
+ * The main build with relaxed SIMD dot products as well: about twice as
+ * fast at reading prompts as wllama's own build.
  */
 const relaxedWasmUrl = () =>
   new URL("../wasm/wllama-relaxed.wasm", import.meta.url).href
 
-/**
- * One relaxed SIMD dot product, i32x4.relaxed_dot_i8x16_i7x16_add_s(1, -1, 0),
- * as a WebAssembly function: -4 where the browser reads the 7-bit operand as
- * signed (ARM), 1020 where it reads it as unsigned (V8 on Intel and AMD).
- * llama.cpp's relaxed kernels (PR #19590) put signed values there, so they
- * only compute correctly with the signed reading.
- */
-const RELAXED_DOT_TEST = new Uint8Array([
-  0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 127, 3, 2, 1, 0, 7, 5, 1, 1,
-  102, 0, 0, 10, 64, 1, 62, 0, 253, 12, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-  1, 1, 1, 253, 12, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-  255, 255, 255, 255, 253, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-  253, 147, 2, 253, 27, 0, 11
+/** A WebAssembly module with one relaxed SIMD instruction (i32x4.relaxed_dot_i8x16_i7x16_add_s). */
+const RELAXED_SIMD_MODULE = new Uint8Array([
+  0, 97, 115, 109, 1, 0, 0, 0, 1, 6, 1, 96, 1, 123, 1, 123, 3, 2, 1, 0, 10, 13,
+  1, 11, 0, 32, 0, 32, 0, 32, 0, 253, 147, 2, 11
 ])
 
-/** Whether the faster build computes correctly here (see RELAXED_DOT_TEST). */
 function hasRelaxedSimd() {
   try {
-    const module = new WebAssembly.Module(RELAXED_DOT_TEST)
-    const { f } = new WebAssembly.Instance(module).exports as { f: () => number }
-    return f() === -4
+    return WebAssembly.validate(RELAXED_SIMD_MODULE)
   } catch {
     return false
   }
@@ -125,10 +117,10 @@ function mainWasmUrl() {
   return defaultWasmUrl()
 }
 
+/** The compat build, with the glue from the same build. */
 const defaultCompat = () => ({
-  wasm: new URL("@wllama/wllama-compat/wasm/wllama.wasm", import.meta.url)
-    .href,
-  worker: new URL("@wllama/wllama-compat/wasm/wllama.js", import.meta.url).href
+  wasm: new URL("../wasm/wllama-compat.wasm", import.meta.url).href,
+  worker: new URL("../wasm/wllama-compat.js", import.meta.url).href
 })
 
 /** A WebAssembly module with only a 64-bit memory. */
@@ -174,8 +166,8 @@ function useCompat(
 let compatCode: Promise<string> | undefined
 
 /**
- * wllama's compat build, served with the site rather than from wllama's
- * CDN, so it works offline too. wllama wraps the worker script in a
+ * The compat build, served with the site rather than from wllama's CDN,
+ * so it works offline too. wllama wraps the worker script in a
  * function, so it's passed as code that ends in a newline: a bundler's
  * dev server may end it in a `//# sourceMappingURL` comment, which would
  * otherwise comment out the end of that function.

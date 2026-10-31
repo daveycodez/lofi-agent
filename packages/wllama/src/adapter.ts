@@ -11,10 +11,12 @@ import { buildBaseUsage, EventType, normalizeSystemPrompts } from "@tanstack/ai"
 import type {
   AdapterYieldChunk,
   ModelMessage,
+  ReasoningRequest,
   TextOptions,
   TokenUsage,
   Tool
 } from "@tanstack/ai"
+import { resolveReasoning } from "@tanstack/ai/adapter-internals"
 import { BaseTextAdapter } from "@tanstack/ai/adapters"
 import type {
   StructuredOutputOptions,
@@ -30,6 +32,7 @@ import {
   completeChat,
   configureRuntime,
   contextError,
+  loadModel,
   streamChat
 } from "./client.js"
 import type { ChatRequest } from "./client.js"
@@ -42,19 +45,18 @@ import type {
 
 export type WllamaTextConfig = {
   /**
-   * Where wllama's WebAssembly file is served, for bundlers that don't
-   * emit it from `new URL(…, import.meta.url)`. Applies to every model.
+   * Where the main build (`wasm/wllama.wasm`) is served, for bundlers that
+   * don't emit it from `new URL(…, import.meta.url)`. Applies to every model.
    */
   wasmUrl?: string
   /**
-   * Where this package's faster build (`wasm/wllama-relaxed.wasm`, for
-   * browsers with relaxed SIMD) is served, if not emitted by the bundler, or
-   * `false` to use wllama's own build everywhere.
+   * Where the relaxed SIMD build (`wasm/wllama-relaxed.wasm`) is served, if
+   * not emitted by the bundler, or `false` to use the main build everywhere.
    */
   relaxedSimdWasmUrl?: string | false
   /**
-   * Where wllama's compat build (for Safari) is served, if not from
-   * `@wllama/wllama-compat` through the bundler.
+   * Where the compat build (for Safari, `wasm/wllama-compat.wasm` and
+   * `wasm/wllama-compat.js`) is served, if not emitted by the bundler.
    */
   compat?: { wasm: string; worker: string }
   /** CPU threads. wllama's default otherwise: half the cores. */
@@ -195,6 +197,20 @@ function usageOf(
   return usage
 }
 
+/**
+ * The chat template's `enable_thinking` for a request, through llama.cpp's
+ * `chat_template_kwargs`: left out when the model has no levels or the
+ * request doesn't ask, so the template's default applies.
+ */
+function thinkingKwargs(
+  request: ReasoningRequest | undefined,
+  model: WllamaTextModel
+): Partial<ChatRequest> {
+  const value = resolveReasoning(request, modelMeta(model).reasoning)?.value
+  if (value === undefined) return {}
+  return { chat_template_kwargs: { enable_thinking: value === "true" } }
+}
+
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error)
 
@@ -278,7 +294,7 @@ export class WllamaTextAdapter<
     let timings: ResultTimings | undefined
     let firstTokenMs: number | null = null
     let failure: string | undefined
-    const requested = performance.now()
+    let requested = 0
 
     const endReasoning = function* () {
       if (reasoning !== "open") return
@@ -298,17 +314,21 @@ export class WllamaTextAdapter<
     }
 
     try {
+      await loadModel(model).catch((error: unknown) => {
+        throw new Error(`Couldn't load ${model}: ${errorText(error)}`)
+      })
+      // Time to first token counts from here, the model loaded.
+      requested = performance.now()
       const stream = await streamChat(
         model,
         {
           messages: toMessages(options.systemPrompts, options.messages),
           ...(options.tools?.length && { tools: toTools(options.tools) }),
+          ...thinkingKwargs(options.reasoning, model),
           ...this.settings(options.modelOptions)
         },
         signal
-      ).catch((error: unknown) => {
-        throw new Error(`Couldn't load ${model}: ${errorText(error)}`)
-      })
+      )
       for await (const chunk of stream) {
         timings = chunk.timings ?? timings
         const choice = chunk.choices?.[0]
@@ -497,6 +517,7 @@ export class WllamaTextAdapter<
           type: "json_schema",
           json_schema: { name: "output", schema: outputSchema, strict: true }
         },
+        ...thinkingKwargs(chatOptions.reasoning, this.model),
         ...this.settings(chatOptions.modelOptions)
       },
       chatOptions.abortController?.signal

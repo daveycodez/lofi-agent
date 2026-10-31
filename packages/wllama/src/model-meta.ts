@@ -41,7 +41,13 @@ export type WllamaModelMeta = {
   sampling: Sampling
 }
 
-/** LFM2.5 Thinking always thinks; its chat template takes no switch. */
+// Reasoning shapes, each level's value being the chat template's
+// `enable_thinking`. LFM3's template takes it (thinking by default);
+// LFM2.5 Thinking always thinks and takes no switch.
+const THINKING_SWITCH = {
+  levels: { off: "false", high: "true" },
+  budget: false
+} as const
 const ALWAYS_THINKS = { levels: { high: "true" }, budget: false } as const
 
 /**
@@ -68,6 +74,12 @@ const LFM2_5_SAMPLING = {
   top_k: 50,
   repeat_penalty: 1.05
 } as const satisfies Sampling
+/** LFM3's card: `--temp 0.1 --top-k 50 --repeat-penalty 1.1`. */
+const LFM3_SAMPLING = {
+  temperature: 0.1,
+  top_k: 50,
+  repeat_penalty: 1.1
+} as const satisfies Sampling
 /** LFM2.5 Thinking's card: `--temp 0.05 --top-k 50 --repeat-penalty 1.05`. */
 const LFM2_5_THINKING_SAMPLING = {
   temperature: 0.05,
@@ -81,9 +93,23 @@ const LFM2_5_THINKING_SAMPLING = {
 // Q5_K_M, Q6_K and Q8_0, at 5% more size than Q4_0. LFM2.5 1.2B on an
 // M3 Ultra, 24 threads: Q4_K_M 231 prompt tokens/s and 112 tokens/s,
 // Q4_0 (Liquid's QAD build too) 65 and 45.
-//
-// LFM3 would go here, but the llama.cpp in wllama 3.8.1 (b11364) predates
-// its architecture ("lfm3", added to llama.cpp on 2026-10-27).
+
+/**
+ * Liquid AI's LFM3 1.7B, from its official GGUF repository: thinks by
+ * default, or answers straight away with reasoning off. Runs on this
+ * package's own builds of wllama, whose llama.cpp knows its architecture.
+ */
+const LFM3_1_7B = {
+  name: "LiquidAI/LFM3-1.7B-GGUF",
+  revision: "bad5729bba61d076fff20d2548e62526665af215",
+  file: "LFM3-1.7B-Q4_K_M.gguf",
+  bytes: 1_099_627_808,
+  supports: TOOLS_AND_THINKING,
+  size: "1.7b",
+  context: CONTEXT,
+  reasoning: THINKING_SWITCH,
+  sampling: LFM3_SAMPLING
+} as const satisfies WllamaModelMeta
 
 /** Liquid AI's LFM2.5 1.2B Instruct, from its official GGUF repository. */
 const LFM2_5_1_2B = {
@@ -126,6 +152,7 @@ const LFM2_5_350M = {
 } as const satisfies WllamaModelMeta
 
 export const WLLAMA_TEXT_MODELS = [
+  LFM3_1_7B.name,
   LFM2_5_1_2B.name,
   LFM2_5_1_2B_THINKING.name,
   LFM2_5_350M.name
@@ -138,12 +165,14 @@ export type WllamaTextModel = (typeof WLLAMA_TEXT_MODELS)[number]
 export const WLLAMA_MODEL_META: Readonly<
   Record<WllamaTextModel, WllamaModelMeta>
 > = {
+  [LFM3_1_7B.name]: LFM3_1_7B,
   [LFM2_5_1_2B.name]: LFM2_5_1_2B,
   [LFM2_5_1_2B_THINKING.name]: LFM2_5_1_2B_THINKING,
   [LFM2_5_350M.name]: LFM2_5_350M
 }
 
 const WLLAMA_REASONING = {
+  [LFM3_1_7B.name]: LFM3_1_7B.reasoning,
   [LFM2_5_1_2B_THINKING.name]: LFM2_5_1_2B_THINKING.reasoning
 } as const
 

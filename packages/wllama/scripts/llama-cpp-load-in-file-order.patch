@@ -1,0 +1,33 @@
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 6cc0b20..e759ce0 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1610,14 +1610,26 @@ bool llama_model_loader::load_all_data(
+ 
+     // without mmap, tensors in non-host buffers are staged through a temporary buffer sized like the tensor
+     // load them biggest-first so the largest staging buffer is allocated while the fewest weights are resident
++    // tensors read straight into host buffers go in file order, so reads move forward through the file
+     if (!use_mmap) {
+-        std::stable_sort(tensors.begin(), tensors.end(), [](const ggml_tensor * a, const ggml_tensor * b) {
++        std::stable_sort(tensors.begin(), tensors.end(), [this](const ggml_tensor * a, const ggml_tensor * b) {
+             const bool staged_a = a->buffer && !ggml_backend_buffer_is_host(a->buffer);
+             const bool staged_b = b->buffer && !ggml_backend_buffer_is_host(b->buffer);
+             if (staged_a != staged_b) {
+                 return staged_a;
+             }
+-            return staged_a && ggml_nbytes(a) > ggml_nbytes(b);
++            if (staged_a) {
++                return ggml_nbytes(a) > ggml_nbytes(b);
++            }
++            const auto * wa = get_weight(ggml_get_name(a));
++            const auto * wb = get_weight(ggml_get_name(b));
++            if (wa == nullptr || wb == nullptr) {
++                return false;
++            }
++            if (wa->idx != wb->idx) {
++                return wa->idx < wb->idx;
++            }
++            return wa->offs < wb->offs;
+         });
+     }
+ 

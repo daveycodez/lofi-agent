@@ -368,9 +368,6 @@ importers:
       '@wllama/wllama':
         specifier: 3.8.1
         version: 3.8.1
-      '@wllama/wllama-compat':
-        specifier: 3.8.1
-        version: 3.8.1
     devDependencies:
       '@tanstack/ai':
         specifier: 1.0.0
@@ -2833,9 +2830,6 @@ packages:
         optional: true
       oxc-transform-react:
         optional: true
-
-  '@wllama/wllama-compat@3.8.1':
-    resolution: {integrity: sha512-IvmjrJ+JzDbt3w1FQq1yAmnFEiLGCceowK2Q80zW+k9ChFkPBM1ByX/9xm2xVxyd8MHC50VpuDo6SDE83k9kIQ==}
 
   '@wllama/wllama@3.8.1':
     resolution: {integrity: sha512-Pl7BEJhPU8OHnV/yhn3DFZYhLLOdSHh+4TND79WCftHnlUAdQPAsyc/CfIOY+4mVxvf5VW3Xw3Uf7BBfotS1gw==}
@@ -7382,8 +7376,6 @@ snapshots:
     dependencies:
       '@rolldown/pluginutils': 1.0.1
       vite: 8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
-
-  '@wllama/wllama-compat@3.8.1': {}
 
   '@wllama/wllama@3.8.1': {}
 

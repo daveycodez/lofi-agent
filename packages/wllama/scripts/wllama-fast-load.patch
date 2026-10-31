@@ -1,0 +1,46 @@
+diff --git a/cpp/wllama-fs.h b/cpp/wllama-fs.h
+index 5832b20..18b9288 100644
+--- a/cpp/wllama-fs.h
++++ b/cpp/wllama-fs.h
+@@ -16,7 +16,10 @@ namespace wllama_fs
+   bool ready = false;
+   bool use_async = false;
+ 
+-  static const size_t CACHE_SIZE = 1024 * 1024; // 1 MB read-ahead
++  // Read-ahead block. llama.cpp reads the model one tensor at a time (mostly
++  // 4-16 MB, in file order), and each block is one request to the page
++  // thread for a Blob slice, so bigger blocks mean far fewer, faster reads.
++  static const size_t CACHE_SIZE = 64 * 1024 * 1024;
+ 
+   std::vector<uint8_t> cache_data;
+   size_t cache_start = 0;
+@@ -74,7 +77,8 @@ extern "C"
+     if (wllama_fs::cache_file == f)
+     {
+       wllama_fs::cache_file = nullptr;
+-      wllama_fs::cache_data.clear();
++      // Free the block, not just empty it.
++      std::vector<uint8_t>().swap(wllama_fs::cache_data);
+     }
+     s_file_path_map.erase(f);
+     return __real_fclose(f);
+@@ -106,8 +110,8 @@ extern "C"
+ 
+     size_t fpos = (size_t)__real_ftell(f);
+ 
+-    // Large reads (>= 1 MB): write directly into ptr, skip cache entirely.
+-    if (req_bytes >= wllama_fs::CACHE_SIZE)
++    // Reads bigger than a block: write directly into ptr, skip the cache.
++    if (req_bytes > wllama_fs::CACHE_SIZE)
+     {
+       size_t actual = (size_t)js_file_read(
+           nit->second.c_str(), fpos, req_bytes, ptr);
+@@ -118,7 +122,7 @@ extern "C"
+       return copy_bytes / size;
+     }
+ 
+-    // Small reads: try cache first.
++    // Reads that fit in a block: try the cache first.
+     size_t cached = wllama_fs::try_cache(f, (char *)ptr, req_bytes, fpos);
+     if (cached == req_bytes)
+     {
