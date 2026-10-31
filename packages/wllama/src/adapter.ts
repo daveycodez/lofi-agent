@@ -61,6 +61,11 @@ export type WllamaTextConfig = {
   compat?: { wasm: string; worker: string }
   /** CPU threads. wllama's default otherwise: half the cores. */
   threads?: number
+  /**
+   * `false` to run on the CPU only. By default wllama runs on WebGPU where
+   * it can, and on the CPU elsewhere.
+   */
+  gpu?: boolean
   /** wllama's and llama.cpp's logs, in the console. */
   debug?: boolean
 }
@@ -255,6 +260,7 @@ export class WllamaTextAdapter<
       }),
       ...(config.compat && { compat: config.compat }),
       ...(config.threads && { threads: config.threads }),
+      ...(config.gpu !== undefined && { gpu: config.gpu }),
       ...(config.debug && { debug: true })
     })
   }

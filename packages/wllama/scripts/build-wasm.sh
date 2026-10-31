@@ -33,6 +33,10 @@
 #   #298): Wllama.saveSlotState() and restoreSlotState(), llama-server's own
 #   slot save and restore, so the client can keep what the model has read
 #   across page loads.
+# - WebGPU subgroup shaders only where the browser also has WGSL's
+#   subgroup_id (llama-cpp-webgpu-subgroup-id.patch): they use it, so
+#   browsers with subgroups but not subgroup_id (Chrome 141) failed to
+#   compile them and the model didn't load.
 # - Context checkpoints at user messages: wllama tokenizes chat prompts
 #   before the chat session looks for messages in them
 #   (wllama-message-spans.patch), and llama.cpp knows where LFM2's messages
@@ -78,6 +82,8 @@ git -C "$LLAMA" apply "$HERE/llama-cpp-wasm64.patch"
 # Tensors loaded in file order, so wllama's reads are sequential.
 git -C "$LLAMA" apply "$HERE/llama-cpp-load-in-file-order.patch"
 git -C "$LLAMA" apply "$HERE/llama-cpp-lfm2-message-spans.patch"
+# Subgroup shaders only where the browser also has WGSL's subgroup_id.
+git -C "$LLAMA" apply "$HERE/llama-cpp-webgpu-subgroup-id.patch"
 
 # Emscripten, at the version wllama builds with.
 EMSDK_DIR="${EMSDK_DIR:-$WORK/emsdk}"
