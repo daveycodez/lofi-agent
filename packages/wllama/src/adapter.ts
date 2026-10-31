@@ -56,7 +56,7 @@ export type WllamaTextConfig = {
   relaxedSimdWasmUrl?: string | false
   /**
    * Where the compat build (for Safari, `wasm/wllama-compat.wasm` and
-   * `wasm/wllama-compat.js`) is served, if not emitted by the bundler.
+   * `wasm/wllama-compat.js.txt`) is served, if not emitted by the bundler.
    */
   compat?: { wasm: string; worker: string }
   /** CPU threads. wllama's default otherwise: half the cores. */

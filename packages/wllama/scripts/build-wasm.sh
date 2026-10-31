@@ -6,8 +6,8 @@
 #   and Firefox. The client picks it only where the browser validates
 #   relaxed SIMD.
 # - wasm/wllama.wasm: the main build without it, for other browsers.
-# - wasm/wllama-compat.wasm and wasm/wllama-compat.js, its glue: the compat
-#   build, for Safari.
+# - wasm/wllama-compat.wasm and wasm/wllama-compat.js.txt, its glue: the
+#   compat build, for Safari. The glue is .txt so bundlers emit it as is.
 #
 # Changes from wllama's own builds:
 #
@@ -111,5 +111,5 @@ mkdir -p "$PKG/wasm"
 cp "$WORK/wllama/build-relaxed/wllama.wasm" "$PKG/wasm/wllama-relaxed.wasm"
 cp "$WORK/wllama/build/wllama.wasm" "$PKG/wasm/wllama.wasm"
 cp "$WORK/wllama/build-compat/wllama.wasm" "$PKG/wasm/wllama-compat.wasm"
-cp "$WORK/wllama/build-compat/wllama.js" "$PKG/wasm/wllama-compat.js"
+cp "$WORK/wllama/build-compat/wllama.js" "$PKG/wasm/wllama-compat.js.txt"
 ls -l "$PKG/wasm"

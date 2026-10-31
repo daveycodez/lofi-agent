@@ -83,16 +83,32 @@ export function configureRuntime(next: RuntimeOptions) {
 // enough for LFM3, with its WebAssembly SIMD kernels, which wllama's own
 // builds leave out. The main builds' JavaScript glue is wllama's, unchanged.
 
+/**
+ * The full URL of a file of this package's `wasm/`, from its URL next to
+ * this module. Turbopack (Next.js) makes that URL a path, which the compat
+ * worker can't load. Vite's dev server pre-bundles the package into
+ * node_modules/.vite/deps, which moves these URLs to node_modules/.vite/wasm,
+ * where it serves no files; it does serve the package's own, so they're used
+ * instead.
+ */
+function packageFile(url: URL) {
+  const file = new URL(url.href, location.href)
+  if (!file.pathname.includes("/node_modules/.vite/")) return file.href
+  const name = file.pathname.slice(file.pathname.lastIndexOf("/") + 1)
+  return new URL(`/node_modules/@tanstack-ai-browser/wllama/wasm/${name}`, file)
+    .href
+}
+
 /** The main build. */
 const defaultWasmUrl = () =>
-  new URL("../wasm/wllama.wasm", import.meta.url).href
+  packageFile(new URL("../wasm/wllama.wasm", import.meta.url))
 
 /**
  * The main build with relaxed SIMD dot products as well: about twice as
  * fast at reading prompts as wllama's own build.
  */
 const relaxedWasmUrl = () =>
-  new URL("../wasm/wllama-relaxed.wasm", import.meta.url).href
+  packageFile(new URL("../wasm/wllama-relaxed.wasm", import.meta.url))
 
 /** A WebAssembly module with one relaxed SIMD instruction (i32x4.relaxed_dot_i8x16_i7x16_add_s). */
 const RELAXED_SIMD_MODULE = new Uint8Array([
@@ -117,10 +133,14 @@ function mainWasmUrl() {
   return defaultWasmUrl()
 }
 
-/** The compat build, with the glue from the same build. */
+/**
+ * The compat build, with the glue from the same build. The glue ships as
+ * `.js.txt` so bundlers emit it as is: `next build --webpack` minifies `.js`
+ * files emitted this way, which breaks it.
+ */
 const defaultCompat = () => ({
-  wasm: new URL("../wasm/wllama-compat.wasm", import.meta.url).href,
-  worker: new URL("../wasm/wllama-compat.js", import.meta.url).href
+  wasm: packageFile(new URL("../wasm/wllama-compat.wasm", import.meta.url)),
+  worker: packageFile(new URL("../wasm/wllama-compat.js.txt", import.meta.url))
 })
 
 /** A WebAssembly module with only a 64-bit memory. */
