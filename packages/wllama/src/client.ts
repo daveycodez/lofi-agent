@@ -229,6 +229,11 @@ async function startLoad(
     n_ctx: meta.context,
     // On the CPU: wllama would otherwise use WebGPU where the browser has it.
     n_gpu_layers: 0,
+    // The whole context in sliding-window layers' cache (LFM3's), not just
+    // the window, so a follow-up can reuse what was read before: otherwise
+    // LFM3 rereads the whole prompt after a tool call. +65 MB for LFM3;
+    // nothing for models without such layers.
+    swa_full: true,
     ...(options.threads && { n_threads: options.threads }),
     signal,
     progressCallback: ({ loaded: bytes, total }) => {
