@@ -1,0 +1,1131 @@
+diff --git a/ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp b/ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+--- a/ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
++++ b/ggml/src/ggml-webgpu/ggml-webgpu-shader-lib.hpp
+@@ -51,6 +51,13 @@
+ // Matrix-vector multiplication parameters
+ #define WEBGPU_MUL_MAT_VEC_WG_SIZE 256
+ 
++// PowerVR matrix products (mul_mat_vec_pvr.wgsl, mul_mat_pvr.wgsl, mul_mat_pvr_stage.wgsl)
++#define WEBGPU_MUL_MAT_VEC_PVR_WG_SIZE       128
++#define WEBGPU_MUL_MAT_VEC_PVR_Q4_K_ROWS     32
++#define WEBGPU_MUL_MAT_VEC_PVR_Q6_K_ROWS     16
++#define WEBGPU_MUL_MAT_PVR_STAGE_WG_SIZE 256
++#define WEBGPU_MUL_MAT_PVR_TILE              16  // rows and columns per workgroup of mul_mat_pvr.wgsl
++
+ #define WEBGPU_MUL_MAT_VEC_FLOAT_OUTPUTS_PER_WG    4
+ #define WEBGPU_MUL_MAT_VEC_LEGACY_Q_OUTPUTS_PER_WG 4
+ #define WEBGPU_MUL_MAT_VEC_K_Q_OUTPUTS_PER_WG      4
+@@ -1278,6 +1285,10 @@ class ggml_webgpu_shader_lib {
+         mul_mat_vec_pipelines;   // fast mat-vec (n==1)
+     std::unordered_map<ggml_webgpu_mul_mat_pipeline_key, webgpu_pipeline, ggml_webgpu_mul_mat_pipeline_key_hash>
+         mul_mat_fast_pipelines;  // fast mat-mat (reg-tile or subgroup)
++    std::unordered_map<int, webgpu_pipeline> mul_mat_vec_pvr_pipelines;  // PowerVR mat-vec, key is src0 type * 2 + src0_ro
++    std::unordered_map<int, webgpu_pipeline> mul_mat_pvr_pipelines;      // PowerVR mat-mat, key is src0 type * 2 + src0_ro
++    std::unordered_map<int, webgpu_pipeline> flash_attn_pvr_pipelines;   // PowerVR flash attention, key is head_dim * 4 + has_mask * 2 + kv_ro
++    webgpu_pipeline                          mul_mat_pvr_stage_pipeline;
+     std::unordered_map<ggml_webgpu_quantize_q8_pipeline_key, webgpu_pipeline, ggml_webgpu_quantize_q8_pipeline_key_hash>
+         quantize_q8_pipelines;
+     std::unordered_map<ggml_webgpu_mul_mat_id_gather_pipeline_key,
+@@ -2171,6 +2182,117 @@ class ggml_webgpu_shader_lib {
+         return mul_mat_vec_pipelines[key];
+     }
+ 
++    // PowerVR mat-vec (see mul_mat_vec_pvr.wgsl); src0_ro binds the weights read-only
++    webgpu_pipeline get_mul_mat_vec_pvr_pipeline(ggml_type src0_type, bool src0_ro) {
++        const int key = (int) src0_type * 2 + (src0_ro ? 1 : 0);
++        auto      it  = mul_mat_vec_pvr_pipelines.find(key);
++        if (it != mul_mat_vec_pvr_pipelines.end()) {
++            return it->second;
++        }
++        std::vector<std::string> defines;
++        std::string              variant = "mul_mat_vec_pvr";
++        uint32_t                 rows_per_wg;
++        switch (src0_type) {
++            case GGML_TYPE_Q4_K:
++                defines.push_back("Q4_K");
++                variant += "_q4_K";
++                rows_per_wg = WEBGPU_MUL_MAT_VEC_PVR_Q4_K_ROWS;
++                break;
++            case GGML_TYPE_Q6_K:
++                defines.push_back("Q6_K");
++                variant += "_q6_K";
++                rows_per_wg = WEBGPU_MUL_MAT_VEC_PVR_Q6_K_ROWS;
++                break;
++            default:
++                GGML_ABORT("Unsupported src0 type for the PowerVR mat-vec shader");
++        }
++        if (src0_ro) {
++            defines.push_back("SRC0_RO");
++            variant += "_ro";
++        }
++        defines.push_back("WG_SIZE=" + std::to_string(WEBGPU_MUL_MAT_VEC_PVR_WG_SIZE) + "u");
++        defines.push_back("ROWS_PER_WG=" + std::to_string(rows_per_wg) + "u");
++
++        auto processed            = preprocessor.preprocess(wgsl_mul_mat_vec_pvr, defines);
++        auto decisions            = std::make_shared<ggml_webgpu_mul_mat_vec_shader_decisions>();
++        decisions->wg_size        = WEBGPU_MUL_MAT_VEC_PVR_WG_SIZE;
++        decisions->outputs_per_wg = rows_per_wg;
++        decisions->vec_size       = 1;
++        webgpu_pipeline pipeline  = ggml_webgpu_create_pipeline(device, processed, variant);
++        pipeline.context          = decisions;
++        mul_mat_vec_pvr_pipelines[key] = pipeline;
++        return pipeline;
++    }
++
++    // PowerVR mat-mat (see mul_mat_pvr.wgsl); src0_ro binds the weights read-only
++    webgpu_pipeline get_mul_mat_pvr_pipeline(ggml_type src0_type, bool src0_ro) {
++        const int key = (int) src0_type * 2 + (src0_ro ? 1 : 0);
++        auto      it  = mul_mat_pvr_pipelines.find(key);
++        if (it != mul_mat_pvr_pipelines.end()) {
++            return it->second;
++        }
++        std::vector<std::string> defines;
++        std::string              variant = "mul_mat_pvr";
++        switch (src0_type) {
++            case GGML_TYPE_Q4_K:
++                defines.push_back("Q4_K");
++                variant += "_q4_K";
++                break;
++            case GGML_TYPE_Q6_K:
++                defines.push_back("Q6_K");
++                variant += "_q6_K";
++                break;
++            default:
++                GGML_ABORT("Unsupported src0 type for the PowerVR mat-mat shader");
++        }
++        if (src0_ro) {
++            defines.push_back("SRC0_RO");
++            variant += "_ro";
++        }
++        auto            processed = preprocessor.preprocess(wgsl_mul_mat_pvr, defines);
++        webgpu_pipeline pipeline  = ggml_webgpu_create_pipeline(device, processed, variant);
++        mul_mat_pvr_pipelines[key] = pipeline;
++        return pipeline;
++    }
++
++    // PowerVR flash attention for one query token (see flash_attn_pvr.wgsl)
++    webgpu_pipeline get_flash_attn_pvr_pipeline(uint32_t head_dim, bool has_mask, bool kv_ro) {
++        const int key = (int) head_dim * 4 + (has_mask ? 2 : 0) + (kv_ro ? 1 : 0);
++        auto      it  = flash_attn_pvr_pipelines.find(key);
++        if (it != flash_attn_pvr_pipelines.end()) {
++            return it->second;
++        }
++        // the threads' outputs are merged in workgroup memory: WG_SIZE * head_dim floats
++        const uint32_t           wg_size = std::max(16u, std::min(64u, 4096u / head_dim));
++        std::vector<std::string> defines = { "HEAD_DIM=" + std::to_string(head_dim) + "u",
++                                             "WG_SIZE=" + std::to_string(wg_size) + "u" };
++        std::string              variant = "flash_attn_pvr_hs" + std::to_string(head_dim);
++        if (has_mask) {
++            defines.push_back("HAS_MASK");
++            variant += "_mask";
++        }
++        if (kv_ro) {
++            defines.push_back("KV_RO");
++            variant += "_kv_ro";
++        }
++        auto processed           = preprocessor.preprocess(wgsl_flash_attn_pvr, defines);
++        auto decisions           = std::make_shared<ggml_webgpu_generic_shader_decisions>();
++        decisions->wg_size       = wg_size;
++        webgpu_pipeline pipeline = ggml_webgpu_create_pipeline(device, processed, variant);
++        pipeline.context         = decisions;
++        flash_attn_pvr_pipelines[key] = pipeline;
++        return pipeline;
++    }
++
++    webgpu_pipeline get_mul_mat_pvr_stage_pipeline() {
++        if (!mul_mat_pvr_stage_pipeline.pipeline) {
++            std::vector<std::string> defines = { "WG_SIZE=" + std::to_string(WEBGPU_MUL_MAT_PVR_STAGE_WG_SIZE) };
++            auto processed = preprocessor.preprocess(wgsl_mul_mat_pvr_stage, defines);
++            mul_mat_pvr_stage_pipeline = ggml_webgpu_create_pipeline(device, processed, "mul_mat_pvr_stage");
++        }
++        return mul_mat_pvr_stage_pipeline;
++    }
++
+     webgpu_pipeline get_mul_mat_fast_pipeline(const ggml_webgpu_shader_lib_context & context, bool src_overlap) {
+         ggml_webgpu_mul_mat_pipeline_key key = {};
+         key.src0_type                        = context.src0->type;
+diff --git a/ggml/src/ggml-webgpu/ggml-webgpu.cpp b/ggml/src/ggml-webgpu/ggml-webgpu.cpp
+--- a/ggml/src/ggml-webgpu/ggml-webgpu.cpp
++++ b/ggml/src/ggml-webgpu/ggml-webgpu.cpp
+@@ -93,6 +93,7 @@ static inline uint32_t ggml_webgpu_u32_from_f32(float value) {
+ #define WEBGPU_PARAMS_BUF_SIZE_BYTES             128  // enough for 32 parameters
+ #define WEBGPU_SET_ROWS_ERROR_BUF_SIZE_BYTES     4
+ #define WEBGPU_STORAGE_BUF_BINDING_MULT          4    // a storage buffer binding size must be a multiple of 4
++#define WEBGPU_PVR_COMMAND_SUBMIT_BATCH_SIZE     16u
+ 
+ /* End Constants */
+ 
+@@ -124,6 +125,10 @@ struct webgpu_param_arena {
+     uint32_t     slot_count  = 0;
+     uint32_t     next_slot   = 0;
+ 
++    // PowerVR: the batch's parameters are written with one WriteBuffer at submit
++    std::vector<uint8_t> shadow;
++    size_t               shadow_end = 0;
++
+     void init(wgpu::Device device, size_t slot_size, uint32_t slot_count, size_t alignment) {
+         this->slot_stride = ROUNDUP_POW2(slot_size, alignment);
+         this->slot_size   = slot_size;
+@@ -145,6 +150,21 @@ struct webgpu_param_arena {
+ 
+     void reset() { next_slot = 0; }
+ 
++    void write_deferred(size_t offset, const void * data, size_t size) {
++        if (shadow.size() < slot_stride * slot_count) {
++            shadow.resize(slot_stride * slot_count);
++        }
++        memcpy(shadow.data() + offset, data, size);
++        shadow_end = std::max(shadow_end, offset + size);
++    }
++
++    void flush(wgpu::Queue & queue) {
++        if (shadow_end > 0) {
++            queue.WriteBuffer(buffer, 0, shadow.data(), ROUNDUP_POW2(shadow_end, 4));
++            shadow_end = 0;
++        }
++    }
++
+     void cleanup() {
+         if (buffer) {
+             buffer.Destroy();
+@@ -205,6 +225,10 @@ struct webgpu_global_context_struct {
+ 
+     std::string vendor;
+ 
++    // No work was submitted since the queue was last seen idle. Only used on
++    // PowerVR (see ggml_backend_webgpu_synchronize).
++    bool queue_idle = false;
++
+     // TODO: We should rework the CPU profiling time handling to make it more useful. ref: https://github.com/ggml-org/llama.cpp/pull/22050
+ #ifdef GGML_WEBGPU_CPU_PROFILE
+     // Profiling: labeled CPU time in ms (total)
+@@ -242,6 +266,13 @@ struct webgpu_global_context_struct {
+ 
+ typedef std::shared_ptr<webgpu_global_context_struct> webgpu_global_context;
+ 
++// Imagination PowerVR GPUs (vendor "img-tec"), on which several paths below
++// differ: see ggml_webgpu_mul_mat_pvr, ggml_webgpu_flash_attn_pvr and
++// ggml_backend_webgpu_synchronize.
++static bool ggml_webgpu_is_pvr(const webgpu_global_context & global_ctx) {
++    return global_ctx->vendor == "img-tec";
++}
++
+ // All the base objects needed to run operations on a WebGPU device
+ struct webgpu_context_struct {
+     // Points to global instances owned by ggml_backend_webgpu_reg_context
+@@ -258,6 +289,14 @@ struct webgpu_context_struct {
+ 
+     size_t memset_bytes_per_thread;
+ 
++    // PowerVR matrix products: a buffer of its own for src1, so that it can be
++    // bound read-only (see ggml_webgpu_mul_mat_pvr)
++    wgpu::Buffer pvr_staging_buf;
++    size_t       pvr_staging_size = 0;
++    // the src1 the staging buffer holds, while no other op ran since: products
++    // with the same src1 back to back (FFN gate and up) skip the copy
++    const ggml_tensor * pvr_staged_src1 = nullptr;
++
+ #ifdef GGML_WEBGPU_GPU_PROFILE
+     // Profiling: per-shader GPU time in ms
+     std::unordered_map<std::string, double> shader_gpu_time_ms;
+@@ -286,6 +325,10 @@ struct webgpu_context_struct {
+             this->set_rows_host_error_buf.Destroy();
+             this->set_rows_host_error_buf = nullptr;
+         }
++        if (this->pvr_staging_buf) {
++            this->pvr_staging_buf.Destroy();
++            this->pvr_staging_buf = nullptr;
++        }
+         if (this->set_rows_dev_error_buf) {
+             this->set_rows_dev_error_buf.Destroy();
+             this->set_rows_dev_error_buf = nullptr;
+@@ -531,6 +574,7 @@ static void ggml_backend_webgpu_wait_queue(webgpu_global_context & ctx) {
+ 
+     ggml_backend_webgpu_check_wait_status(wait_status, callback_status, wgpu::QueueWorkDoneStatus::Success,
+                                           "Queue wait", "Queue work", callback_message.c_str());
++    ctx->queue_idle = true;
+ }
+ 
+ static void ggml_backend_webgpu_map_buffer(webgpu_global_context & ctx,
+@@ -561,6 +605,8 @@ static void ggml_backend_webgpu_submit_commands(webgpu_context &          ctx,
+         num_inflight_batches = 0;
+     }
+ 
++    ctx->param_arena.flush(ctx->global_ctx->queue);
++    ctx->global_ctx->queue_idle = false;
+     ctx->global_ctx->queue.Submit(1, &commands);
+     num_inflight_batches++;
+ }
+@@ -607,9 +653,16 @@ static webgpu_encoded_op ggml_backend_webgpu_build_multi(webgpu_context &
+         param_offsets.push_back(param_offset);
+     }
+ 
++    const bool defer_params = ggml_webgpu_is_pvr(ctx->global_ctx);
+     for (size_t i = 0; i < param_offsets.size(); i++) {
+-        ctx->global_ctx->queue.WriteBuffer(ctx->param_arena.buffer, param_offsets[i], dispatches[i].params.data(),
+-                                           dispatches[i].params.size() * sizeof(uint32_t));
++        if (defer_params) {
++            // one WriteBuffer per batch instead of one per dispatch
++            ctx->param_arena.write_deferred(param_offsets[i], dispatches[i].params.data(),
++                                            dispatches[i].params.size() * sizeof(uint32_t));
++        } else {
++            ctx->global_ctx->queue.WriteBuffer(ctx->param_arena.buffer, param_offsets[i], dispatches[i].params.data(),
++                                               dispatches[i].params.size() * sizeof(uint32_t));
++        }
+     }
+ 
+ #ifdef GGML_WEBGPU_GPU_PROFILE
+@@ -703,6 +756,7 @@ static void ggml_backend_webgpu_buffer_memset(webgpu_global_context & ctx,
+ 
+     wgpu::CommandBuffer              command  = encoder.Finish();
+     std::vector<wgpu::CommandBuffer> commands = { command };
++    ctx->queue_idle                           = false;
+     ctx->queue.Submit(commands.size(), commands.data());
+ }
+ 
+@@ -1629,10 +1683,133 @@ static void ggml_webgpu_quantize_q8_dispatch(webgpu_context &
+     });
+ }
+ 
++// Imagination PowerVR GPUs read storage bindings declared read_write several
++// times slower than read-only ones, which all the generic shaders use, and
++// run the tiled mat-mat shaders slowly. Matrix products of the K-quants go
++// through mul_mat_vec_pvr.wgsl (one column) and mul_mat_pvr.wgsl there.
++
++static bool ggml_webgpu_can_use_mul_mat_pvr(webgpu_context &    ctx,
++                                            const ggml_tensor * src0,
++                                            const ggml_tensor * src1,
++                                            const ggml_tensor * dst) {
++    if (!ggml_webgpu_is_pvr(ctx->global_ctx)) {
++        return false;
++    }
++    if (src0->type != GGML_TYPE_Q4_K && src0->type != GGML_TYPE_Q6_K) {
++        return false;
++    }
++    // mul_mat_pvr.wgsl reads each weight once per 16 columns, which is slow
++    // through a read_write binding: leave weights sharing dst's buffer to the
++    // generic shaders
++    if (src1->ne[1] > 1 && ggml_webgpu_tensor_buf(src0).Get() == ggml_webgpu_tensor_buf(dst).Get()) {
++        return false;
++    }
++    const size_t staged_bytes = (size_t) src1->ne[0] * src1->ne[1] * sizeof(float);
++    return src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 && src0->ne[2] == 1 && src0->ne[3] == 1 &&
++           src1->ne[2] == 1 && src1->ne[3] == 1 && src0->ne[0] % 256 == 0 &&
++           src1->nb[0] == ggml_type_size(src1->type) && src0->nb[0] == ggml_type_size(src0->type) &&
++           dst->nb[0] == ggml_type_size(dst->type) && dst->nb[1] == dst->ne[0] * ggml_type_size(dst->type) &&
++           src1->ne[1] <= ctx->global_ctx->capabilities.limits.maxComputeWorkgroupsPerDimension &&
++           staged_bytes <= ctx->global_ctx->capabilities.limits.maxStorageBufferBindingSize;
++}
++
++// Mat-vec (dst->ne[1] == 1) or mat-mat on PowerVR: copy src1 into the staging
++// buffer, then multiply from read-only bindings.
++static webgpu_encoded_op ggml_webgpu_mul_mat_pvr(webgpu_context & ctx,
++                                                 ggml_tensor *    src0,
++                                                 ggml_tensor *    src1,
++                                                 ggml_tensor *    dst) {
++    const uint32_t k            = (uint32_t) src0->ne[0];
++    const uint32_t n            = (uint32_t) src1->ne[1];
++    const size_t   staged_bytes = ROUNDUP_POW2((size_t) k * n * sizeof(float), 16);
++    if (!ctx->pvr_staging_buf || ctx->pvr_staging_size < staged_bytes) {
++        ctx->pvr_staged_src1 = nullptr;
++        // commands already encoded keep the old buffer alive
++        ctx->pvr_staging_size = std::max<size_t>(staged_bytes, 64 * 1024);
++        ggml_webgpu_create_buffer(ctx->global_ctx->device, ctx->pvr_staging_buf, ctx->pvr_staging_size,
++                                  wgpu::BufferUsage::Storage, "pvr_staging_buf");
++    }
++
++    std::vector<webgpu_dispatch_desc> dispatches;
++
++    const ggml_tensor * staged = ctx->pvr_staged_src1;
++    const bool reuse_staged = staged != nullptr && ggml_webgpu_tensor_buf(staged).Get() == ggml_webgpu_tensor_buf(src1).Get() &&
++                              ggml_webgpu_tensor_offset(staged) == ggml_webgpu_tensor_offset(src1) &&
++                              staged->ne[0] == src1->ne[0] && staged->ne[1] == src1->ne[1] && staged->nb[1] == src1->nb[1];
++    ctx->pvr_staged_src1 = src1;
++
++    // 1. copy src1 into the staging buffer
++    webgpu_pipeline       stage_pipeline = ctx->shader_lib->get_mul_mat_pvr_stage_pipeline();
++    std::vector<uint32_t> stage_params   = {
++        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src1) / ggml_type_size(src1->type)),
++        k,
++        (uint32_t) (src1->nb[1] / ggml_type_size(src1->type)),
++        n,
++    };
++    std::vector<wgpu::BindGroupEntry> stage_entries = {
++        ggml_webgpu_make_tensor_bind_group_entry(ctx, 0, src1),
++        ggml_webgpu_make_bind_group_entry(1, ctx->pvr_staging_buf, 0, staged_bytes),
++    };
++    if (!reuse_staged) {
++        dispatches.push_back({
++            stage_pipeline, std::move(stage_params), std::move(stage_entries),
++            { CEIL_DIV(k, WEBGPU_MUL_MAT_PVR_STAGE_WG_SIZE), n }
++        });
++    }
++
++    // 2. the product, with the weights read-only unless they share dst's buffer
++    const bool      src0_ro = ggml_webgpu_tensor_buf(src0).Get() != ggml_webgpu_tensor_buf(dst).Get();
++    webgpu_pipeline pipeline;
++    uint32_t        total_wg;
++    if (n == 1) {
++        pipeline        = ctx->shader_lib->get_mul_mat_vec_pvr_pipeline(src0->type, src0_ro);
++        auto * decisions = static_cast<ggml_webgpu_mul_mat_vec_shader_decisions *>(pipeline.context.get());
++        total_wg         = CEIL_DIV((uint32_t) dst->ne[0], decisions->outputs_per_wg);
++    } else {
++        pipeline = ctx->shader_lib->get_mul_mat_pvr_pipeline(src0->type, src0_ro);
++        total_wg = CEIL_DIV((uint32_t) dst->ne[0], WEBGPU_MUL_MAT_PVR_TILE) * CEIL_DIV(n, WEBGPU_MUL_MAT_PVR_TILE);
++    }
++
++    std::vector<uint32_t> params = { (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src0) / ggml_type_size(src0->type)),
++                                     0u,
++                                     (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),
++                                     (uint32_t) dst->ne[0],
++                                     n,
++                                     k,
++                                     (uint32_t) (src0->nb[1] / ggml_type_size(src0->type)),
++                                     k,
++                                     0u,
++                                     0u,
++                                     0u,
++                                     0u,
++                                     1u,
++                                     1u,
++                                     1u,
++                                     1u };
++    std::vector<wgpu::BindGroupEntry> entries = {
++        ggml_webgpu_make_tensor_bind_group_entry(ctx, 0, src0),
++        ggml_webgpu_make_bind_group_entry(1, ctx->pvr_staging_buf, 0, staged_bytes),
++        ggml_webgpu_make_tensor_bind_group_entry(ctx, 2, dst),
++    };
++    uint32_t wg_x = 1;
++    uint32_t wg_y = 1;
++    compute_2d_workgroups(total_wg, ctx->global_ctx->capabilities.limits.maxComputeWorkgroupsPerDimension, wg_x, wg_y);
++    dispatches.push_back({
++        pipeline, std::move(params), std::move(entries), { wg_x, wg_y }
++    });
++
++    return ggml_backend_webgpu_build_multi(ctx, dispatches);
++}
++
+ static webgpu_encoded_op ggml_webgpu_mul_mat(webgpu_context & ctx,
+                                              ggml_tensor *    src0,
+                                              ggml_tensor *    src1,
+                                              ggml_tensor *    dst) {
++    if (ggml_webgpu_can_use_mul_mat_pvr(ctx, src0, src1, dst)) {
++        return ggml_webgpu_mul_mat_pvr(ctx, src0, src1, dst);
++    }
++    ctx->pvr_staged_src1 = nullptr;
++
+     // Determine if this is a mat-vec operation
+     bool use_mat_vec = (dst->ne[1] <= 4);
+ 
+@@ -2280,6 +2457,79 @@ static webgpu_encoded_op ggml_webgpu_flash_attn_vec(webgpu_context &          ct
+     return ggml_backend_webgpu_build_multi(ctx, dispatches);
+ }
+ 
++// One query token on PowerVR: flash_attn_pvr.wgsl, as the vector path takes
++// milliseconds per call there.
++static bool ggml_webgpu_can_use_flash_attn_pvr(webgpu_context &    ctx,
++                                               const ggml_tensor * Q,
++                                               const ggml_tensor * K,
++                                               const ggml_tensor * V,
++                                               const ggml_tensor * mask,
++                                               const ggml_tensor * sinks,
++                                               const ggml_tensor * dst) {
++    if (!ggml_webgpu_is_pvr(ctx->global_ctx)) {
++        return false;
++    }
++    const int64_t head_dim = Q->ne[0];
++    if (Q->type != GGML_TYPE_F32 || K->type != GGML_TYPE_F16 || V->type != GGML_TYPE_F16 ||
++        dst->type != GGML_TYPE_F32 || sinks != nullptr || Q->ne[1] != 1 || Q->ne[3] != 1 || K->ne[3] != 1 ||
++        V->ne[3] != 1 || V->ne[0] != head_dim || K->ne[0] != head_dim || head_dim % 4 != 0 || head_dim > 256 ||
++        Q->ne[2] % K->ne[2] != 0 || K->ne[2] != V->ne[2] || K->ne[1] != V->ne[1] || !ggml_is_contiguous(dst)) {
++        return false;
++    }
++    if (ggml_get_op_params_f32(dst, 1) != 0.0f || ggml_get_op_params_f32(dst, 2) != 0.0f) {
++        return false;  // ALiBi, logit softcap
++    }
++    if (mask != nullptr && (mask->type != GGML_TYPE_F16 || mask->ne[2] != 1 || mask->ne[3] != 1)) {
++        return false;
++    }
++    // K and V are read through vec4<f16>
++    const size_t k_off = ggml_webgpu_tensor_misalignment(ctx, K) / ggml_type_size(K->type);
++    const size_t v_off = ggml_webgpu_tensor_misalignment(ctx, V) / ggml_type_size(V->type);
++    if (K->nb[0] != 2 || V->nb[0] != 2 || k_off % 4 != 0 || v_off % 4 != 0 || (K->nb[1] / 2) % 4 != 0 ||
++        (K->nb[2] / 2) % 4 != 0 || (V->nb[1] / 2) % 4 != 0 || (V->nb[2] / 2) % 4 != 0) {
++        return false;
++    }
++    return true;
++}
++
++static webgpu_encoded_op ggml_webgpu_flash_attn_pvr(webgpu_context & ctx,
++                                                    ggml_tensor *    Q,
++                                                    ggml_tensor *    K,
++                                                    ggml_tensor *    V,
++                                                    ggml_tensor *    mask,
++                                                    ggml_tensor *    dst) {
++    const uint32_t   head_dim = (uint32_t) Q->ne[0];
++    const WGPUBuffer dst_buf  = ggml_webgpu_tensor_buf(dst).Get();
++    const bool kv_ro = ggml_webgpu_tensor_buf(K).Get() != dst_buf && ggml_webgpu_tensor_buf(V).Get() != dst_buf;
++    webgpu_pipeline pipeline = ctx->shader_lib->get_flash_attn_pvr_pipeline(head_dim, mask != nullptr, kv_ro);
++
++    std::vector<uint32_t> params = {
++        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, Q) / ggml_type_size(Q->type)),
++        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, K) / ggml_type_size(K->type)),
++        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, V) / ggml_type_size(V->type)),
++        mask != nullptr ? (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, mask) / ggml_type_size(mask->type)) : 0u,
++        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),
++        (uint32_t) K->ne[1],
++        (uint32_t) (Q->nb[2] / ggml_type_size(Q->type)),
++        (uint32_t) (K->nb[1] / ggml_type_size(K->type)),
++        (uint32_t) (K->nb[2] / ggml_type_size(K->type)),
++        (uint32_t) (V->nb[1] / ggml_type_size(V->type)),
++        (uint32_t) (V->nb[2] / ggml_type_size(V->type)),
++        (uint32_t) (Q->ne[2] / K->ne[2]),
++        ggml_webgpu_u32_from_f32(ggml_get_op_params_f32(dst, 0)),
++    };
++    std::vector<wgpu::BindGroupEntry> entries = {
++        ggml_webgpu_make_tensor_bind_group_entry(ctx, 0, Q),
++        ggml_webgpu_make_tensor_bind_group_entry(ctx, 1, K),
++        ggml_webgpu_make_tensor_bind_group_entry(ctx, 2, V),
++    };
++    if (mask != nullptr) {
++        entries.push_back(ggml_webgpu_make_tensor_bind_group_entry(ctx, 3, mask));
++    }
++    entries.push_back(ggml_webgpu_make_tensor_bind_group_entry(ctx, mask != nullptr ? 4 : 3, dst));
++    return ggml_backend_webgpu_build(ctx, pipeline, params, entries, (uint32_t) Q->ne[2]);
++}
++
+ static webgpu_encoded_op ggml_webgpu_flash_attn(webgpu_context & ctx,
+                                                 ggml_tensor *    Q,
+                                                 ggml_tensor *    K,
+@@ -2287,6 +2537,9 @@ static webgpu_encoded_op ggml_webgpu_flash_attn(webgpu_context & ctx,
+                                                 ggml_tensor *    mask,
+                                                 ggml_tensor *    sinks,
+                                                 ggml_tensor *    dst) {
++    if (ggml_webgpu_can_use_flash_attn_pvr(ctx, Q, K, V, mask, sinks, dst)) {
++        return ggml_webgpu_flash_attn_pvr(ctx, Q, K, V, mask, dst);
++    }
+     ggml_webgpu_flash_attn_op op = ggml_webgpu_flash_attn_prepare(ctx, Q, K, V, mask, sinks, dst);
+     if (ggml_webgpu_flash_attn_use_vec_path(ctx->global_ctx, Q, K, V)) {
+         return ggml_webgpu_flash_attn_vec(ctx, Q, K, V, mask, sinks, dst, std::move(op));
+@@ -3398,6 +3651,10 @@ static std::optional<webgpu_encoded_op> ggml_webgpu_encode(webgpu_context ctx,
+     ggml_tensor * src1 = node->src[1];
+     ggml_tensor * src2 = node->src[2];
+ 
++    if (node->op != GGML_OP_MUL_MAT && !ggml_op_is_empty(node->op)) {
++        ctx->pvr_staged_src1 = nullptr;  // another op may write over the staged src1
++    }
++
+     switch (node->op) {
+             // no-ops
+         case GGML_OP_NONE:
+@@ -3586,6 +3843,7 @@ static ggml_status ggml_backend_webgpu_graph_compute(ggml_backend_t backend, str
+     if (ctx->batch_compute_passes) {
+         ctx->active_compute_pass = ctx->active_command_encoder.BeginComputePass();
+     }
++    ctx->pvr_staged_src1 = nullptr;
+ 
+     while (node_idx < cgraph->n_nodes) {
+         if (cgraph->nodes[node_idx]->op == GGML_OP_SET_ROWS) {
+@@ -3738,6 +3996,12 @@ static void ggml_backend_webgpu_set_tensor_async(ggml_backend_t backend,
+ 
+ static void ggml_backend_webgpu_synchronize(ggml_backend_t backend) {
+     ggml_backend_webgpu_context * backend_ctx = (ggml_backend_webgpu_context *) backend->context;
++    // The scheduler synchronizes about 20 times per token, and on PowerVR
++    // (Android) each wait costs a few ms even with nothing in flight: skip the
++    // ones with no work submitted since the last.
++    if (ggml_webgpu_is_pvr(backend_ctx->webgpu_ctx->global_ctx) && backend_ctx->webgpu_ctx->global_ctx->queue_idle) {
++        return;
++    }
+     ggml_backend_webgpu_wait_queue(backend_ctx->webgpu_ctx->global_ctx);
+ }
+ 
+@@ -3904,11 +4168,15 @@ static void ggml_backend_webgpu_buffer_get_tensor(ggml_backend_buffer_t buffer,
+     wgpu::CommandBuffer commands = encoder.Finish();
+ 
+     // Submit the command buffer to the queue
++    buf_ctx->global_ctx->queue_idle = false;
+     buf_ctx->global_ctx->queue.Submit(1, &commands);
+ 
+     // Map the staging buffer to read the data
+     ggml_backend_webgpu_map_buffer(buf_ctx->global_ctx, buf_ctx->global_ctx->get_tensor_staging_buf,
+                                    wgpu::MapMode::Read, 0, final_size);
++    // The copy was the last submission and the queue runs in order, so it is
++    // idle now.
++    buf_ctx->global_ctx->queue_idle = true;
+     // Must specify size here since the staging buffer might be larger than the tensor size
+     const void * mapped_range = buf_ctx->global_ctx->get_tensor_staging_buf.GetConstMappedRange(0, final_size);
+ 
+@@ -4194,6 +4462,10 @@ static void create_webgpu_device(ggml_backend_webgpu_reg_context * ctx) {
+     ctx->webgpu_global_ctx->command_submit_batch_size = ggml_backend_webgpu_get_command_submit_batch_size();
+     ctx->webgpu_global_ctx->max_inflight_batches      = ggml_backend_webgpu_get_max_inflight_batches();
+     ctx->webgpu_global_ctx->vendor                    = info.vendor;
++    if (ggml_webgpu_is_pvr(ctx->webgpu_global_ctx)) {
++        // PowerVR runs a token's ~450 dispatches faster in smaller command buffers
++        ctx->webgpu_global_ctx->command_submit_batch_size = WEBGPU_PVR_COMMAND_SUBMIT_BATCH_SIZE;
++    }
+     // The subgroup shaders also use @builtin(subgroup_id), a later WGSL
+     // language feature than subgroups: browsers with subgroups but not
+     // subgroup_id (Chrome 141, for one) fail to compile them.
+diff --git a/ggml/src/ggml-webgpu/wgsl-shaders/flash_attn_pvr.wgsl b/ggml/src/ggml-webgpu/wgsl-shaders/flash_attn_pvr.wgsl
+new file mode 100644
+--- /dev/null
++++ b/ggml/src/ggml-webgpu/wgsl-shaders/flash_attn_pvr.wgsl
+@@ -0,0 +1,121 @@
++// Flash attention for one query token on Imagination PowerVR GPUs (f32 Q,
++// f16 K/V). The generic vector path takes milliseconds per call there. One
++// workgroup per query head: each thread walks every WG_SIZE-th KV position
++// with its own running max, sum and output, then the threads merge them.
++// K and V are bound read-only when they live in another buffer than dst (the
++// KV cache), as PowerVR reads read_write bindings much slower.
++
++enable f16;
++
++struct Params {
++    offset_q: u32,
++    offset_k: u32,
++    offset_v: u32,
++    offset_mask: u32,
++    offset_dst: u32,
++    n_kv: u32,
++    stride_q2: u32,   // Q elements between heads
++    stride_k1: u32,   // K elements between KV positions
++    stride_k2: u32,   // K elements between KV heads
++    stride_v1: u32,
++    stride_v2: u32,
++    head_ratio: u32,  // query heads per KV head
++    scale: f32
++};
++
++#ifdef KV_RO
++#define KV_ACCESS read
++#else
++#define KV_ACCESS read_write
++#endif
++
++@group(0) @binding(0) var<storage, read_write> q: array<f32>;
++@group(0) @binding(1) var<storage, KV_ACCESS> k: array<vec4<f16>>;
++@group(0) @binding(2) var<storage, KV_ACCESS> v: array<vec4<f16>>;
++#ifdef HAS_MASK
++@group(0) @binding(3) var<storage, read_write> mask: array<f16>;
++#define DST_BINDING 4
++#else
++#define DST_BINDING 3
++#endif
++@group(0) @binding(DST_BINDING) var<storage, read_write> dst: array<f32>;
++@group(0) @binding(DST_BINDING + 1) var<uniform> params: Params;
++
++const D4 = HEAD_DIM / 4u;
++const NEG_BIG = -3.0e38;
++
++var<workgroup> sh_m: array<f32, WG_SIZE>;
++var<workgroup> sh_l: array<f32, WG_SIZE>;
++var<workgroup> sh_o: array<vec4<f32>, WG_SIZE * D4>;
++
++@compute @workgroup_size(WG_SIZE)
++fn main(@builtin(workgroup_id) wg_id: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
++    let h = wg_id.x;
++    let kvh = h / params.head_ratio;
++
++    var qv: array<vec4<f32>, D4>;
++    let q_base = params.offset_q + h * params.stride_q2;
++    for (var i = 0u; i < D4; i++) {
++        qv[i] = vec4<f32>(q[q_base + 4u * i], q[q_base + 4u * i + 1u], q[q_base + 4u * i + 2u], q[q_base + 4u * i + 3u]) *
++                params.scale;
++    }
++
++    var m = NEG_BIG;
++    var l = 0.0;
++    var o: array<vec4<f32>, D4>;
++    for (var i = 0u; i < D4; i++) {
++        o[i] = vec4<f32>(0.0);
++    }
++
++    let k_head = (params.offset_k + kvh * params.stride_k2) / 4u;
++    let v_head = (params.offset_v + kvh * params.stride_v2) / 4u;
++    for (var j = lid; j < params.n_kv; j += WG_SIZE) {
++        let kb = k_head + j * (params.stride_k1 / 4u);
++        var s = 0.0;
++        for (var i = 0u; i < D4; i++) {
++            s += dot(qv[i], vec4<f32>(k[kb + i]));
++        }
++#ifdef HAS_MASK
++        s += f32(mask[params.offset_mask + j]);
++#endif
++        if (s > NEG_BIG) {
++            let m_new = max(m, s);
++            let corr = exp(m - m_new);
++            let p = exp(s - m_new);
++            l = l * corr + p;
++            let vb = v_head + j * (params.stride_v1 / 4u);
++            for (var i = 0u; i < D4; i++) {
++                o[i] = o[i] * corr + p * vec4<f32>(v[vb + i]);
++            }
++            m = m_new;
++        }
++    }
++
++    // merge the threads
++    sh_m[lid] = m;
++    workgroupBarrier();
++    var m_all = NEG_BIG;
++    for (var t = 0u; t < WG_SIZE; t++) {
++        m_all = max(m_all, sh_m[t]);
++    }
++    let f = select(exp(m - m_all), 0.0, m <= NEG_BIG);
++    sh_l[lid] = l * f;
++    for (var i = 0u; i < D4; i++) {
++        sh_o[lid * D4 + i] = o[i] * f;
++    }
++    workgroupBarrier();
++    if (lid < D4) {
++        var l_all = 0.0;
++        var acc = vec4<f32>(0.0);
++        for (var t = 0u; t < WG_SIZE; t++) {
++            l_all += sh_l[t];
++            acc += sh_o[t * D4 + lid];
++        }
++        let r = acc / l_all;
++        let d = params.offset_dst + h * HEAD_DIM + 4u * lid;
++        dst[d] = r.x;
++        dst[d + 1u] = r.y;
++        dst[d + 2u] = r.z;
++        dst[d + 3u] = r.w;
++    }
++}
+diff --git a/ggml/src/ggml-webgpu/wgsl-shaders/mul_mat_pvr.wgsl b/ggml/src/ggml-webgpu/wgsl-shaders/mul_mat_pvr.wgsl
+new file mode 100644
+--- /dev/null
++++ b/ggml/src/ggml-webgpu/wgsl-shaders/mul_mat_pvr.wgsl
+@@ -0,0 +1,215 @@
++// Mat-mat (prompt batches) for Imagination PowerVR GPUs (Q4_K, Q6_K).
++//
++// The tiled shaders stage both operands in workgroup memory, which is slow
++// there, and read through read_write bindings, which PowerVR reads several
++// times slower than read-only ones. Here each thread computes a 2x2 block of
++// dst straight from read-only bindings: the weights (SRC0_RO, when they are
++// in another buffer than dst) and a copy of src1 (mul_mat_pvr_stage.wgsl).
++// The 8x8 threads of a workgroup cover 16 rows and 16 columns, rows and
++// columns interleaved by 8. Larger blocks per thread run slower.
++
++struct MulMatParams {
++    offset_src0: u32,
++    offset_src1: u32,
++    offset_dst: u32,
++    m: u32,
++    n: u32,
++    k: u32,
++    stride_01: u32,
++    stride_11: u32,
++    stride_02: u32,
++    stride_12: u32,
++    stride_03: u32,
++    stride_13: u32,
++    bs02: u32,
++    bs03: u32,
++    broadcast2: u32,
++    broadcast3: u32
++};
++
++#ifdef SRC0_RO
++#define SRC0_ACCESS read
++#else
++#define SRC0_ACCESS read_write
++#endif
++
++#ifdef Q4_K
++@group(0) @binding(0) var<storage, SRC0_ACCESS> src0: array<vec4<u32>>;
++#endif
++#ifdef Q6_K
++@group(0) @binding(0) var<storage, SRC0_ACCESS> src0: array<u32>;
++#endif
++@group(0) @binding(1) var<storage, read> src1: array<vec4<f32>>;
++@group(0) @binding(2) var<storage, read_write> dst: array<f32>;
++@group(0) @binding(3) var<uniform> params: MulMatParams;
++
++const LANES = 8u;          // threads along rows and along columns
++const TILE = 2u * LANES;   // rows (and columns) per workgroup
++
++#ifdef Q4_K
++// 144-byte blocks = 9 vec4<u32>: [0] = d, dmin, scales[12]; [1..8] = qs.
++
++// d * scale * 255 and dmin * min of sub-blocks 2jj (xy) and 2jj + 1 (zw)
++fn q4k_scales(h: vec4<u32>, jj: u32) -> vec4<f32> {
++    let dm = unpack2x16float(h.x);
++    let A = h.y;
++    let B = h.z;
++    let C = h.w;
++    let s = 2u * jj;
++    let sha = 8u * (s & 3u);
++    let shb = sha + 8u;
++    var sc1: u32;
++    var m1: u32;
++    var sc2: u32;
++    var m2: u32;
++    if (s >= 4u) {
++        sc1 = ((C >> sha) & 0xFu) | (((A >> sha) >> 2u) & 0x30u);
++        m1  = (((C >> sha) >> 4u) & 0xFu) | (((B >> sha) >> 2u) & 0x30u);
++        sc2 = ((C >> shb) & 0xFu) | (((A >> shb) >> 2u) & 0x30u);
++        m2  = (((C >> shb) >> 4u) & 0xFu) | (((B >> shb) >> 2u) & 0x30u);
++    } else {
++        sc1 = (A >> sha) & 63u;
++        m1  = (B >> sha) & 63u;
++        sc2 = (A >> shb) & 63u;
++        m2  = (B >> shb) & 63u;
++    }
++    // unpack4x8unorm divides by 255
++    return vec4<f32>(dm.x * f32(sc1) * 255.0, dm.y * f32(m1), dm.x * f32(sc2) * 255.0, dm.y * f32(m2));
++}
++
++// one qs word of rows 0 and 1 (4 low-nibble and 4 high-nibble values each)
++// against 4 + 4 values of columns 0 and 1: deltas for (r0c0, r0c1, r1c0, r1c1)
++fn q4k_step(qa: u32, qb: u32, s0: vec4<f32>, s1: vec4<f32>, xl0: vec4<f32>, xh0: vec4<f32>, xl1: vec4<f32>,
++            xh1: vec4<f32>) -> vec4<f32> {
++    let wl0 = unpack4x8unorm(qa & 0x0F0F0F0Fu) * s0.x - s0.y;
++    let wh0 = unpack4x8unorm((qa >> 4u) & 0x0F0F0F0Fu) * s0.z - s0.w;
++    let wl1 = unpack4x8unorm(qb & 0x0F0F0F0Fu) * s1.x - s1.y;
++    let wh1 = unpack4x8unorm((qb >> 4u) & 0x0F0F0F0Fu) * s1.z - s1.w;
++    return vec4<f32>(dot(wl0, xl0) + dot(wh0, xh0), dot(wl0, xl1) + dot(wh0, xh1), dot(wl1, xl0) + dot(wh1, xh0),
++                     dot(wl1, xl1) + dot(wh1, xh1));
++}
++
++fn row_block_dot(rb0: u32, rb1: u32, b: u32, xb0: u32, xb1: u32) -> vec4<f32> {
++    let bb0 = (rb0 + b) * 9u;
++    let bb1 = (rb1 + b) * 9u;
++    let h0 = src0[bb0];
++    let h1 = src0[bb1];
++    var acc = vec4<f32>(0.0);
++    for (var p = 0u; p < 8u; p++) {
++        let jj = p >> 1u;
++        let q0 = src0[bb0 + 1u + p];
++        let q1 = src0[bb1 + 1u + p];
++        let s0 = q4k_scales(h0, jj);
++        let s1 = q4k_scales(h1, jj);
++        // qs bytes 16p..16p+15: values 64jj + l (low nibbles) and 64jj + 32 + l (high)
++        let xo0 = xb0 + b * 64u + jj * 16u + (p & 1u) * 4u;
++        let xo1 = xb1 + b * 64u + jj * 16u + (p & 1u) * 4u;
++        acc += q4k_step(q0.x, q1.x, s0, s1, src1[xo0], src1[xo0 + 8u], src1[xo1], src1[xo1 + 8u]);
++        acc += q4k_step(q0.y, q1.y, s0, s1, src1[xo0 + 1u], src1[xo0 + 9u], src1[xo1 + 1u], src1[xo1 + 9u]);
++        acc += q4k_step(q0.z, q1.z, s0, s1, src1[xo0 + 2u], src1[xo0 + 10u], src1[xo1 + 2u], src1[xo1 + 10u]);
++        acc += q4k_step(q0.w, q1.w, s0, s1, src1[xo0 + 3u], src1[xo0 + 11u], src1[xo1 + 3u], src1[xo1 + 11u]);
++    }
++    return acc;
++}
++#endif
++
++#ifdef Q6_K
++// 210-byte blocks: ql[128], qh[64], scales[16] (i8), d (f16), only 2-byte aligned.
++
++// the 32-bit word at a 2-byte aligned byte offset
++fn ld(byte: u32) -> u32 {
++    let i = byte >> 2u;
++    let lo = src0[i];
++    let hi = src0[i + 1u];
++    return select((lo >> 16u) | (hi << 16u), lo, (byte & 2u) == 0u);
++}
++
++fn sbyte(w: u32, i: u32) -> f32 {
++    return f32(bitcast<i32>(w << (24u - 8u * i)) >> 24u);
++}
++
++// 4 values (6 bits, biased by 32) of rows 0 and 1 against 4 values of
++// columns 0 and 1, with scales s0 and s1 (times d): (r0c0, r0c1, r1c0, r1c1)
++fn q6k_step(qa: u32, qb: u32, s0: f32, s1: f32, x0: vec4<f32>, x1: vec4<f32>) -> vec4<f32> {
++    let w0 = (unpack4x8unorm(qa) * 255.0 - 32.0) * s0;
++    let w1 = (unpack4x8unorm(qb) * 255.0 - 32.0) * s1;
++    return vec4<f32>(dot(w0, x0), dot(w0, x1), dot(w1, x0), dot(w1, x1));
++}
++
++fn row_block_dot(rb0: u32, rb1: u32, b: u32, xb0: u32, xb1: u32) -> vec4<f32> {
++    let base0 = (rb0 + b) * 210u;
++    let base1 = (rb1 + b) * 210u;
++    let d0 = unpack2x16float(ld(base0 + 208u) & 0xFFFFu).x;
++    let d1 = unpack2x16float(ld(base1 + 208u) & 0xFFFFu).x;
++    var acc = vec4<f32>(0.0);
++    for (var n = 0u; n < 2u; n++) {
++        // scales 8n .. 8n + 7
++        let sc00 = ld(base0 + 192u + 8u * n);
++        let sc01 = ld(base0 + 196u + 8u * n);
++        let sc10 = ld(base1 + 192u + 8u * n);
++        let sc11 = ld(base1 + 196u + 8u * n);
++        for (var w = 0u; w < 8u; w++) {
++            let l0 = 4u * w;
++            let od = w >> 2u;  // l0 / 16
++            let a0 = ld(base0 + 64u * n + l0);
++            let b0 = ld(base0 + 64u * n + l0 + 32u);
++            let h0 = ld(base0 + 128u + 32u * n + l0);
++            let a1 = ld(base1 + 64u * n + l0);
++            let b1 = ld(base1 + 64u * n + l0 + 32u);
++            let h1 = ld(base1 + 128u + 32u * n + l0);
++            let xo0 = xb0 + b * 64u + 32u * n + w;
++            let xo1 = xb1 + b * 64u + 32u * n + w;
++            // y[l], y[l + 32], y[l + 64], y[l + 96] of this half
++            acc += q6k_step((a0 & 0x0F0F0F0Fu) | ((h0 << 4u) & 0x30303030u),
++                            (a1 & 0x0F0F0F0Fu) | ((h1 << 4u) & 0x30303030u), d0 * sbyte(sc00, od),
++                            d1 * sbyte(sc10, od), src1[xo0], src1[xo1]);
++            acc += q6k_step((b0 & 0x0F0F0F0Fu) | ((h0 << 2u) & 0x30303030u),
++                            (b1 & 0x0F0F0F0Fu) | ((h1 << 2u) & 0x30303030u), d0 * sbyte(sc00, 2u + od),
++                            d1 * sbyte(sc10, 2u + od), src1[xo0 + 8u], src1[xo1 + 8u]);
++            acc += q6k_step(((a0 >> 4u) & 0x0F0F0F0Fu) | (h0 & 0x30303030u),
++                            ((a1 >> 4u) & 0x0F0F0F0Fu) | (h1 & 0x30303030u), d0 * sbyte(sc01, od),
++                            d1 * sbyte(sc11, od), src1[xo0 + 16u], src1[xo1 + 16u]);
++            acc += q6k_step(((b0 >> 4u) & 0x0F0F0F0Fu) | ((h0 >> 2u) & 0x30303030u),
++                            ((b1 >> 4u) & 0x0F0F0F0Fu) | ((h1 >> 2u) & 0x30303030u), d0 * sbyte(sc01, 2u + od),
++                            d1 * sbyte(sc11, 2u + od), src1[xo0 + 24u], src1[xo1 + 24u]);
++        }
++    }
++    return acc;
++}
++#endif
++
++@compute @workgroup_size(LANES * LANES)
++fn main(@builtin(local_invocation_index) li: u32,
++        @builtin(workgroup_id) wg_id: vec3<u32>,
++        @builtin(num_workgroups) num_wg: vec3<u32>) {
++    let wg_linear = wg_id.y * num_wg.x + wg_id.x;
++    let row_tiles = (params.m + TILE - 1u) / TILE;
++    let row0 = (wg_linear % row_tiles) * TILE + li % LANES;
++    let col0 = (wg_linear / row_tiles) * TILE + li / LANES;
++    let row1 = row0 + LANES;
++    let col1 = col0 + LANES;
++    // past the end: compute on the last row/column, store nothing
++    let rb0 = params.offset_src0 + min(row0, params.m - 1u) * params.stride_01;
++    let rb1 = params.offset_src0 + min(row1, params.m - 1u) * params.stride_01;
++    let xb0 = (params.offset_src1 + min(col0, params.n - 1u) * params.stride_11) / 4u;
++    let xb1 = (params.offset_src1 + min(col1, params.n - 1u) * params.stride_11) / 4u;
++
++    var acc = vec4<f32>(0.0);
++    let nb = params.k / 256u;
++    for (var b = 0u; b < nb; b++) {
++        acc += row_block_dot(rb0, rb1, b, xb0, xb1);
++    }
++
++    if (row0 < params.m && col0 < params.n) {
++        dst[params.offset_dst + col0 * params.m + row0] = acc.x;
++    }
++    if (row0 < params.m && col1 < params.n) {
++        dst[params.offset_dst + col1 * params.m + row0] = acc.y;
++    }
++    if (row1 < params.m && col0 < params.n) {
++        dst[params.offset_dst + col0 * params.m + row1] = acc.z;
++    }
++    if (row1 < params.m && col1 < params.n) {
++        dst[params.offset_dst + col1 * params.m + row1] = acc.w;
++    }
++}
+diff --git a/ggml/src/ggml-webgpu/wgsl-shaders/mul_mat_pvr_stage.wgsl b/ggml/src/ggml-webgpu/wgsl-shaders/mul_mat_pvr_stage.wgsl
+new file mode 100644
+--- /dev/null
++++ b/ggml/src/ggml-webgpu/wgsl-shaders/mul_mat_pvr_stage.wgsl
+@@ -0,0 +1,21 @@
++// Copies the src1 of a mat-vec or mat-mat into a buffer of its own, columns
++// packed, so that mul_mat_vec_pvr.wgsl and mul_mat_pvr.wgsl can bind it
++// read-only (see there).
++
++struct Params {
++    offset_src: u32,
++    k: u32,
++    stride_src: u32,  // elements between columns
++    n: u32
++};
++
++@group(0) @binding(0) var<storage, read_write> src: array<f32>;
++@group(0) @binding(1) var<storage, read_write> staged: array<f32>;
++@group(0) @binding(2) var<uniform> params: Params;
++
++@compute @workgroup_size(WG_SIZE)
++fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
++    if (gid.x < params.k && gid.y < params.n) {
++        staged[gid.y * params.k + gid.x] = src[params.offset_src + gid.y * params.stride_src + gid.x];
++    }
++}
+diff --git a/ggml/src/ggml-webgpu/wgsl-shaders/mul_mat_vec_pvr.wgsl b/ggml/src/ggml-webgpu/wgsl-shaders/mul_mat_vec_pvr.wgsl
+new file mode 100644
+--- /dev/null
++++ b/ggml/src/ggml-webgpu/wgsl-shaders/mul_mat_vec_pvr.wgsl
+@@ -0,0 +1,186 @@
++// Mat-vec for Imagination PowerVR GPUs (Q4_K, Q6_K, one column).
++//
++// On these GPUs, reading through a read_write storage binding is several
++// times slower than through a read-only one, so the weights are bound
++// read-only (SRC0_RO, when they sit in a different buffer than dst) and the
++// vector is read from a read-only copy (mul_mat_pvr_stage.wgsl). Each
++// group of TPR threads handles one row, and neighbouring lanes load
++// neighbouring 16-byte words of a block.
++
++struct MulMatParams {
++    offset_src0: u32,
++    offset_src1: u32,
++    offset_dst: u32,
++    m: u32,
++    n: u32,
++    k: u32,
++    stride_01: u32,
++    stride_11: u32,
++    stride_02: u32,
++    stride_12: u32,
++    stride_03: u32,
++    stride_13: u32,
++    bs02: u32,
++    bs03: u32,
++    broadcast2: u32,
++    broadcast3: u32
++};
++
++#ifdef SRC0_RO
++#define SRC0_ACCESS read
++#else
++#define SRC0_ACCESS read_write
++#endif
++
++#ifdef Q4_K
++@group(0) @binding(0) var<storage, SRC0_ACCESS> src0: array<vec4<u32>>;
++#endif
++#ifdef Q6_K
++@group(0) @binding(0) var<storage, SRC0_ACCESS> src0: array<u32>;
++#endif
++@group(0) @binding(1) var<storage, read> src1: array<vec4<f32>>;
++@group(0) @binding(2) var<storage, read_write> dst: array<f32>;
++@group(0) @binding(3) var<uniform> params: MulMatParams;
++
++const TPR = WG_SIZE / ROWS_PER_WG;
++
++var<workgroup> partial_sums: array<f32, WG_SIZE>;
++
++#ifdef Q4_K
++// 144-byte blocks = 9 vec4<u32>: [0] = d, dmin, scales[12]; [1..8] = qs.
++// LPB lanes share a block; a lane handles qs words pg and pg + 4.
++const LPB = 4u;
++
++fn q4k_piece(bb: u32, xb: u32, p: u32, A: u32, B: u32, C: u32, dm: vec2<f32>) -> f32 {
++    let q = src0[bb + 1u + p];
++    let jj = p >> 1u;
++    let xo = xb + jj * 16u + (p & 1u) * 4u;
++    let xl0 = src1[xo];
++    let xl1 = src1[xo + 1u];
++    let xl2 = src1[xo + 2u];
++    let xl3 = src1[xo + 3u];
++    let xh0 = src1[xo + 8u];
++    let xh1 = src1[xo + 9u];
++    let xh2 = src1[xo + 10u];
++    let xh3 = src1[xo + 11u];
++    let sl = unpack4x8unorm(q.x & 0x0F0F0F0Fu) * xl0 + unpack4x8unorm(q.y & 0x0F0F0F0Fu) * xl1 +
++             unpack4x8unorm(q.z & 0x0F0F0F0Fu) * xl2 + unpack4x8unorm(q.w & 0x0F0F0F0Fu) * xl3;
++    let sh = unpack4x8unorm((q.x >> 4u) & 0x0F0F0F0Fu) * xh0 + unpack4x8unorm((q.y >> 4u) & 0x0F0F0F0Fu) * xh1 +
++             unpack4x8unorm((q.z >> 4u) & 0x0F0F0F0Fu) * xh2 + unpack4x8unorm((q.w >> 4u) & 0x0F0F0F0Fu) * xh3;
++    let sum_l = xl0 + xl1 + xl2 + xl3;
++    let sum_h = xh0 + xh1 + xh2 + xh3;
++    // scales and mins of sub-blocks 2jj (low nibbles) and 2jj + 1 (high nibbles)
++    let s = 2u * jj;
++    let sha = 8u * (s & 3u);
++    let shb = sha + 8u;
++    var sc1: u32;
++    var m1: u32;
++    var sc2: u32;
++    var m2: u32;
++    if (s >= 4u) {
++        sc1 = ((C >> sha) & 0xFu) | (((A >> sha) >> 2u) & 0x30u);
++        m1  = (((C >> sha) >> 4u) & 0xFu) | (((B >> sha) >> 2u) & 0x30u);
++        sc2 = ((C >> shb) & 0xFu) | (((A >> shb) >> 2u) & 0x30u);
++        m2  = (((C >> shb) >> 4u) & 0xFu) | (((B >> shb) >> 2u) & 0x30u);
++    } else {
++        sc1 = (A >> sha) & 63u;
++        m1  = (B >> sha) & 63u;
++        sc2 = (A >> shb) & 63u;
++        m2  = (B >> shb) & 63u;
++    }
++    let one = vec4<f32>(1.0);
++    // unpack4x8unorm divides by 255
++    return dm.x * 255.0 * (f32(sc1) * dot(sl, one) + f32(sc2) * dot(sh, one)) -
++           dm.y * (f32(m1) * dot(sum_l, one) + f32(m2) * dot(sum_h, one));
++}
++
++fn block_dot(row_block: u32, b: u32, xb: u32, pg: u32) -> f32 {
++    let bb = (row_block + b) * 9u;
++    let hdr = src0[bb];
++    let dm = unpack2x16float(hdr.x);
++    return q4k_piece(bb, xb, pg, hdr.y, hdr.z, hdr.w, dm) + q4k_piece(bb, xb, pg + 4u, hdr.y, hdr.z, hdr.w, dm);
++}
++#endif
++
++#ifdef Q6_K
++// 210-byte blocks: ql[128], qh[64], scales[16] (i8), d (f16). Blocks are only
++// 2-byte aligned. 8 lanes share a block, each handling 32 values.
++const LPB = 8u;
++
++// the 32-bit word at a 2-byte aligned byte offset
++fn ld(byte: u32) -> u32 {
++    let i = byte >> 2u;
++    let lo = src0[i];
++    let hi = src0[i + 1u];
++    return select((lo >> 16u) | (hi << 16u), lo, (byte & 2u) == 0u);
++}
++
++fn sbyte(w: u32, i: u32) -> f32 {
++    return f32(bitcast<i32>(w << (24u - 8u * i)) >> 24u);
++}
++
++// 4 values (6-bit, biased by 32) times 4 x values
++fn grp(q: u32, x: vec4<f32>) -> f32 {
++    return dot(unpack4x8unorm(q), x) * 255.0 - 32.0 * (x.x + x.y + x.z + x.w);
++}
++
++fn block_dot(row_block: u32, b: u32, xb: u32, p: u32) -> f32 {
++    let base = (row_block + b) * 210u;
++    let n = p >> 2u;
++    let l0 = 8u * (p & 3u);
++    let a0 = ld(base + 64u * n + l0);
++    let a1 = ld(base + 64u * n + l0 + 4u);
++    let b0 = ld(base + 64u * n + l0 + 32u);
++    let b1 = ld(base + 64u * n + l0 + 36u);
++    let h0 = ld(base + 128u + 32u * n + l0);
++    let h1 = ld(base + 132u + 32u * n + l0);
++    let scw0 = ld(base + 192u + 8u * n);
++    let scw1 = ld(base + 196u + 8u * n);
++    let od = l0 >> 4u;
++    let d = unpack2x16float(ld(base + 208u) & 0xFFFFu).x;
++    let x0 = xb + 32u * n + (l0 >> 2u);
++    var r = sbyte(scw0, od) * (grp((a0 & 0x0F0F0F0Fu) | ((h0 << 4u) & 0x30303030u), src1[x0]) +
++                               grp((a1 & 0x0F0F0F0Fu) | ((h1 << 4u) & 0x30303030u), src1[x0 + 1u]));
++    r += sbyte(scw0, 2u + od) * (grp((b0 & 0x0F0F0F0Fu) | ((h0 << 2u) & 0x30303030u), src1[x0 + 8u]) +
++                                 grp((b1 & 0x0F0F0F0Fu) | ((h1 << 2u) & 0x30303030u), src1[x0 + 9u]));
++    r += sbyte(scw1, od) * (grp(((a0 >> 4u) & 0x0F0F0F0Fu) | (h0 & 0x30303030u), src1[x0 + 16u]) +
++                            grp(((a1 >> 4u) & 0x0F0F0F0Fu) | (h1 & 0x30303030u), src1[x0 + 17u]));
++    r += sbyte(scw1, 2u + od) * (grp(((b0 >> 4u) & 0x0F0F0F0Fu) | ((h0 >> 2u) & 0x30303030u), src1[x0 + 24u]) +
++                                 grp(((b1 >> 4u) & 0x0F0F0F0Fu) | ((h1 >> 2u) & 0x30303030u), src1[x0 + 25u]));
++    return d * r;
++}
++#endif
++
++const BLOCKS_PER_ITER = TPR / LPB;
++const_assert BLOCKS_PER_ITER > 0u;
++
++@compute @workgroup_size(WG_SIZE)
++fn main(@builtin(local_invocation_index) li: u32,
++        @builtin(workgroup_id) wg_id: vec3<u32>,
++        @builtin(num_workgroups) num_wg: vec3<u32>) {
++    let wg_linear = wg_id.y * num_wg.x + wg_id.x;
++    let t = li % TPR;
++    let row = wg_linear * ROWS_PER_WG + li / TPR;
++    let nb = params.k / 256u;
++    // rows past the end compute on the last row and store nothing
++    let row_block = params.offset_src0 + min(row, params.m - 1u) * params.stride_01;
++    let x0 = params.offset_src1 / 4u;
++    let lane = t % LPB;
++
++    var acc = 0.0;
++    for (var b = t / LPB; b < nb; b += BLOCKS_PER_ITER) {
++        acc += block_dot(row_block, b, x0 + b * 64u, lane);
++    }
++
++    partial_sums[li] = acc;
++    workgroupBarrier();
++    for (var s = TPR / 2u; s > 0u; s >>= 1u) {
++        if (t < s) {
++            partial_sums[li] += partial_sums[li + s];
++        }
++        workgroupBarrier();
++    }
++    if (t == 0u && row < params.m) {
++        dst[params.offset_dst + row] = partial_sums[li];
++    }
++}

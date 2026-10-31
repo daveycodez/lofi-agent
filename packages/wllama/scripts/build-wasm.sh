@@ -37,6 +37,17 @@
 #   subgroup_id (llama-cpp-webgpu-subgroup-id.patch): they use it, so
 #   browsers with subgroups but not subgroup_id (Chrome 141) failed to
 #   compile them and the model didn't load.
+# - WebGPU on Imagination PowerVR GPUs (adapter vendor "img-tec", the Pixel
+#   10's) made usable (llama-cpp-webgpu-powervr.patch). Those GPUs read
+#   storage bindings declared read_write about 3x slower than read-only
+#   ones, and every generic shader declares them read_write. On img-tec
+#   only: Q4_K and Q6_K mat-vecs and mat-mats go through new shaders that
+#   read the weights and a copy of src1 through read-only bindings; one-token
+#   flash attention goes through a new shader (the vector path took ms per
+#   call); redundant queue waits are skipped (the scheduler waits ~20 times
+#   per token and each costs ms on Android); and command buffers are smaller.
+#   350M Q4_K_M on the Pixel: prompt 40 -> 165 tokens/s, generation 2.5 ->
+#   25. Other GPUs run the code as before.
 # - Context checkpoints at user messages: wllama tokenizes chat prompts
 #   before the chat session looks for messages in them
 #   (wllama-message-spans.patch), and llama.cpp knows where LFM2's messages
@@ -84,6 +95,8 @@ git -C "$LLAMA" apply "$HERE/llama-cpp-load-in-file-order.patch"
 git -C "$LLAMA" apply "$HERE/llama-cpp-lfm2-message-spans.patch"
 # Subgroup shaders only where the browser also has WGSL's subgroup_id.
 git -C "$LLAMA" apply "$HERE/llama-cpp-webgpu-subgroup-id.patch"
+# PowerVR (img-tec) shaders and fixes.
+git -C "$LLAMA" apply "$HERE/llama-cpp-webgpu-powervr.patch"
 
 # Emscripten, at the version wllama builds with.
 EMSDK_DIR="${EMSDK_DIR:-$WORK/emsdk}"
