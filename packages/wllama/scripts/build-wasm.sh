@@ -42,12 +42,18 @@
 #   storage bindings declared read_write about 3x slower than read-only
 #   ones, and every generic shader declares them read_write. On img-tec
 #   only: Q4_K and Q6_K mat-vecs and mat-mats go through new shaders that
-#   read the weights and a copy of src1 through read-only bindings; one-token
-#   flash attention goes through a new shader (the vector path took ms per
-#   call); redundant queue waits are skipped (the scheduler waits ~20 times
-#   per token and each costs ms on Android); and command buffers are smaller.
-#   350M Q4_K_M on the Pixel: prompt 40 -> 165 tokens/s, generation 2.5 ->
-#   25. Other GPUs run the code as before.
+#   read the weights and a copy of src1 through read-only bindings, prompt
+#   batches (32+ tokens) dequantizing the weights to f16 in a texture (those
+#   GPUs write textures about 3x faster than buffers) for a register-tiled
+#   f16 mat-mat with the FFN's SwiGLU fused in; flash attention goes through
+#   new shaders for one token, a few, and prompt batches (the generic ones
+#   took ms per call, 140 ms per layer for a 512-token batch); RMS norm
+#   workgroups are 128 threads instead of 1024; small buffers (the recurrent
+#   state) are read back whole once per checkpoint; redundant queue waits are
+#   skipped (the scheduler waits ~20 times per token and each costs ms on
+#   Android); and command buffers are smaller. 350M Q4_K_M on the Pixel:
+#   prompt 40 -> 700 tokens/s (810 for 3,000 tokens), generation 2.5 -> 25.
+#   Other GPUs run the code as before.
 # - Context checkpoints at user messages: wllama tokenizes chat prompts
 #   before the chat session looks for messages in them
 #   (wllama-message-spans.patch), and llama.cpp knows where LFM2's messages
