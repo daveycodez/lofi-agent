@@ -53,16 +53,19 @@ const nextConfig: NextConfig = {
 
 ## Models
 
-`WLLAMA_TEXT_MODELS` lists the models this package knows, and `WLLAMA_MODEL_META` has each one's details: Hugging Face repository, pinned revision, GGUF file and its size, context, capabilities, reasoning levels and the sampling from its card. They're Liquid AI's official GGUF builds.
+`WLLAMA_TEXT_MODELS` lists the models this package knows, and `WLLAMA_MODEL_META` has each one's details: Hugging Face repository, pinned revision, GGUF file and its size, context, capabilities, reasoning levels and the sampling from its card. They're Liquid AI's official GGUF builds, plus LFM3 Web, a leaner LFM3.
 
 | Model                                | Reasoning                       | File            |
 | ------------------------------------ | ------------------------------- | --------------- |
 | `LiquidAI/LFM3-1.7B-GGUF`            | on or off (`"high"` or `"off"`) | Q4_K_M, 1.10 GB |
+| `daveycodez/LFM3-1.7B-Web-GGUF`      | on or off (`"high"` or `"off"`) | Q4_K, 912 MB    |
 | `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` | none                            | Q4_K_M, 731 MB  |
 | `LiquidAI/LFM2.5-1.2B-Thinking-GGUF` | always (`"high"`)               | Q4_K_M, 731 MB  |
 | `LiquidAI/LFM2.5-350M-GGUF`          | none                            | Q4_K_M, 229 MB  |
 
-Every model is Q4_K_M: on a Pixel 10 Pro in Firefox, LFM2.5 350M read prompts at 55 tokens/s in Q4_K_M, 40 in Q8_0 and 15 in Q4_0 with wllama's own build. With this package's faster build (below), LFM2.5 1.2B reads about 400 prompt tokens/s and writes 90 tokens/s in Chrome on an M3 Ultra (16 threads). LFM3 1.7B, with its system prompt and tools, reads about 180 prompt tokens/s and writes 70 tokens/s there.
+Liquid's models are Q4_K_M: on a Pixel 10 Pro in Firefox, LFM2.5 350M read prompts at 55 tokens/s in Q4_K_M, 40 in Q8_0 and 15 in Q4_0 with wllama's own build. With this package's faster build (below), LFM2.5 1.2B reads about 400 prompt tokens/s and writes 90 tokens/s in Chrome on an M3 Ultra (16 threads). LFM3 1.7B, with its system prompt and tools, reads about 180 prompt tokens/s and writes 70 tokens/s there.
+
+LFM3 Web ([daveycodez/LFM3-1.7B-Web-GGUF](https://huggingface.co/daveycodez/LFM3-1.7B-Web-GGUF)) is LFM3 with the smaller vocabulary of the Transformers.js LFM3 Web build, in Q4_K with an importance matrix: 188 MB smaller than Liquid's Q4_K_M, it loads about 27% faster and writes about 6% faster, with the same quality in English and the same tool calls. Other languages take 1.6 to 4.2 times as many tokens, so prefer Liquid's build for them.
 
 **Tools** work as with any adapter: pass them to `chat({ tools })`, MCP tools included. llama.cpp writes them into the prompt with the model's chat template and parses the model's calls back.
 

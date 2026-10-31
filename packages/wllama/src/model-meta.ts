@@ -6,7 +6,6 @@
 import type { ModelReasoning } from "@tanstack/ai"
 import type { ModelReasoningCapability } from "@tanstack/ai/adapter-internals"
 
-
 /** Sampling settings from a model's card, as llama.cpp takes them. */
 export type Sampling = {
   temperature: number
@@ -87,12 +86,12 @@ const LFM2_5_THINKING_SAMPLING = {
   repeat_penalty: 1.05
 } as const satisfies Sampling
 
-// Every model is Q4_K_M: in wllama's WebAssembly build it reads prompts and
-// writes tokens about three times as fast as Q4_0 (llama.cpp has no
-// WebAssembly SIMD kernel for Q4_0 to match its Q4_K one), and faster than
-// Q5_K_M, Q6_K and Q8_0, at 5% more size than Q4_0. LFM2.5 1.2B on an
-// M3 Ultra, 24 threads: Q4_K_M 231 prompt tokens/s and 112 tokens/s,
-// Q4_0 (Liquid's QAD build too) 65 and 45.
+// Liquid's models are Q4_K_M: in wllama's WebAssembly build it reads
+// prompts and writes tokens about three times as fast as Q4_0 (llama.cpp
+// has no WebAssembly SIMD kernel for Q4_0 to match its Q4_K one), and
+// faster than Q5_K_M, Q6_K and Q8_0, at 5% more size than Q4_0. LFM2.5
+// 1.2B on an M3 Ultra, 24 threads: Q4_K_M 231 prompt tokens/s and 112
+// tokens/s, Q4_0 (Liquid's QAD build too) 65 and 45.
 
 /**
  * Liquid AI's LFM3 1.7B, from its official GGUF repository: thinks by
@@ -104,6 +103,26 @@ const LFM3_1_7B = {
   revision: "bad5729bba61d076fff20d2548e62526665af215",
   file: "LFM3-1.7B-Q4_K_M.gguf",
   bytes: 1_099_627_808,
+  supports: TOOLS_AND_THINKING,
+  size: "1.7b",
+  context: CONTEXT,
+  reasoning: THINKING_SWITCH,
+  sampling: LFM3_SAMPLING
+} as const satisfies WllamaModelMeta
+
+/**
+ * LFM3 1.7B for the web: LFM3 with the smaller vocabulary of the
+ * Transformers.js LFM3 Web build (49,152 tokens instead of 128,000), in
+ * Q4_K with an importance matrix and the embedding / output layer in Q6_K.
+ * 188 MB smaller than Liquid's Q4_K_M, it loads faster and writes about 6%
+ * faster, with the same quality in English; other languages take 1.6-4.2
+ * times as many tokens.
+ */
+const LFM3_1_7B_WEB = {
+  name: "daveycodez/LFM3-1.7B-Web-GGUF",
+  revision: "217bd08b3eadcfedc9a71c0cd1f987ba33a8622a",
+  file: "LFM3-1.7B-Web-Q4_K.gguf",
+  bytes: 911_948_864,
   supports: TOOLS_AND_THINKING,
   size: "1.7b",
   context: CONTEXT,
@@ -153,6 +172,7 @@ const LFM2_5_350M = {
 
 export const WLLAMA_TEXT_MODELS = [
   LFM3_1_7B.name,
+  LFM3_1_7B_WEB.name,
   LFM2_5_1_2B.name,
   LFM2_5_1_2B_THINKING.name,
   LFM2_5_350M.name
@@ -166,6 +186,7 @@ export const WLLAMA_MODEL_META: Readonly<
   Record<WllamaTextModel, WllamaModelMeta>
 > = {
   [LFM3_1_7B.name]: LFM3_1_7B,
+  [LFM3_1_7B_WEB.name]: LFM3_1_7B_WEB,
   [LFM2_5_1_2B.name]: LFM2_5_1_2B,
   [LFM2_5_1_2B_THINKING.name]: LFM2_5_1_2B_THINKING,
   [LFM2_5_350M.name]: LFM2_5_350M
@@ -173,6 +194,7 @@ export const WLLAMA_MODEL_META: Readonly<
 
 const WLLAMA_REASONING = {
   [LFM3_1_7B.name]: LFM3_1_7B.reasoning,
+  [LFM3_1_7B_WEB.name]: LFM3_1_7B_WEB.reasoning,
   [LFM2_5_1_2B_THINKING.name]: LFM2_5_1_2B_THINKING.reasoning
 } as const
 
