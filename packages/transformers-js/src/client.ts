@@ -76,6 +76,7 @@ export function setDebug(on: boolean) {
 
 function handleMessage({ data }: MessageEvent<WorkerResponse>) {
   if (data.type === "progress") {
+    if (!data.cached) keepDownloads()
     modelStatus(data.modelId).set({
       state: "loading",
       progress: data.progress,
@@ -123,12 +124,15 @@ function post(message: WorkerRequest) {
  * Asks the browser to keep this site's storage, so a downloaded model isn't
  * deleted to free space or, in Safari, after 7 days without a visit (which
  * means downloading it again). Browsers may say no; it's only a request.
- * Only pages can ask, not workers.
+ * Only pages can ask, not workers. Called when a download starts, not for
+ * cached loads. Skipped in Firefox, which shows a permission prompt for it;
+ * there a model is still kept across reloads, unless the disk runs low.
  */
 let askedToKeep = false
 function keepDownloads() {
   if (askedToKeep || typeof navigator === "undefined") return
   askedToKeep = true
+  if (/firefox/i.test(navigator.userAgent)) return
   navigator.storage
     ?.persist?.()
     .then((kept) => {
@@ -187,7 +191,6 @@ export function loadModel(
   })
   promise.catch(() => undefined)
   loaded = { modelId, load: { promise, resolve, reject } }
-  keepDownloads()
   // The worker reports whether this is a download or a cached load.
   modelStatus(modelId).set({ state: "loading", progress: 0, cached: true })
   post({ type: "load", modelId, dtype })

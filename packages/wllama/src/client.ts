@@ -228,11 +228,15 @@ let askedToKeep = false
 /**
  * Asks the browser to keep this site's storage, so a downloaded model isn't
  * deleted to free space or, in Safari, after 7 days without a visit.
- * Browsers may say no; it's only a request.
+ * Browsers may say no; it's only a request. Called when a download starts,
+ * not for cached loads. Skipped in Firefox, which shows a permission prompt
+ * for it; there a model is still kept across reloads, unless the disk runs
+ * low.
  */
 function keepDownloads() {
   if (askedToKeep || typeof navigator === "undefined") return
   askedToKeep = true
+  if (/firefox/i.test(navigator.userAgent)) return
   navigator.storage?.persist?.().catch(() => undefined)
 }
 
@@ -365,6 +369,7 @@ async function startLoad(
   const saved = await wllama.modelManager.getModels()
   const cached = saved.some((m) => m.url === url)
   status.set({ state: "loading", progress: 0, cached })
+  if (!cached) keepDownloads()
   await wllama.loadModelFromUrl(url, {
     // wllama's default is 1,024 tokens, less than a system prompt with tools.
     n_ctx: meta.context,
@@ -401,7 +406,6 @@ export function loadModel(model: WllamaTextModel): Promise<Wllama> {
   if (loaded?.model === model) return loaded.promise
   const previous = loaded
   if (previous) modelStatus(previous.model).set({ state: "idle" })
-  keepDownloads()
   const wllama = new Wllama(
     { default: mainWasmUrl() },
     {
